@@ -58,9 +58,12 @@
 | `probe_agnes3_think_budget.py` | 3.0/2.5 开思考的预算曲线：**2048 会烧光，4096 起正常** |
 | `probe_agnes_rate.py` | 慢速复测（补齐 JSON/工具/Messages）+ 限流窗口。**结论：免费额度 RPM 10** |
 | `probe_agnes_speed.py` | 用真实任务形态测速度（summarize / 歧义 / 相关性 / 短 JSON）。**3.0 整体更快** |
+| `probe_agnes_rpm_window.py` | 限流窗口语义：按发送时刻还是按在途。**按发送时刻，慢请求不占配额槽位** |
+| `probe_agnes_limit.py` | 二分搜真实限额。8→8、12→9、20→15、30→0，**不是干净形态，未测出** |
 
-> Agnes 五个探针是递进的：第一版撞限流，后三版分别补 thinking 行为、预算曲线、
-> 限流窗口、真实任务速度。结论汇总在 `DESIGN_R7_SECONDARY_MODELS.md`。
+> Agnes 探针是递进的：第一版撞限流，后六个分别补 thinking 行为、预算曲线、
+> 限流窗口、真实任务速度、窗口语义、限额搜索。结论汇总在
+> `DESIGN_R7_SECONDARY_MODELS.md`（含一节修订记录，说明最初哪些结论被证伪了）。
 
 ---
 
