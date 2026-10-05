@@ -91,6 +91,15 @@ class GuardPolicy:
     max_reasoning_ratio: float = 0.5
     retry_on_empty: int = 2
     max_output_tokens: int = 4096
+    # 传输断连的独立额度。**不与 retry_on_empty 共用**（2026-10-06 拆开）。
+    #
+    # 拆开的原因：这两件事根本不是一回事。
+    #   · 空返回 = reasoning 思考吃光了输出预算，模型的失败模式，要翻倍预算重来
+    #   · 连接中断 = 传输层抖动，参数没变，重发多半就成了
+    # 共用预算时，一次抖动 + 一次空返回就把 3 次用光，
+    # 于是 write_audit 这种本来能成的环节被判「该环节不可用」——
+    # 实测 R6c 那轮就是 D(1/3) D(2/3) 成功，三次刚好耗尽。
+    retry_on_transport: int = 2
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "GuardPolicy":
@@ -99,6 +108,7 @@ class GuardPolicy:
             max_reasoning_ratio=float(d.get("max_reasoning_ratio", 0.5)),
             retry_on_empty=int(d.get("retry_on_empty", 2)),
             max_output_tokens=int(d.get("max_output_tokens", 4096)),
+            retry_on_transport=int(d.get("retry_on_transport", 2)),
         )
 
 
@@ -301,7 +311,11 @@ class LLMClient:
             {"role": "user", "content": prompt}
         ]
         budget = cfg.max_output_tokens
-        attempts = cfg.guard.retry_on_empty + 1 if cfg.stage in NEEDS_GUARD else 1
+        # 两种失败的额度**分开算**，不互相抢。理由见 GuardPolicy.retry_on_transport。
+        guarded = cfg.stage in NEEDS_GUARD
+        empty_left = cfg.guard.retry_on_empty if guarded else 0
+        net_left = cfg.guard.retry_on_transport if guarded else 0
+        attempts = 1 + empty_left + net_left
         last_reason = ""
         drops = 0          # 因连接中断而重试的次数，用于在恢复时明确告知
 
@@ -338,22 +352,25 @@ class LLMClient:
                 #     但整场跑下来仍偶发。重试在这里有用，得留。
                 #   · 确定性：write_plan 在 effort=high + 2.4 万输入下
                 #     连续三次全断，参数完全相同重发必然还断。重试纯属浪费。
+                #     根因查出来了：是 timeout 180 秒太贴（write_audit 均 132 秒、
+                #     最长 170 秒），已提到 300。
                 #
                 # 真正有效的控制手段在别处：压低思考（output_config.effort）、
-                # 切小单次输入、把过重的调用拆开。连续失败会抛上去，
+                # 切小单次输入、把过重的调用拆开。额度用尽会抛上去，
                 # 由上层降级路径接手，不静默。
                 last_reason = f"transport: {type(e).__name__}"
                 drops += 1
-                if attempt + 1 >= attempts:
+                if net_left <= 0:
                     self.warnings.append(
-                        f"[{cfg.stage}] 连续 {attempts} 次连接中断"
-                        f"（{type(e).__name__}），该环节判定不可用")
-                    print(f"❌ [{cfg.stage}] 连续 {attempts} 次连接中断，放弃", flush=True)
+                        f"[{cfg.stage}] 连接中断额度用尽（共 {drops + net_left} 次，"
+                        f"最后 {type(e).__name__}），该环节判定不可用")
+                    print(f"❌ [{cfg.stage}] 连接中断额度用尽，放弃", flush=True)
                     raise
+                net_left -= 1
                 self.warnings.append(
-                    f"[{cfg.stage}] 第 {attempt+1}/{attempts} 次连接中断"
-                    f"（{type(e).__name__}），退避重试")
-                print(f"⚠️  [{cfg.stage}] 连接中断（{attempt+1}/{attempts}），退避重试",
+                    f"[{cfg.stage}] 第 {attempt+1} 次连接中断"
+                    f"（{type(e).__name__}，传输额度还剩 {net_left}），退避重试")
+                print(f"⚠️  [{cfg.stage}] 连接中断（传输额度剩 {net_left}），退避重试",
                       flush=True)
                 time.sleep(2.0 * (attempt + 1))
                 continue
@@ -382,20 +399,24 @@ class LLMClient:
                 self.warnings.append(msg_w)
                 print(f"⚠️  {msg_w}", flush=True)
 
-            # 防线一：内容为空则重试并翻倍预算
+            # 防线一：内容为空则重试并翻倍预算（额度独立于传输断连）
             if not text:
                 last_reason = "empty"
+                if empty_left <= 0:
+                    break
+                empty_left -= 1
                 budget = min(cfg.guard.max_output_tokens, budget * 2)
                 self.warnings.append(
                     f"[{cfg.stage}] 第 {attempt+1} 次返回空内容，"
-                    f"预算翻倍至 {budget} 后重试"
+                    f"预算翻倍至 {budget} 后重试（空返回额度还剩 {empty_left}）"
                 )
                 continue
             return text, usage
 
         raise EmptyOutput(
-            f"环节 {cfg.stage} 连续 {attempts} 次返回空内容"
-            f"（模型 {cfg.model}，最后原因 {last_reason}）。"
+            f"环节 {cfg.stage} 的重试额度用尽仍未拿到内容"
+            f"（模型 {cfg.model}，空返回 {cfg.guard.retry_on_empty} 次、"
+            f"连接中断 {drops} 次，最后原因 {last_reason}）。"
             f"这正是 M3.1 Flash 那种 thinking 吃光预算的失效模式。"
         )
 
@@ -440,8 +461,13 @@ class LLMClient:
             }]
 
         budget = cfg.max_output_tokens
-        attempts = cfg.guard.retry_on_empty + 1 if cfg.stage in NEEDS_GUARD else 1
+        # 传输断连与空返回的额度分开算，理由见 GuardPolicy.retry_on_transport。
+        guarded = cfg.stage in NEEDS_GUARD
+        empty_left = cfg.guard.retry_on_empty if guarded else 0
+        net_left = cfg.guard.retry_on_transport if guarded else 0
+        attempts = 1 + empty_left + net_left
         drops = 0          # 因连接中断而重试的次数，用于在恢复时明确告知
+        last_reason = ""
         for attempt in range(attempts):
             if attempt > 0:
                 payload["max_tokens"] = budget
@@ -459,16 +485,18 @@ class LLMClient:
             except httpx.TransportError as e:
                 # 吸收偶发抖动，不解决长生成的确定性失败。理由见 _opencode 同一处。
                 drops += 1
-                if attempt + 1 >= attempts:
+                last_reason = f"transport: {type(e).__name__}"
+                if net_left <= 0:
                     self.warnings.append(
-                        f"[{cfg.stage}] 连续 {attempts} 次连接中断"
-                        f"（{type(e).__name__}），该环节判定不可用")
-                    print(f"❌ [{cfg.stage}] 连续 {attempts} 次连接中断，放弃", flush=True)
+                        f"[{cfg.stage}] 连接中断额度用尽（共 {drops + net_left} 次，"
+                        f"最后 {type(e).__name__}），该环节判定不可用")
+                    print(f"❌ [{cfg.stage}] 连接中断额度用尽，放弃", flush=True)
                     raise
+                net_left -= 1
                 self.warnings.append(
-                    f"[{cfg.stage}] 第 {attempt+1}/{attempts} 次连接中断"
-                    f"（{type(e).__name__}），退避重试")
-                print(f"⚠️  [{cfg.stage}] 连接中断（{attempt+1}/{attempts}），退避重试",
+                    f"[{cfg.stage}] 第 {attempt+1} 次连接中断"
+                    f"（{type(e).__name__}，传输额度还剩 {net_left}），退避重试")
+                print(f"⚠️  [{cfg.stage}] 连接中断（传输额度剩 {net_left}），退避重试",
                       flush=True)
                 time.sleep(2.0 * (attempt + 1))
                 continue
@@ -493,17 +521,24 @@ class LLMClient:
                     print(f"⚠️  {msg_w}", flush=True)
 
             if not text:
+                last_reason = "empty"
+                if empty_left <= 0:
+                    break
+                empty_left -= 1
                 self.warnings.append(
                     f"[{cfg.stage}] 第 {attempt+1} 次无可见输出（思考 {len(think)} 字符），"
                     f"预算翻倍至 {min(cfg.guard.max_output_tokens, budget*2)} 后重试"
+                    f"（空返回额度还剩 {empty_left}）"
                 )
                 budget = min(cfg.guard.max_output_tokens, budget * 2)
                 continue
             return text, usage
 
         raise EmptyOutput(
-            f"环节 {cfg.stage} 连续 {attempts} 次无可见输出"
-            f"（模型 {cfg.model}）。这是 reasoning 模型思考吃光预算的典型失效模式。"
+            f"环节 {cfg.stage} 的重试额度用尽仍未拿到内容"
+            f"（模型 {cfg.model}，空返回 {cfg.guard.retry_on_empty} 次、"
+            f"连接中断 {drops} 次，最后原因 {last_reason}）。"
+            f"这是 reasoning 模型思考吃光预算的典型失效模式。"
         )
 
     # ---------- 工具调用的两个后端 ----------
