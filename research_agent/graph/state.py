@@ -147,12 +147,13 @@ class WriteState(TypedDict, total=False):
     tool_rounds: int             # plan 取全文用了几个工具轮次
 
     # ---- 执行 ----
-    drafts: dict                 # {task_id: 正文}
+    drafts: dict                 # {task_id: {section_id: 正文}}，一节一份
     violations: dict             # {task_id: [引用问题]}，程序校验的结果
     failed: list                 # [{task, reason}]
     assembled: str               # 按大纲顺序拼好的草稿，审查的输入
     sections_written: int
     uncovered_tasks: list        # 有产出但没有任何小节采用的任务
+    assemble_warnings: list      # 装配自检命中：重复正文/放错小节/多节任务缺节
     plan_failed: str             # 主 agent 规划失败时的原因
 
     # ---- 审查与返修 ----

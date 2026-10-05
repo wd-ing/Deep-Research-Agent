@@ -174,7 +174,13 @@ stages:
     temperature: 0.0
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
 
-  # 主 agent 审查：读全稿（12 节约 3 万字），判断是否返修、返修是否有效。
+  # 独立审阅人：读全稿（12 节约 3 万字），判断是否返修、返修是否有效。
+  #
+  # 档位暂定 high，不是默认就该 high。R6 实测理由：跨任务矛盾（"t3 的卤化物
+  # 数据和 t2 的结论打架"）要同时持有全文所有小节 + 规约才能发现，
+  # 而机械项（段号格式、越界引用）程序已 100% 拦下，不需要模型。
+  # 降到 low 只剩一行：thinking_effort: low。
+  # 判定依据见 DESIGN_R6_REVIEW.md 2.2——R6 跑完一轮新的端到端后再定。
   write_audit:
     provider: minimax
     model: MiniMax-M3.1-Flash-Preview

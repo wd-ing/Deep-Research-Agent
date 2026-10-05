@@ -108,9 +108,16 @@ class Repo:
 
     def x(self, sql: str, params: Sequence = ()) -> sqlite3.Cursor:
         with self._write_lock:
-            cur = self.conn.execute(sql, params)
-            self.conn.commit()
-            return cur
+            try:
+                cur = self.conn.execute(sql, params)
+                self.conn.commit()
+                return cur
+            except Exception:
+                # 必须回滚。不回滚的话连接会一直持着写锁，
+                # 同库其它线程（write 阶段是并发的）每个都要等满 busy_timeout。
+                # 踩过一次：外键失败没回滚，4 个并发子 agent 各卡 30 秒。
+                self.conn.rollback()
+                raise
 
     # ---------- 会话 ----------
 
@@ -378,22 +385,26 @@ class Repo:
                 "cache_hit_ratio": round(read / total, 4) if total else 0.0}
 
     def save_write_trace(self, session_id: str, spec=None, tasks=None,
-                         audit=None, stats=None) -> None:
+                         audit=None, stats=None, audit_history=None) -> None:
         """把 write 子图的中间产物落一份，供测试期检查。"""
         self.x(
             "INSERT INTO write_trace (session_id,spec_json,tasks_json,audit_json,"
-            "stats_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?) "
+            "stats_json,audit_history_json,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?) "
             "ON CONFLICT(session_id) DO UPDATE SET "
             "  spec_json=COALESCE(excluded.spec_json,write_trace.spec_json), "
             "  tasks_json=COALESCE(excluded.tasks_json,write_trace.tasks_json), "
             "  audit_json=COALESCE(excluded.audit_json,write_trace.audit_json), "
             "  stats_json=COALESCE(excluded.stats_json,write_trace.stats_json), "
+            "  audit_history_json=COALESCE(excluded.audit_history_json,"
+            "                         write_trace.audit_history_json), "
             "  updated_at=excluded.updated_at",
             (session_id,
              _jd(spec) if spec is not None else None,
              _jd(tasks) if tasks is not None else None,
              _jd(audit) if audit is not None else None,
              _jd(stats) if stats is not None else None,
+             _jd(audit_history) if audit_history is not None else None,
              now(), now()),
         )
 
@@ -401,8 +412,11 @@ class Repo:
         r = self.q1("SELECT * FROM write_trace WHERE session_id=?", (session_id,))
         if not r:
             return {}
+        keys = r.keys()
         return {"spec": _jl(r["spec_json"]), "tasks": _jl(r["tasks_json"]),
-                "audit": _jl(r["audit_json"]), "stats": _jl(r["stats_json"])}
+                "audit": _jl(r["audit_json"]), "stats": _jl(r["stats_json"]),
+                "audit_history": _jl(r["audit_history_json"])
+                if "audit_history_json" in keys else []}
 
     def session_cost(self, session_id: str) -> int:
         row = self.q1(

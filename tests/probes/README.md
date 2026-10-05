@@ -52,6 +52,7 @@
 | --- | --- |
 | `searxng_idle.py` | SearXNG 空闲自停三段实测：进程内通过、**进程退出后不生效**（催生了看门狗方案） |
 | `batch_ab.py` | 批量抽取的批次参数 A/B |
+| `replay_r5_dup_section.py` | 用 R5 真实报告复现「sec7 与 sec8 逐字相同」，并验证 R6 修好了 |
 
 ---
 

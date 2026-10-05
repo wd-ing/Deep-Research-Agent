@@ -34,6 +34,8 @@ MAX_REWORK = 2              # 返修轮数上限
 MAX_TOOL_ROUNDS = 3         # plan 取全文的工具循环上限
 MAX_TOOL_INDICES = 30       # 单次工具调用最多取几条（超出的会在结果里明说，不静默丢）
 TASK_MARK_RE = re.compile(r"<!--\s*task:(\S+)\s+section:(\S+)\s*-->")
+# 子 agent 分节输出用的标记。`covers` 多于一节时必须逐节标注，否则无法归位。
+SECTION_MARK_RE = re.compile(r"<!--\s*section:(\S+)\s*-->")
 SEG_REF_RE = re.compile(r"\[S(\d+)·(\d+)\]")          # 段级引用 S3·5
 SEG_REF_LOOSE_RE = re.compile(r"\[S\d+[^\]]*?\]")     # 自创写法
 SRC_REF_RE = re.compile(r"\[S(\d+)\]")               # 旧的来源级写法，不允许
@@ -213,23 +215,25 @@ def node_dispatch(state: WriteState) -> dict:
     if not todo:
         return {}
 
-    first, rest = todo[0], todo[1:]
     ev = {"drafts": dict(drafts), "failed": list(failed)}
     t0 = _now()
-    ev["drafts"][first["id"]] = _run_task(state, first, revise=None)
+    secs, err = _run_task(state, todo[0], revise=None)
+    ev["drafts"][todo[0]["id"]] = secs
     first_cost = round(_now() - t0, 1)
-    if not (ev["drafts"][first["id"]] or "").strip():
-        ev["drafts"].pop(first["id"], None)
-        ev["failed"].append({"task": first["id"], "reason": "empty output"})
+    if not secs:
+        ev["drafts"].pop(todo[0]["id"], None)
+        ev["failed"].append({"task": todo[0]["id"],
+                             "reason": err or "empty output"})
 
-    if rest:
+    if rest := todo[1:]:
         with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-            for tid, body in zip((t["id"] for t in rest),
-                                 pool.map(lambda t: _run_task(state, t, None), rest)):
-                if (body or "").strip():
-                    ev["drafts"][tid] = body
+            results = list(pool.map(lambda t: _run_task(state, t, None), rest))
+            for t, (secs, err) in zip(rest, results):
+                if secs:
+                    ev["drafts"][t["id"]] = secs
                 else:
-                    ev["failed"].append({"task": tid, "reason": "empty output"})
+                    ev["failed"].append({"task": t["id"],
+                                         "reason": err or "empty output"})
 
     return {
         "drafts": ev["drafts"],
@@ -255,8 +259,56 @@ def route_after_dispatch(state: WriteState) -> str:
     return "dispatch" if _pending(state) else "assemble"
 
 
-def _run_task(state: WriteState, task: dict, revise: dict | None) -> str:
-    """调一次子 agent 写一个任务。
+def _split_sections(text: str, covers: list[str]) -> tuple[dict[str, str], str | None]:
+    """把子 agent 的产出按小节切开。
+
+    单节任务：整份就是那一节，不要求任何标记。
+    多节任务：必须逐节标 `<!-- section:sec7 -->`。切不出来就如实报错，
+    **绝不把整份正文复制到每一节**。
+
+    这正是 R5 的 bug：主 agent 被明确授权「两节耦合时一个任务写两节」，
+    但装配层只认字符串，于是把同一份正文贴进 sec7 和 sec8，
+    sec7 成了 sec8 的逐字副本，返修怎么改都改不掉。
+    """
+    covers = [c for c in (covers or []) if c]
+    if not covers:
+        return {}, "任务没有对应的小节"
+    if len(covers) == 1:
+        body = (text or "").strip()
+        return ({covers[0]: body}, None) if body else ({}, "empty output")
+
+    parts = _cut_marked(text or "", covers)
+    if not parts:
+        return {}, (f"多节任务（{'、'.join(covers)}）没有输出分节标记 "
+                    f"`<!-- section:xx -->`，无法确定哪段属于哪一节")
+    out = {k: v.strip() for k, v in parts.items() if v.strip()}
+    if not out:
+        return {}, (f"多节任务（{'、'.join(covers)}）标了分节标记但正文全空")
+    note = None
+    missing = [c for c in covers if c not in out]
+    if missing:
+        note = (f"多节任务只产出了 {'、'.join(out)}，"
+                f"缺 {'、'.join(missing)}（无分节标记或该节为空）")
+    return out, note
+
+
+def _cut_marked(text: str, covers: list[str]) -> dict[str, str]:
+    """按 `<!-- section:xx -->` 切分。不在 covers 里的小节 id 丢弃。"""
+    ms = list(SECTION_MARK_RE.finditer(text))
+    if not ms:
+        return {}
+    out: dict[str, str] = {}
+    for i, m in enumerate(ms):
+        sid = m.group(1)
+        if sid not in covers:
+            continue
+        end = ms[i + 1].start() if i + 1 < len(ms) else len(text)
+        out[sid] = text[m.end():end].strip()
+    return out
+
+
+def _run_task(state: WriteState, task: dict, revise: dict | None) -> tuple[dict, str | None]:
+    """调一次子 agent 写一个任务。返回 ({section_id: 正文}, 出错原因或 None)。
 
     默认只给**段落概括**。它觉得不够时自己调工具往下挖——
     read_segments 看某段全文、read_context 连同邻段、read_source 看整篇。
@@ -264,10 +316,11 @@ def _run_task(state: WriteState, task: dict, revise: dict | None) -> str:
     """
     segs = _task_segments(state, task)
     if not segs:
-        return ""
+        return {}, "任务没有分到任何证据段落"
     spec = state.get("spec") or {}
     tasks = state.get("tasks") or []
     sid = state.get("session_id") or ""
+    covers = list(task.get("covers") or [])
 
     others = [{"id": t["id"], "covers": t.get("covers"),
                "职责": (t.get("mandate") or "")[:80]}
@@ -277,11 +330,17 @@ def _run_task(state: WriteState, task: dict, revise: dict | None) -> str:
         f"【写作规约】\n{_dumps(spec)}\n\n"
         f"【其他任务的职责（不要替它们写）】\n{_dumps(others)}\n\n"
         f"────────  以上为规约，以下为你的任务  ────────\n\n"
-        f"【你的任务】\nid={task['id']}  对应小节={task.get('covers')}\n"
+        f"【你的任务】\nid={task['id']}  对应小节={covers}\n"
         f"要回答的问题：{task.get('mandate','')}\n"
         f"必须写到：{_dumps(task.get('must_cover') or [])}\n"
         f"不归你管：{_dumps(task.get('not_yours') or [])}\n\n"
     )
+    if len(covers) > 1:
+        head += (
+            f"**你负责 {len(covers)} 个小节，每一节都要单独成段输出，"
+            f"用 `<!-- section:小节id -->` 开头标明这是哪一节。**\n"
+            f"小节 id：{'、'.join(covers)}。\n"
+            f"不要在一个标记里混写两节，也不要把同一段内容复制给两节。\n\n")
     listing = _dumps([
         {"段号": g.get("ref"), "这段在讲": g.get("summary"),
          "token": g.get("token_count")}
@@ -306,14 +365,15 @@ def _run_task(state: WriteState, task: dict, revise: dict | None) -> str:
             text, _, log = run_tool_loop(LLM, stage, prompts.WRITE_RULES,
                                         messages, tools, max_rounds=2)
             _record_tool_use(state, task["id"], log)
-            return text
+            return _split_sections(text, covers)
         except Exception as e:
             print(f"⚠️  工具循环失败，退回单次调用: {e}", flush=True)
     try:
-        return LLM.complete(stage, head + tail, system=prompts.WRITE_RULES)
+        return _split_sections(
+            LLM.complete(stage, head + tail, system=prompts.WRITE_RULES), covers)
     except Exception as e:
-        print(f"⚠️  小节「{(task.get('covers') or ['?'])[0]}」写入失败: {e}", flush=True)
-        return ""
+        print(f"⚠️  小节「{(covers or ['?'])[0]}」写入失败: {e}", flush=True)
+        return {}, f"调用失败：{str(e)[:180]}"
 
 
 def _task_segments(state: WriteState, task: dict) -> list[dict]:
@@ -378,55 +438,135 @@ def _check_citations(text: str, allowed: set[str]) -> list[dict]:
 def _check_all_citations(state: WriteState, drafts: dict) -> dict:
     tasks = {t["id"]: t for t in state.get("tasks") or []}
     out: dict[str, list[dict]] = {}
-    for tid, body in (drafts or {}).items():
+    for tid, sections in (drafts or {}).items():
         t = tasks.get(tid)
         if not t:
             continue
         allowed = set(t.get("segments") or [])
-        bad = _check_citations(body, allowed)
+        # 配额是按任务分的证据，不是按小节，所以逐节拼起来一起查
+        bad = _check_citations(_join(sections), allowed)
         if bad:
             out[tid] = bad
     return out
 
 
+def _join(sections: Any) -> str:
+    """{section_id: 正文} → 一段文本。容忍旧格式的字符串。"""
+    if isinstance(sections, str):
+        return sections
+    if not isinstance(sections, dict):
+        return ""
+    return "\n\n".join(v for v in sections.values() if v)
+
+
 # ================================================================ 装配
 
 def node_assemble(state: WriteState) -> dict:
-    """按大纲顺序把任务草稿拼回小节，并给审查打上定位标记。"""
+    """按大纲顺序把任务草稿拼回小节，并给审查打上定位标记。
+
+    一个任务可以覆盖多节，此时**每节取自己那一段**（`drafts[tid][section_id]`）。
+    R5 在这里把整份字符串贴进它 covers 的每一节，是返修永远修不好的直接原因。
+    """
     drafts = state.get("drafts") or {}
     failed = state.get("failed") or []
     by_task = {t["id"]: t for t in state.get("tasks") or []}
-    failed_ids = {f.get("task") for f in failed}
     task_of_section: dict[str, list[str]] = {}
     for t in by_task.values():
         for sec in t.get("covers") or []:
             task_of_section.setdefault(sec, []).append(t["id"])
 
     blocks: list[str] = []
+    bodies: dict[str, str] = {}
     written = 0
     for sec in state.get("outline") or []:
         sid = sec.get("id")
         chunks = []
         for tid in task_of_section.get(sid, []):
-            body = (drafts.get(tid) or "").strip()
+            body = _section_body(drafts.get(tid), sid)
             if body:
                 mark = f"<!-- task:{tid} section:{sid} -->"
                 chunks.append(f"{mark}\n{body}")
         if chunks:
-            blocks.append(f"## {sec.get('title')}\n\n" + "\n\n".join(chunks))
+            joined = "\n\n".join(chunks)
+            bodies[sid] = joined
+            blocks.append(f"## {sec.get('title')}\n\n" + joined)
             written += 1
         else:
             why = "写作失败或为空" if task_of_section.get(sid) else "没有任务覆盖本节"
             blocks.append(f"## {sec.get('title')}\n\n"
                           f"<!-- 未能完成 -->\n**本节未能完成**：{why}。\n")
-    missing = sorted(failed_ids - {t for ids in task_of_section.values() for t in ids})
+
+    warnings = _assemble_warnings(bodies, drafts, by_task)
+    # 有产出、却一节都没被采用的任务
+    used: set[str] = set()
+    for t in by_task.values():
+        for sec in t.get("covers") or []:
+            if _section_body(drafts.get(t["id"]), sec):
+                used.add(t["id"])
+    missing = [t["id"] for t in by_task.values()
+               if drafts.get(t["id"]) and t["id"] not in used]
     return {
         "assembled": "\n\n".join(blocks),
         "sections_written": written,
         "uncovered_tasks": missing,
+        "assemble_warnings": warnings,
         "events": [{"kind": "write_assemble", "sections": written,
-                    "tasks": len(drafts), "failed": len(failed)}],
+                    "tasks": len(drafts), "failed": len(failed),
+                    "warnings": len(warnings)}],
     }
+
+
+def _section_body(draft: Any, sid: str) -> str:
+    """取某个任务在某一节的正文。旧格式（裸字符串）兜底兼容。"""
+    if isinstance(draft, dict):
+        return (draft.get(sid) or "").strip()
+    return (draft or "").strip()
+
+
+def _assemble_warnings(bodies: dict, drafts: dict, by_task: dict) -> list[str]:
+    """装配后的机械自检。命中即上报，不修也不藏。
+
+    R5 的事故长这样：子 agent 自己写了带 `##` 的两节，装配又把整份贴进
+    sec7 和 sec8，于是 sec7 成了 sec8 的副本，而 sec8 内部还完整重复了两遍。
+    所以要比**去掉定位标记之后**的正文，否则永远测不出来。
+    """
+    out: list[str] = []
+    contents = {s: TASK_MARK_RE.sub("", b).strip() for s, b in bodies.items()}
+    ids = [s for s in contents if contents[s]]
+
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            if contents[a] == contents[b]:
+                out.append(f"小节 {a} 与 {b} 的正文逐字相同，装配很可能出错了")
+    for sid, body in contents.items():
+        m = TASK_MARK_RE.search(bodies.get(sid) or "")
+        if m and m.group(2) != sid:
+            out.append(f"小节 {sid} 的正文以 {m.group(1)}→{m.group(2)} 的定位标记开头，"
+                       f"内容被放错了小节")
+        # 同一节里整段逐字重复：子 agent 自己写了重复内容
+        seen: set[str] = set()
+        for line in body.splitlines():
+            s = line.strip()
+            if len(s) >= 80:
+                if s in seen:
+                    out.append(f"小节 {sid} 里有整段重复出现两次（{s[:40]}…），"
+                               f"正文自身存在重复")
+                    break
+                seen.add(s)
+
+    # 多节任务只产出了一部分小节（判据是「该任务负责几节」，不是「产出了几节」
+    # ——只产出一节的多节任务同样要报）
+    for tid, draft in (drafts or {}).items():
+        if not isinstance(draft, dict):
+            continue
+        want = set(by_task.get(tid, {}).get("covers") or [])
+        if len(want) <= 1:
+            continue
+        gap = want - set(draft)
+        if gap:
+            out.append(f"任务 {tid} 负责 {'、'.join(sorted(want))}，"
+                       f"实际只产出了 {'、'.join(sorted(draft))}，缺 {'、'.join(sorted(gap))}")
+    return out
 
 
 # ================================================================ 审查
@@ -482,6 +622,17 @@ def node_audit(state: WriteState) -> dict:
            stats={"audit_round": rounds, "high": len(targets),
                   "findings": len(findings), "need_rework": audit["need_rework"],
                   "rework_effective": d.get("rework_effective")})
+    # 每轮的发现要留着。之前 audit_json 每轮覆盖，R5 那轮 27 次返修
+    # 只剩最后一轮的 11 条，根因只能靠读代码反推——可观测性缺口。
+    _push_audit_history(state.get("session_id"), {
+        "round": rounds,
+        "need_rework": audit["need_rework"],
+        "findings": len(findings),
+        "high": len(targets),
+        "targets": [f"{t['task']}→{t.get('section')}" for t in targets],
+        "rework_effective": d.get("rework_effective"),
+        "reason": audit["reason"][:200],
+    })
     return {
         "audit": audit,
         # 首轮没有「上一轮返修」，这个字段在这一轮没有意义
@@ -498,8 +649,12 @@ def node_audit(state: WriteState) -> dict:
 def node_revise(state: WriteState) -> dict:
     """定点返修：只把「规约 + 本任务证据 + 草稿 + 具体问题」喂回子 agent。
 
-    第一个目标串行跑（返修轮同样需要重建缓存，TTL 只有 5 分钟），
-    其余并发。
+    **按任务合并，而不是按目标逐条跑。** 同一任务被点名多节时必须一次问完：
+    旧写法把每个 high 发现单独跑一次，全写进 drafts[task]，
+    于是 t8/sec7 修好，下一秒被 t8/sec8 那版整个覆盖掉——
+    返修目标在数据结构上不可满足，怎么跑都不收敛。
+
+    第一个任务串行跑（返修轮同样要重建缓存，TTL 只有 5 分钟），其余并发。
     """
     audit = state.get("audit") or {}
     targets = audit.get("targets") or []
@@ -507,38 +662,82 @@ def node_revise(state: WriteState) -> dict:
     if not targets:
         return {}
 
-    first, rest = targets[0], targets[1:]
-    drafts[first["task"]] = _run_task(
-        state, {"id": first["task"],
-                "covers": [first.get("section")] if first.get("section") else [],
-                "mandate": "", "must_cover": [], "not_yours": [],
-                "segments": _task_segments_refs(state, first["task"])},
-        revise={"fix": first.get("fix"), "problem": first.get("problem"),
-                "draft": drafts.get(first["task"]) or ""})
-    if not (drafts.get(first["task"]) or "").strip():
-        # 返修写崩了：保留原稿，不拿空串覆盖
-        drafts[first["task"]] = first.get("draft") or drafts.get(first["task"]) or ""
+    by_task: dict[str, list[dict]] = {}
+    for t in targets:
+        by_task.setdefault(t["task"], []).append(t)
+    order = list(by_task)
 
-    for t in rest:
-        prev = drafts.get(t["task"]) or ""
-        new = _run_task(
-            state, {"id": t["task"],
-                    "covers": [t.get("section")] if t.get("section") else [],
+    def _one(tid: str) -> tuple[str, dict, str | None]:
+        secs = by_task[tid]
+        # 意见按小节归并，提示词里才看得出「这几节各要改什么」
+        asks = [{"小节": s.get("section"), "问题": s.get("problem"),
+                 "改法": s.get("fix")} for s in secs]
+        covers = [s.get("section") for s in secs if s.get("section")]
+        if not covers:                      # 审查没给小节，就退回任务原始 covers
+            covers = [c for c in _task_covers(state, tid) if c]
+        prev = _section_map(drafts.get(tid))
+        new, err = _run_task(
+            state, {"id": tid, "covers": covers,
                     "mandate": "", "must_cover": [], "not_yours": [],
-                    "segments": _task_segments_refs(state, t["task"])},
-            revise={"fix": t.get("fix"), "problem": t.get("problem"), "draft": prev})
-        if (new or "").strip():
-            drafts[t["task"]] = new
-        # 空输出则保留原稿
+                    "segments": _task_segments_refs(state, tid)},
+            revise={"fix": _dumps(asks), "problem": _dumps(asks), "draft": _join(prev)})
+        return tid, new, err
+
+    t0 = _now()
+    tid, new, _err = _one(order[0])
+    drafts[tid] = _merge_sections(drafts.get(tid), new, by_task[tid])
+    first_cost = round(_now() - t0, 1)
+
+    rest = order[1:]
+    if rest:
+        with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+            for tid, new, _err in pool.map(_one, rest):
+                drafts[tid] = _merge_sections(drafts.get(tid), new, by_task[tid])
 
     return {
         "drafts": drafts,
         "rework_rounds": state.get("rework_rounds", 0) + 1,
         "violations": _check_all_citations(state, drafts),
         "events": [{"kind": "write_revise",
-                    "tasks": [t["task"] for t in targets],
+                    "tasks": order,
+                    "targets": [f"{t['task']}→{t.get('section')}" for t in targets],
+                    "first_serial_s": first_cost,
                     "round": state.get("rework_rounds", 0) + 1}],
     }
+
+
+def _section_map(draft: Any) -> dict:
+    """把草稿统一成 {section_id: 正文}。"""
+    if isinstance(draft, dict):
+        return {k: v for k, v in draft.items()}
+    return {"": draft} if isinstance(draft, str) and draft else {}
+
+
+def _merge_sections(old: Any, new: dict, targets: list[dict] | None = None) -> dict:
+    """把返修结果并回草稿。
+
+    只有**被点名的小节**才用新稿覆盖；没被点名的小节原样保留。
+    返修写崩（新稿为空）时整体保留原稿，不拿空串覆盖——
+    宁可留着有瑕疵的版本，也不要凭空少一节。
+    """
+    prev = _section_map(old)
+    if not new:
+        return prev
+    wanted = {s.get("section") for s in (targets or []) if s.get("section")}
+    if not wanted:
+        wanted = set(new)                  # 审查没给小节时，以新稿的键为准
+    merged = dict(prev)
+    for sec, body in new.items():
+        if sec in wanted and (body or "").strip():
+            merged[sec] = body
+    return merged or prev
+
+
+def _task_covers(state: WriteState, tid: str) -> list[str]:
+    for t in state.get("tasks") or []:
+        if t["id"] == tid:
+            return list(t.get("covers") or [])
+    return []
 
 
 def _task_segments_refs(state: WriteState, tid: str) -> list[str]:
@@ -577,6 +776,7 @@ def node_final(state: WriteState) -> dict:
     failed = state.get("failed") or []
     earlier = state.get("earlier") or []
     uncovered = state.get("uncovered_tasks") or []
+    asm_warn = state.get("assemble_warnings") or []
 
     parts = [f"# {state.get('question','')}\n"]
     if spec.get("thesis"):
@@ -608,6 +808,9 @@ def node_final(state: WriteState) -> dict:
             f"但子 agent 只能看到标题与正文开头，看不到这些段的要点概括。")
     if uncovered:
         doubt.append("以下任务的产出未被任何小节采用：" + "、".join(uncovered))
+    for w in asm_warn:
+        # 装配自检命中：这份稿子可能有结构性错误，读者必须看得见
+        doubt.append(f"装配自检：{w}")
     if doubt:
         parts.append("\n## 存疑与未完成\n\n"
                      + "\n".join(f"- {d}" for d in doubt) + "\n")
@@ -623,6 +826,7 @@ def node_final(state: WriteState) -> dict:
     md = "".join(parts)
     # 定位标记是给审查看的，不能留在最终报告里
     md = TASK_MARK_RE.sub("", md)
+    md = SECTION_MARK_RE.sub("", md)
     md += "\n---\n\n### 来源\n" + "\n".join(state.get("src_lines") or []) + "\n"
     return {
         "report_markdown": md,
@@ -635,6 +839,7 @@ def node_final(state: WriteState) -> dict:
                     "violations": len(violations),
                     "rework_rounds": state.get("rework_rounds", 0),
                     "rework_effective": state.get("rework_effective", True),
+                    "assemble_warnings": len(asm_warn),
                     "spec_uncertainty": (spec.get("spec_uncertainty") or "")[:200]}],
     }
 
@@ -694,6 +899,25 @@ def _trace(session_id: str, **kw) -> None:
     try:
         from ...db.repo import get_repo
         get_repo().save_write_trace(session_id, **kw)
+    except Exception:
+        pass
+
+
+def _push_audit_history(session_id: str, entry: dict) -> None:
+    """把这一轮审查的摘要追加到历史里（读改写，审查是串行的所以没有竞争）。"""
+    if not session_id:
+        return
+    try:
+        from ...db.repo import get_repo
+        repo = get_repo()
+        hist = repo.write_trace(session_id).get("audit_history") or []
+        if not isinstance(hist, list):
+            hist = []
+        if any(h.get("round") == entry.get("round") for h in hist
+               if isinstance(h, dict)):
+            return                      # 同一轮重跑就覆盖，不追加重复
+        hist.append(entry)
+        repo.save_write_trace(session_id, audit_history=hist)
     except Exception:
         pass
 

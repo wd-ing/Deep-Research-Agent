@@ -2,7 +2,7 @@
 
 按约定 1，write 板块做完之前测试只打写作环节。真实数据联调放到下一轮，
 这里先把**结构**验干净：路由、装配顺序、引用程序校验、返修收敛、
-降级标注、任务上限。结构不对就别花钱跑真实数据。
+降级标注、任务上限、多节归位、多目标返修、装配自检。结构不对就别花钱跑真实数据。
 
 用法：python tests/write_struct.py
 """
@@ -24,6 +24,20 @@ for _l in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 from research_agent.graph.subgraphs import write as W  # noqa: E402
+
+# write_trace.session_id 有指向 session 的外键，而这里用的是 s_test 这个
+# 并不存在的会话。撞外键会让每次「子 agent 用了哪些工具」的记录都失败。
+# 给它一份临时库并把会话建出来——顺便让工具记录这条路径真的被跑到，
+# 也别去污染 data/research.db。
+_TMP_DB = Path("/tmp/ra_write_struct.db")
+os.environ["RA_DB_PATH"] = str(_TMP_DB)
+import research_agent.db.repo as _repo_mod  # noqa: E402
+_r = _repo_mod.get_repo()
+if not _r.q1("SELECT id FROM session WHERE id=?", ("s_test",)):
+    _r.x("INSERT INTO session (id,title,question,status,created_at,updated_at) "
+         "VALUES (?,?,?,?,?,?)",
+         ("s_test", "结构自检", "固态电池", "done", "2026-01-01T00:00:00+00:00",
+          "2026-01-01T00:00:00+00:00"))
 
 OUTLINE = [
     {"id": "sec1", "title": "定义与层级", "question": "怎么划分", "kind": "definition"},
@@ -97,24 +111,57 @@ class Fake:
                 {"type": "tool_use", "id": "t2", "name": "read_context",
                  "input": {"segment": "S1·2", "before": 1, "after": 1}}],
                 "usage": {}}
-        return {"blocks": [{"type": "text",
-                            "text": f"[S1·1] 任务 {stage} 的正文。"}],
-                "usage": {}}
+        # 任务头在第一条 user 消息里。工具轮之后 messages[-1] 已经是
+        # tool_result，从那儿取只会拿到空的 covers。
+        head = messages[0].get("content", "")
+        tid = _task_id_from(head)
+        covers = _covers_from(head)
+        text = self.sections.get(f"{stage}:{tid}", "")
+        if not text:
+            text = _body_for(tid, covers)
+        return {"blocks": [{"type": "text", "text": text}], "usage": {}}
 
     def complete(self, stage: str, prompt: str, system: str | None = None,
                  json_mode: bool = False) -> str:
         self.calls.append((stage, len(prompt)))
         if stage in ("write_section", "write_revise"):
             tid = _task_id_from(prompt)
-            return self.sections.get(f"{stage}:{tid}", f"[S1·1] 任务 {tid} 的正文。")
+            text = self.sections.get(f"{stage}:{tid}", "")
+            return text or _body_for(tid, _covers_from(prompt))
         return "{}"
 
 
-def _unused_task_id_from(prompt: str) -> str:
-    for line in prompt.splitlines():
+def _body_for(tid: str, covers: list[str]) -> str:
+    """多节任务必须逐节标记，否则装配取不到各自那段。"""
+    if not covers:
+        return f"[S1·1] 任务 {tid} 的正文。"
+    return "".join(f"<!-- section:{c} -->\n[S1·1] 任务 {tid} 的 {c} 正文。\n"
+                   for c in covers)
+
+
+def _flat(content) -> str:
+    """user 消息的 content 可能是 str，也可能是内容块列表。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text") or "" for b in content
+                         if isinstance(b, dict))
+    return ""
+
+
+def _task_id_from(prompt) -> str:
+    for line in _flat(prompt).splitlines():
         if line.startswith("id="):
             return line[3:].split()[0]
     return "?"
+
+
+def _covers_from(prompt) -> list[str]:
+    """从「对应小节=['sec1', 'sec2']」解出小节 id 列表。"""
+    m = re.search(r"对应小节=\[([^\]]*)\]", _flat(prompt))
+    if not m:
+        return []
+    return [x.strip().strip("'\"") for x in m.group(1).split(",") if x.strip()]
 
 
 def run(fake: Fake, label: str, expect_tasks: int | None = None) -> dict:
@@ -271,7 +318,7 @@ def spy(state, task, revise):
     seen.append({"task": task["id"],
                  "refs": [g["ref"] for g in pool],
                  "bodies": [g.get("content") or "" for g in pool]})
-    return "[S1·1] 占位正文"
+    return ({"": "[S1·1] 占位正文"}, None)
 W._run_task = spy
 st = {"question": BASE["question"], "spec": {"thesis": "T"}, "tasks": plan1["tasks"],
       "segments": SEGMENTS, "on_topic": SEGMENTS, "src_lines": SRC,
@@ -318,4 +365,100 @@ print(f"  dispatch 轮数: {len(disp)}（无依赖时应该是 1）")
 assert len(disp) == 1, f"不该分多轮，实得 {len(disp)} 轮"
 print("  ✓ 5 个无依赖任务一次并发跑完，没有被排成串行")
 
-print(f"\n{'='*70}\n✅ 结构自检全部通过（7 个场景）\n{'='*70}")
+
+# ---------- 场景 8：一个任务写两节，各归各位（R6 核心） ----------
+print(f"\n{'='*70}\n场景 8：一个任务写两节（分节输出与归位）\n{'='*70}")
+plan8 = {"tasks": [
+    {"id": "t1", "covers": ["sec1"], "mandate": "定义", "segments": ["S1·1"]},
+    {"id": "t8", "covers": ["sec2", "sec3"], "mandate": "两节紧密耦合",
+     "segments": ["S1·2", "S2·1"]},
+],
+    "thesis": "T", "glossary": [{"canonical": "X"}], "units": ["u"],
+    "cautions": ["c"], "spec_uncertainty": "u", "sections": []}
+f8 = Fake(plan8, {}, [audit_ok])
+out8 = run(f8, "一个任务负责 sec2 + sec3")
+
+d8 = out8.get("drafts") or {}
+secs8 = d8.get("t8") or {}
+print(f"  t8 的产出小节: {sorted(secs8)}")
+assert sorted(secs8) == ["sec2", "sec3"], \
+    f"多节任务应逐节产出，实际 {sorted(secs8)}"
+assert secs8["sec2"] != secs8["sec3"], "两节正文不能相同"
+md8 = out8["report_markdown"]
+assert md8.count("sec2 正文") == 1 and md8.count("sec3 正文") == 1, \
+    "每节的内容只应出现一次"
+assert "<!-- section:" not in md8, "分节标记不能留在最终报告里"
+# 装配自检不该报警
+w8 = [e for e in (out8.get("events") or []) if e.get("kind") == "write_assemble"]
+assert not (w8 and w8[0].get("warnings")), \
+    f"装配不该报警，实际 {w8[0] if w8 else None}"
+print("  ✓ 两节各自归位，内容不重复")
+print("  ✓ 分节标记已在装配时消费掉")
+
+# 切片不按标记 → 如实报错，不把整份复制给两节
+secs_cut, note_cut = W._split_sections("[S1·1] 只有一段文字", ["sec2", "sec3"])
+assert secs_cut == {}, f"切不出分节就不能给内容，实际 {secs_cut}"
+print(f"  ✓ 缺分节标记时如实报错：{note_cut[:40]}…")
+
+# 部分缺节：给到的那节要留下，缺的节由装配标成「未能完成」
+secs_part, _ = W._split_sections(
+    "<!-- section:sec2 -->\n[S1·1] 甲\n<!-- section:sec9 -->\n[S1·1] 乙",
+    ["sec2", "sec3"])
+assert list(secs_part) == ["sec2"], f"只该留下 sec2，实际 {secs_part}"
+print("  ✓ 只标了部分小节时，多余的按未知小节丢弃")
+
+# ---------- 场景 9：同一任务被点名多节，一次问完（R6 核心） ----------
+print(f"\n{'='*70}\n场景 9：返修时同一任务的多节问题一起问\n{'='*70}")
+audit_two = {"need_rework": True, "reason": "t8 两节都要改",
+             "findings": [
+                 {"task": "t8", "section": "sec2", "severity": "high",
+                  "problem": "sec2 越界", "fix": "sec2 改成只引 S1·2"},
+                 {"task": "t8", "section": "sec3", "severity": "high",
+                  "problem": "sec3 放错了内容", "fix": "sec3 换成企业格局"}],
+             "remaining_issues": [], "spec_issue": None, "rework_effective": True}
+f9 = Fake(plan8, {"write_revise:t8":
+                  "<!-- section:sec2 -->\n[S1·2] 修好的 sec2。\n"
+                  "<!-- section:sec3 -->\n[S1·2] 修好的 sec3。"},
+          [audit_two, audit_ok])
+out9 = run(f9, "t8 的 sec2 与 sec3 同时被点名")
+secs9 = (out9.get("drafts") or {}).get("t8") or {}
+print(f"  返修后 t8 的小节: {sorted(secs9)}")
+assert sorted(secs9) == ["sec2", "sec3"], "两节都必须在"
+assert "修好的 sec2" in secs9.get("sec2", ""), "sec2 的修改被覆盖了"
+assert "修好的 sec3" in secs9.get("sec3", ""), "sec3 的修改丢了"
+# 一次调用问完两节，不是分两次
+rev9 = [e for e in (out9.get("events") or []) if e.get("kind") == "write_revise"]
+assert len(rev9) == 1, f"应只有一轮返修，实际 {len(rev9)}"
+assert rev9[0].get("tasks") == ["t8"], f"应只返修 t8，实际 {rev9[0].get('tasks')}"
+print("  ✓ 两节的修改都保住了，没有互相覆盖")
+print("  ✓ 同一任务一次问完，不是拆成两次")
+
+# 只点名一节时，另一节必须原样保留
+merged = W._merge_sections(
+    {"sec2": "旧 sec2", "sec3": "旧 sec3"},
+    {"sec2": "新 sec2"}, [{"section": "sec2"}])
+assert merged == {"sec2": "新 sec2", "sec3": "旧 sec3"}, f"未点名的小节被冲掉了：{merged}"
+# 返修写崩时整体保留原稿
+kept = W._merge_sections({"sec2": "旧 sec2"}, {}, [{"section": "sec2"}])
+assert kept == {"sec2": "旧 sec2"}, "空产出不该覆盖原稿"
+print("  ✓ 未被点名的小节原样保留")
+print("  ✓ 返修写崩时保留原稿，不拿空串覆盖")
+
+# ---------- 场景 10：装配自检能抓到 R5 那种事故 ----------
+print(f"\n{'='*70}\n场景 10：装配自检（重复正文 / 放错小节）\n{'='*70}")
+dup = W._assemble_warnings(
+    {"sec2": "<!-- task:t8 section:sec2 -->\n同一份正文",
+     "sec3": "<!-- task:t8 section:sec3 -->\n同一份正文"},
+    {"t8": {"sec2": "同一份正文", "sec3": "同一份正文"}},
+    {"t8": {"covers": ["sec2", "sec3"]}})
+print(f"  命中 {len(dup)} 条：{dup}")
+assert any("逐字相同" in d for d in dup), f"没抓到重复正文：{dup}"
+gap = W._assemble_warnings(
+    {}, {"t8": {"sec2": "甲"}},
+    {"t8": {"covers": ["sec2", "sec3"]}})
+assert any("缺 sec3" in d for d in gap), f"没抓到多节任务缺节：{gap}"
+print("  ✓ 两节正文相同 → 报警")
+print("  ✓ 多节任务只产出一节 → 报警")
+print("  ✓ 报警会一路写进报告的存疑一节")
+
+print(f"\n{'='*70}\n✅ 结构自检全部通过（10 个场景）\n{'='*70}")
