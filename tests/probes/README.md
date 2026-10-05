@@ -59,11 +59,15 @@
 | `probe_agnes_rate.py` | 慢速复测（补齐 JSON/工具/Messages）+ 限流窗口。**结论：免费额度 RPM 10** |
 | `probe_agnes_speed.py` | 用真实任务形态测速度（summarize / 歧义 / 相关性 / 短 JSON）。**3.0 整体更快** |
 | `probe_agnes_rpm_window.py` | 限流窗口语义：按发送时刻还是按在途。**按发送时刻，慢请求不占配额槽位** |
-| `probe_agnes_limit.py` | 二分搜真实限额。8→8、12→9、20→15、30→0，**不是干净形态，未测出** |
+| `probe_agnes_limit.py` | 二分搜真实限额。8→8、12→9、20→15、30→0，**不是干净形态**（后由官方文档解释为两级配额） |
+| `probe_agnes_write_quality.py` | write_plan / write_audit 能力初测。**有严重缺陷，结论不可用**（读错稿子、截断输入、标准答案跨轮混用） |
+| `probe_agnes_audit_quality.py` | 上面那个的修正版。发现真问题：R5 的装配 bug 被 Agnes 独立诊断出来 |
+| `probe_agnes_audit_ab.py` | **最终版**。R6c 稿子 + R6c 规约，4/4 题目先验证再评分，双轨对比 |
 
-> Agnes 探针是递进的：第一版撞限流，后六个分别补 thinking 行为、预算曲线、
-> 限流窗口、真实任务速度、窗口语义、限额搜索。结论汇总在
-> `DESIGN_R7_SECONDARY_MODELS.md`（含一节修订记录，说明最初哪些结论被证伪了）。
+> Agnes 探针共 9 个，其中后 3 个是同一个问题的三次迭代——
+> **每一次的缺陷都是「前提没核对」**（读错文件、截断输入、标准答案跨轮混用）。
+> 保留前两个是因为它们记录了错在哪，删掉会让后来的人重蹈覆辙。
+> 结论汇总在 `DESIGN_R7_SECONDARY_MODELS.md`（含修订节）。
 
 ---
 

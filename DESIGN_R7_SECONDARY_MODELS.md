@@ -67,11 +67,55 @@
 Agnes 适合当重度槽（write 那种单次重、次数少的），
 不适合当轻量槽（relevance 那种次数多的）。
 
-### 还没测的关键问题
+### 能力测完了：write_plan 能接，write_audit 不能
 
-**Agnes 3.0 的能力够不够做 `write_plan` / `write_audit`？**
-这是质量问题不是配额问题，完全没测过。配额再宽、能力不够也没用。
-**这是决定第二套模型能不能真正接 write 的最后一道关。**
+`probe_agnes_audit_ab.py`：R6c 的真实稿子（67,223 字）+ R6c 的规约，
+先逐题验证 4 道「已知问题」确实存在于这份稿子里（4/4 成立），
+再喂给 Agnes 3.0，与 MiniMax 做双轨对比。
+
+| | MiniMax | Agnes 3.0 |
+|---|---:|---:|
+| findings | 10 | **3** |
+| high | 4 | **0** |
+| need_rework | True | **False** |
+| 命中那 4 个已知问题 | 4/4 | **1/4** |
+
+84 秒跑完（reason 7549 / text 1361，finish=stop）——不是失败，是判不出严重性。
+
+**但它有一种不同的价值**：`spec_issue` 写得很准，
+「sec8（t9）仅分到 2 段证据，规约却要求审计十几个维度……这是任务分派与材料量不匹配」
+——跟 MiniMax 在 R6c 那轮说的话几乎一样。
+
+> **混淆因素（必须记下来）**：这个测试用的 `WRITE_AUDIT` 提示词是**给 MiniMax 调的**，
+> 而且其中就包含「材料不够」判据。Agnes 拿到同一份提示词，
+> 它的 `spec_issue` 写得好可能有一部分是提示词教的。
+> 所以这次测的是「Agnes 用我们为 MiniMax 调的提示词」，
+> 不是「Agnes 的能力上限」。
+
+### 逐环节最终结论
+
+| 环节 | 能不能给 Agnes | 原因 |
+|---|---|---|
+| `write_plan` | ✅ 能 | 6 个字段全齐、一次 JSON parse 成功、10 个 sections 完整、101 秒（MiniMax 102 秒持平） |
+| `probe_light` / `probe_outline` / `outline` | ✅ 能 | 同为结构化输出 |
+| `extract` | ✅ 能 | 纯提取 |
+| **`write_audit`** | ❌ **不能当主审** | 产出量差 3 倍、high 一个没有、`need_rework` 判成 False |
+| `relevance` | ❌ 不能 | 577 次 ÷ 8/分钟 = 72 分钟，比 MiniMax 的 28.3 分钟慢 2.5 倍 |
+| `summarize` | ⚠️ 边际 | 26 次配额 3.3 分钟 vs MiniMax 2.2 分钟，略亏 |
+
+**`write_audit` 唯一的去处是「第二意见」**：把它的 `spec_issue` 与 `remaining_issues`
+当作规划侧的诊断输入。接这个要新增一条「规划复盘」路径，成本不低，本轮不做。
+
+### 两档该怎么分：不是按「轻重」，是两个正交维度
+
+实测给出的判据：
+
+- **输出是不是结构化** → 决定能力够不够。`write_plan` 够，`write_audit` 不够
+- **一轮调用多少次** → 决定配额够不够。`relevance` 不够，write 阶段够
+
+用户设想的「轻/重两档」如果按「单次任务轻重」划，边界会划反：
+`relevance` 单次 2.9 秒（很轻）但 577 次撞配额；
+`write_audit` 单次 130 秒（很重）但一轮 4 次几乎不占配额。
 
 ---
 
@@ -154,15 +198,18 @@ Agnes 只能按模型分。
 
 | 档 | 配置 | 用途 | 依据 |
 |---|---|---|---|
-| **A0** | `agnes-3.0-flash` + `enable_thinking: true` | **重判断环节**：`write_plan`、`write_audit`、`probe_light`、`probe_outline`、`outline` | JSON 4/4 是唯一全对配置；这些环节本来就是判断题 |
+| **A0** | `agnes-3.0-flash` + `enable_thinking: true` | **结构化输出且调用次数少**：`write_plan`、`probe_light`、`probe_outline`、`outline` | JSON 4/4 全对是必要条件；`write_plan` 实测结构完整速度持平。**不含 `write_audit`**——它判不出 high |
 | **A1** | `agnes-3.0-flash` + `enable_thinking: false` | 提取/格式化类：`extract` | 快 3–4 倍；JSON 3/4 有 `json_repair` 兜 |
 | **A2** | `agnes-2.5-flash` + `enable_thinking: true` | **不主动使用**。仅 3.0 不可用时的三级备份 | 开思考 JSON 0/4，不可信 |
 
 **每个环节的 `max_output_tokens` 一律 ≥ 4096**，这是第一条坑的直接后果。
 
-**分档的真正维度不是「轻重」，是「总调用数 × 是否受配额约束」**（见第零节）。
-A0 装的是调用少、单次重的环节，A1 装的是调用多的轻量提取。
-`summarize` 26 次虽然轻，但配额上不划算，所以两边都不进。
+**分档的真正维度是两个正交的东西，不是「轻重」**（见第零节的实测）：
+
+- **输出是不是结构化** → 决定能力。`write_plan` 够，`write_audit` 不够
+- **一轮调用多少次** → 决定配额。`relevance` 不够，write 阶段够
+
+`summarize` 26 次虽然轻，但配额上不划算，两边都不进。
 
 ### 逐环节建议（2026-10-06 修订）
 
