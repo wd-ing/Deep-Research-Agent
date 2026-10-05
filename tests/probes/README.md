@@ -53,6 +53,14 @@
 | `searxng_idle.py` | SearXNG 空闲自停三段实测：进程内通过、**进程退出后不生效**（催生了看门狗方案） |
 | `batch_ab.py` | 批量抽取的批次参数 A/B |
 | `replay_r5_dup_section.py` | 用 R5 真实报告复现「sec7 与 sec8 逐字相同」，并验证 R6 修好了 |
+| `probe_agnes.py` | Agnes 两模型基础可用性（第一版，撞限流，后被下面几个取代） |
+| `probe_agnes_thinking.py` | Agnes thinking 参数的精确对比：7 种变体输出全同，**参数不分区只分开关** |
+| `probe_agnes3_think_budget.py` | 3.0/2.5 开思考的预算曲线：**2048 会烧光，4096 起正常** |
+| `probe_agnes_rate.py` | 慢速复测（补齐 JSON/工具/Messages）+ 限流窗口。**结论：免费额度 RPM 10** |
+| `probe_agnes_speed.py` | 用真实任务形态测速度（summarize / 歧义 / 相关性 / 短 JSON）。**3.0 整体更快** |
+
+> Agnes 五个探针是递进的：第一版撞限流，后三版分别补 thinking 行为、预算曲线、
+> 限流窗口、真实任务速度。结论汇总在 `DESIGN_R7_SECONDARY_MODELS.md`。
 
 ---
 
