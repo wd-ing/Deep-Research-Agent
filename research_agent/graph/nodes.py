@@ -631,11 +631,14 @@ def node_write(state: ResearchState) -> dict:
     gate = relevance.gate_segments(segs, kws, state["question"][:80])
     repo.mark_chunk_topic(sid, gate["marks"])
 
-    src_lines = [f"[S{i}] {s.get('title') or s['domain']} | {s['domain']} "
+    # 来源清单也从 src_no 反过来编号。两处各写一遍 enumerate 的话，
+    # 改了一处忘了另一处，报告里每个 [Sn·m] 就会指向清单里下一行的来源——
+    # 而且不会报任何错，只能靠肉眼看引用对不对。
+    src_lines = [f"[S{src_no[s['id']]}] {s.get('title') or s['domain']} | {s['domain']} "
                  f"| {s.get('source_type')} | {s.get('source_date') or '日期未知'}"
                  f" | {s.get('source_nature') or '性质未判'}"
                  f" | 正文 {s.get('char_count') or 0} 字"
-                 for i, s in enumerate(all_sources, 1)]
+                 for s in all_sources]
 
     keep = state.get("recalled_approved") or []
     earlier = [{"summary": c.get("summary"), "date": c.get("source_date")}

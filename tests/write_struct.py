@@ -497,4 +497,89 @@ print(f"  第 0 轮 targets: {hist[0]['targets'] or '（无）'}")
 for h in hist[1:]:
     print(f"  第 {h['round']} 轮 rework_effective: {h['rework_effective']}（这一轮才有意义）")
 
-print(f"\n{'='*70}\n✅ 结构自检全部通过（11 个场景）\n{'='*70}")
+# ---------- 场景 12：子 agent 自造的 `##` 由装配降级 ----------
+print(f"\n{'='*70}\n场景 12：自造标题的降级（提示词管不住，用程序）\n{'='*70}")
+RAW = ("## 子 agent 自造的标题\n正文一。\n\n"
+       "### 模型自己写的三级标题\n正文二。\n\n"
+       "#### 更深的四级\n正文三。\n"
+       "## 另一个自造标题\n正文四。\n"
+       "这不是标题行：## 出现在句子里 https://x.com/a##b\n")
+got = W._demote_headings(RAW)
+lines = got.splitlines()
+print("  降级后：")
+for line in lines:
+    if line.startswith("#") or line.startswith("这不是"):
+        print(f"    {line[:56]}")
+
+
+def heads(text: str, n: int) -> list[str]:
+    """取正好 n 级井号的行首标题。"""
+    pat = re.compile(r"^" + "#" * n + r"(?!#)\s+(.*)$")
+    return [m.group(1) for m in map(pat.match, text.splitlines()) if m]
+
+
+assert heads(got, 2) == [], f"`##` 没被降级：{heads(got, 2)}"
+assert heads(got, 3) == ["子 agent 自造的标题", "模型自己写的三级标题", "另一个自造标题"], \
+    heads(got, 3)
+assert heads(got, 4) == ["更深的四级"], f"更深的层级不该被拉平：{heads(got, 4)}"
+assert "这不是标题行：## 出现在句子里 https://x.com/a##b" in lines, "非行首的 `##` 不该动"
+print("  ✓ `##` 降成 `###`")
+print("  ✓ 本来就是 `###` / `####` 的原样保留，没被拉平")
+print("  ✓ 句子里出现的 `##` 不动（只改行首）")
+print(f"  ✓ 上报计数：原文 {W._count_demoted(RAW)} 个待降级（`###` 不计）")
+assert W._count_demoted(RAW) == 2, W._count_demoted(RAW)
+
+# 端到端看一眼：装配后报告里不该再有子 agent 的 `##`
+plan12 = {"tasks": [
+    {"id": "t1", "covers": ["sec1"], "mandate": "定义", "segments": ["S1·1"]},
+],
+    "thesis": "T", "glossary": [{"canonical": "X"}], "units": ["u"],
+    "cautions": ["c"], "spec_uncertainty": "u", "sections": []}
+f12 = Fake(plan12, {"write_section:t1": "## 子 agent 又写了标题\n[S1·1] 正文。\n"}, [audit_ok])
+out12 = run(f12, "装配把自造标题降级")
+md12 = out12["report_markdown"]
+head12 = [m.group().strip()[3:] for m in re.finditer(r"^## (?!#).*$", md12, re.M)]
+print(f"  报告二级标题 {len(head12)} 个：{head12}")
+outline_titles = [s["title"] for s in OUTLINE]
+assert set(head12) == set(outline_titles) | {"存疑与未完成"}, \
+    f"二级标题只该有大纲小节 + 存疑，实际 {head12}"
+assert "子 agent 又写了标题" not in head12, "子 agent 的 `##` 没被降下去"
+assert "### 子 agent 又写了标题" in md12, "降级后的标题应该还在"
+ev12 = [e for e in out12["events"] if e.get("kind") == "write_assemble"]
+print(f"  装配事件记录降级数：{ev12[0].get('headings_demoted')}")
+assert ev12[0].get("headings_demoted") == 1
+print("  ✓ 降级数量进了事件，改了什么看得见")
+
+# ---------- 场景 13：规划失败时必须说人话 ----------
+print(f"\n{'='*70}\n场景 13：规划失败的降级横幅\n{'='*70}")
+PLAN_ERR = ("MiniMax 500: {\"type\":\"error\",\"error\":{\"type\":\"api_error\","
+            "\"message\":\"output new_sensitive (1027)\"}}")
+out13 = W.node_final({
+    "question": "固态电池的产业化进展", "spec": {}, "assembled": "",
+    "audit": {}, "violations": {}, "failed": [], "earlier": [],
+    "uncovered_tasks": [], "assemble_warnings": [],
+    "plan_failed": PLAN_ERR, "src_lines": ["[S1] 某来源 | a.com"],
+})
+md13 = out13["report_markdown"]
+banner_at = md13.find("本次研究没有产出正文")
+thesis_at = md13.find("本文主张")
+print(f"  横幅位置 {banner_at}，主张位置 {thesis_at}")
+assert banner_at != -1, "规划失败却没有横幅"
+assert banner_at < md13.find("## 存疑与未完成"), "横幅必须在存疑一节之前"
+assert "没有产出正文" in md13 and PLAN_ERR[:30] in md13, \
+    "横幅里必须写明失败原因，不能只说「失败了」"
+assert "重新运行" in md13, "横幅要给出下一步"
+print("  ✓ 标题下面立刻是失败横幅，不是空白")
+print("  ✓ 横幅里有原始错误原因")
+print("  ✓ 横幅在存疑一节之前（末尾才提就等于没提）")
+
+# 正常路径不能被这条横幅污染
+out_ok = W.node_final({
+    "question": "Q", "spec": {"thesis": "T"}, "assembled": "## A\n正文",
+    "audit": {}, "violations": {}, "failed": [], "earlier": [],
+    "uncovered_tasks": [], "assemble_warnings": [], "src_lines": []})
+assert "没有产出正文" not in out_ok["report_markdown"], "正常报告不该有失败横幅"
+assert "本文主张" in out_ok["report_markdown"]
+print("  ✓ 正常路径不受影响")
+
+print(f"\n{'='*70}\n✅ 结构自检全部通过（13 个场景）\n{'='*70}")

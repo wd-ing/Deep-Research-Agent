@@ -478,12 +478,14 @@ def node_assemble(state: WriteState) -> dict:
     blocks: list[str] = []
     bodies: dict[str, str] = {}
     written = 0
+    demoted = 0
     for sec in state.get("outline") or []:
         sid = sec.get("id")
         chunks = []
         for tid in task_of_section.get(sid, []):
             body = _section_body(drafts.get(tid), sid)
             if body:
+                demoted += _count_demoted(_raw_body(drafts.get(tid), sid))
                 mark = f"<!-- task:{tid} section:{sid} -->"
                 chunks.append(f"{mark}\n{body}")
         if chunks:
@@ -510,17 +512,61 @@ def node_assemble(state: WriteState) -> dict:
         "sections_written": written,
         "uncovered_tasks": missing,
         "assemble_warnings": warnings,
+        "headings_demoted": demoted,
         "events": [{"kind": "write_assemble", "sections": written,
                     "tasks": len(drafts), "failed": len(failed),
-                    "warnings": len(warnings)}],
+                    "warnings": len(warnings), "headings_demoted": demoted}],
     }
 
 
-def _section_body(draft: Any, sid: str) -> str:
-    """取某个任务在某一节的正文。旧格式（裸字符串）兜底兼容。"""
+def _count_demoted(raw: Any) -> int:
+    """数原文里有多少个 `##`（正好两级）标题会被装配降级。
+
+    只用于上报：改了正文就得让人看得见改了多少，
+    否则「模型写错了格式、程序替它擦屁股」这件事会静悄悄地消失。
+    注意只数 `##` 不数 `###`——模型自己写 `###` 是允许的，不算程序动过手。
+    """
+    if isinstance(raw, dict):
+        raw = "\n".join(v for v in raw.values() if isinstance(v, str))
+    if not isinstance(raw, str):
+        return 0
+    return sum(1 for line in raw.splitlines() if re.match(r"^##(?!#)\s+", line))
+
+
+def _raw_body(draft: Any, sid: str) -> str:
+    """未降级的原始正文。只给计数用。"""
     if isinstance(draft, dict):
         return (draft.get(sid) or "").strip()
     return (draft or "").strip()
+
+
+def _section_body(draft: Any, sid: str) -> str:
+    """取某个任务在某一节的正文（标题已降级）。旧格式（裸字符串）兜底兼容。"""
+    return _demote_headings(_raw_body(draft, sid))
+
+
+def _demote_headings(body: str) -> str:
+    """把子 agent 自造的 `##` 降成 `###`。
+
+    为什么用程序而不用提示词：`WRITE_SECTION` 里明写了「不要写 `##`」，
+    实测两轮分别造出 13 个和 16 个 `##`，**一次都没管住**。
+    而同类问题（自创引用写法、越界引用）恰恰是程序抓得又快又准的。
+
+    为什么降级不损失什么：这些标题本来就在节标题之下，和节标题平级只会
+    把目录层级弄乱。降成 `###` 之后它们还是原来的意思，只是回到了正确层级。
+    """
+    if "##" not in body:
+        return body
+    # 只降级**正好两级**的行首 `##`：
+    #   · `###` 及更深是模型正当使用的层次，不该动
+    #   · 句子里、URL 里、代码块里的 `##` 不该动
+    out = []
+    for line in body.splitlines():
+        m = re.match(r"^(##)(?!#)(\s+)", line)
+        if m:
+            line = "###" + m.group(2) + line[m.end():]
+        out.append(line)
+    return "\n".join(out)
 
 
 def _assemble_warnings(bodies: dict, drafts: dict, by_task: dict) -> list[str]:
@@ -790,14 +836,29 @@ def node_final(state: WriteState) -> dict:
     earlier = state.get("earlier") or []
     uncovered = state.get("uncovered_tasks") or []
     asm_warn = state.get("assemble_warnings") or []
+    plan_failed = state.get("plan_failed")
 
     parts = [f"# {state.get('question','')}\n"]
+    if plan_failed:
+        # 规划失败时正文是空的，只有标题和来源清单。
+        # 实测过一次 MiniMax 内容过滤（output new_sensitive）就走到这里，
+        # 产出 4,060 字「看起来像报告」的东西——只有一句标题和一串来源，
+        # 读者完全不可能看出整场崩了。失败横幅必须放在最前面，
+        # 放在末尾的「存疑」一节里等于没有。
+        parts.append(
+            "\n> # ⚠️ 本次研究没有产出正文\n"
+            f">\n"
+            f"> **主 agent 没能制定写作规约**，原因：{str(plan_failed)[:300]}\n"
+            f">\n"
+            f"> 下面只有来源清单。重新运行，或换个问法、换个模型再试。\n")
     if spec.get("thesis"):
         parts.append(f"\n> **本文主张**：{spec['thesis']}\n")
     parts.append("\n" + (state.get("assembled") or "") + "\n")
 
     # 存疑与未完成：静默降级会让人误以为报告是完整的
     doubt = list(audit.get("remaining_issues") or [])
+    if plan_failed:
+        doubt.append(f"写作规约环节失败：{str(plan_failed)[:300]}")
     if spec.get("spec_uncertainty"):
         # 主 agent 自己声明的规约存疑必须让读者看见，
         # 不能只躺在事件日志和 DB 里——这一条存在的意义就是被看见。

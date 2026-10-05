@@ -80,12 +80,24 @@ def load(repo) -> tuple:
         seg_no[c["source_id"]] = n
         c["ref"] = f"S{src_no[c['source_id']]}·{n}"
 
-    src_lines = [f"[S{i}] {s.get('title') or s['domain']} | {s['domain']} "
+    # 来源清单和段号必须用**同一个**编号。原先这里写成 enumerate(sources) 从 0 起，
+    # 而 src_no 是 enumerate(sources, 1) 从 1 起——两者差一格，于是报告里
+    # 每个 [Sn·m] 都指向了清单里下一行的那个来源。543 处引用全指错，没人发现。
+    # 现在从 src_no 反过来生成清单，编号不可能再分叉。
+    src_lines = [f"[S{src_no[s['id']]}] {s.get('title') or s['domain']} | {s['domain']} "
                  f"| {s.get('source_type')} | {s.get('source_date') or '日期未知'}"
                  f" | {s.get('source_nature') or '性质未判'}"
                  f" | 正文 {s.get('char_count') or 0} 字"
-                 for i, s in enumerate(sources)]
+                 for s in sources]
     on_topic = [c for c in segs if c.get("on_topic")]
+
+    # 编号一致性自检。段号里的来源部分和来源清单必须同源——
+    # 这两者一旦差一格，报告里每个引用都会指向下一个来源，而且**不会报任何错**。
+    listed = {int(x) for x in re.findall(r"^\[S(\d+)\]", "\n".join(src_lines), re.M)}
+    used = {int(c["ref"].split("·")[0][1:]) for c in segs}
+    assert listed == used, (
+        f"来源编号与段号不是同一套：清单 {sorted(listed)[:4]}… "
+        f"段号用到 {sorted(used)[:4]}…")
     return sess["question"], outline, signals, src_lines, segs, on_topic
 
 

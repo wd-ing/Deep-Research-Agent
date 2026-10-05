@@ -33,7 +33,14 @@
 
 defaults:
   temperature: 0.0
-  timeout_s: 180
+  # 180 秒不够。实测（2026-10-05，R6 三轮真实数据）：
+  #   write_audit 平均 132 秒、最长 170 秒 —— 已经贴着天花板
+  #   write_plan  平均 100 秒
+  # 贴天花板意味着：需要 185 秒的调用被砍在 180 秒，然后**整次重发**。
+  # 表面上「重试吸收抖动」，实际是把超时变成重发，白花一遍钱和时间。
+  # 断连全部集中在这两个 effort:high 的阶段，write_section/write_revise
+  # （effort:low，均 17–26 秒）几乎不超时——这正说明它是超时不是抖动。
+  timeout_s: 300
 
 stages:
   # ---- 探针：按任务难度分三档 ----
@@ -180,7 +187,12 @@ stages:
   # 数据和 t2 的结论打架"）要同时持有全文所有小节 + 规约才能发现，
   # 而机械项（段号格式、越界引用）程序已 100% 拦下，不需要模型。
   # 降到 low 只剩一行：thinking_effort: low。
-  # 判定依据见 DESIGN_R6_REVIEW.md 2.2——R6 跑完一轮新的端到端后再定。
+  #
+  # 这个环节同时是**最重**的：实测 6 次调用 / 286k 输入 token / 均 132 秒，
+  # 思考链 29k–33k 字符，两次触发思考占比护栏。它也是断连唯一集中的地方
+  # （timeout 提到 300 之后是否还断，要看下一轮）。
+  #
+  # 判定依据见 DESIGN_R6_REVIEW.md 2.2。
   write_audit:
     provider: minimax
     model: MiniMax-M3.1-Flash-Preview
