@@ -160,7 +160,7 @@
 | ✅ | **不碰 Tavily 的 research 端点** | 4 到 250 credit/次，单次吃掉 4 到 62 场研究预算，且编排不可控 |
 | ⚠️ | Tavily usage 接口待复查 | 已发 6 次搜索但 usage 仍返回 0，可能是延迟或 dev key 记账方式不同 |
 | ✅ | SearXNG 本机裸装，官方源码 venv | 不用 Docker/Colima，因为容器 VM 空载就占 1 到 2GB，与「关掉就没了」冲突 |
-| ✅ | SearXNG 走 requirements.txt 加 PYTHONPATH，不��� -e | setuptools 构建时会循环 import searx 依赖导致失败 |
+| ✅ | SearXNG 走 requirements.txt 加 PYTHONPATH，不用 -e | setuptools 构建时会循环 import searx 依赖导致失败 |
 | ✅ | 依赖先于 searx 装 | pyyaml 与 msgspec 必须在装 searx 之前就位 |
 | 状态 | 条目 | 说明 |
 | --- | --- | --- |
@@ -857,7 +857,7 @@ tool_result**，少一个就 400 `tool call and result not match`。
 | **P + assistant + user（变长，自动模式）** | **9,351** |
 | 同上，P 上带显式 cache_control | 9,373 |
 
-**缓���能沿只追加的对话往后延，自动模式就够，不需要显式断点。**
+**缓存能沿只追加的对话往后延，自动模式就够，不需要显式断点。**
 
 前两版实验之所以测不出来，都是构造问题，不是机制问题：
   1. 第一版手写 `tool_use_id: "x"` 的 tool_result，端点校验失败报 400

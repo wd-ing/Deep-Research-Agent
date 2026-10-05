@@ -37,7 +37,7 @@ import httpx
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# 所有环节都要走 guard。曾��只覆盖抽取类环节，结果 write 阶段
+# 所有环节都要走 guard。曾经只覆盖抽取类环节，结果 write 阶段
 # 配了 retry_on_empty 却不生效——思考 16,928 字符耗尽预算后直接崩掉。
 NEEDS_GUARD = {
     "probe_light", "probe_outline", "probe_degraded", "outline", "extract",
