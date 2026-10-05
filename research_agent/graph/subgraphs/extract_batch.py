@@ -1,0 +1,243 @@
+"""抽取子图：把本轮所有来源的正文批量压成结构化断言。
+
+存在的理由是结构性的，不是优化：
+  1. 逐源调用会让「一个源一次 LLM」的次数等于来源数，成本失控
+  2. 批量调用后，claims 与 source_nature 可以在**同一次**调用里产出，
+     不额外花钱
+  3. 批次之间可并发，失败只影响一批
+  4. 子图有自己的状态，主循环看不到「批」的细节
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+from langgraph.graph import END, START, StateGraph
+
+from ...llm.provider import EmptyOutput, LLMClient
+from .. import prompts
+from ..state import ExtractBatchState
+
+# 批次参数：按字符预算切，不按条数切。
+# 上一版按「每批 4 条 + 32,000 字符」切，遇到 arxiv 那种 7 万字长文时
+# 会各自成批，短文被挤散——实测 17 次调用、输入 127,023 token，
+# 比逐源调用的 30 次、62,762 token 反而更贵。改为纯预算驱动。
+#
+# 曾试过给长文做「头尾采样」压到 8,000 字符，实测断言回收率只有 55%，
+# 丢的全是实验章节里的数值断言（阈值、准确率、成本对比）。文档假设错了：
+# 论文的信息密度不是头尾密中间疏，而是摘要、方法、实验、结论都重要。
+# 现在长文全量进，只保留下限过滤和一道防病态输入的硬上限。
+BATCH_BUDGET_CHARS = 60000     # 单批正文字符预算
+BATCH_MAX_SOURCES = 8           # 单批最多几个源，防止碎批
+PROMPT_OVERHEAD = 1800          # 提示词骨架开销，按每批重复计入
+MIN_SOURCE_CHARS = 800          # 正文短于此的源不进抽取（实测 <3千字档平均只产出 2.2 段）
+HARD_CAP_CHARS = 150000         # 防病态输入的硬上限，超过则截断（正常语料不会触发）
+SUMMARY_BUDGET_CHARS = 24000    # 一次概括调用的段落正文字符预算
+SUMMARY_BATCH = 12            # 一次最多概括几段（与 summarize 阶段 batch_size 对齐）
+
+CONCURRENCY = 5
+
+LLM = LLMClient()
+
+
+def _clip(text: str, cap: int = HARD_CAP_CHARS) -> str:
+    """只做病态输入保护。正常语料不触发，不做主动压缩。"""
+    if not text or len(text) <= cap:
+        return text or ""
+    elided = len(text) - cap
+    return (text[: int(cap * 0.7)]
+            + f"\n\n【中间省略 {elided} 字符：超长输入保护】\n\n"
+            + text[-int(cap * 0.3):])
+
+
+NATURE_BATCH = 8            # 一次判几个来源
+NATURE_HEAD_CHARS = 2500    # 每个来源给判定看的开头字数
+
+
+def _make_nature_items(items: list[dict]) -> list[dict]:
+    """构造来源性质判定的输入。
+
+    **不再需要整篇正文。** 判定依据是「第一人称我们发布」「有 abstract 和
+    methodology」「通篇转述无一手链接」「署名记者」这些**出处信号**，它们
+    集中在标题、开头和署名处。所以只给：
+      标题 + URL + 域名 + 开头 2500 字 + 各段概括
+    段落概括反而更有用——它直接告诉你这篇在讲什么、是不是罗列。
+    """
+    out = []
+    for i, it in enumerate(items):
+        segs = it.get("segments") or []
+        head = (it.get("text") or "")[:NATURE_HEAD_CHARS]
+        out.append({
+            "i": i,
+            "source_id": it["source_id"],
+            "title": it.get("title") or "",
+            "url": it.get("url") or "",
+            "head": head,
+            "summaries": [s.get("text") for s in segs][:12] if segs else [],
+        })
+    return out
+
+
+def _render_nature(batch: list[dict]) -> str:
+    parts = []
+    for it in batch:
+        summ = "\n".join(f"  - {s}" for s in it["summaries"] if s)
+        parts.append(
+            f"===== 来源 {it['i']} =====\n"
+            f"标题：{it['title']}\n"
+            f"URL：{it['url']}\n"
+            f"各段概括：\n{summ or '（无）'}\n"
+            f"开头：\n{it['head']}"
+        )
+    return "\n\n".join(parts)
+
+
+def _run_nature_batch(batch: list[dict]) -> list[dict]:
+    """一次调用判一批来源的性质。失败抛异常交给上层重试。"""
+    blob = _render_nature(batch)
+    data = LLM.complete_json("extract",
+                             f"以下是 {len(batch)} 个来源的元信息与开头：\n\n{blob}",
+                             system=prompts.SOURCE_NATURE)
+    out = []
+    for it in (data.get("sources") or []):
+        i = it.get("source_index")
+        if not isinstance(i, int) or not (0 <= i < len(batch)):
+            continue          # 模型给错下标就跳过，不猜
+        src = batch[i]
+        out.append({
+            "kind": "claims",              # 保持同一形状，node_extract 不用改
+            "source_id": src["source_id"],
+            "title": src.get("title", ""),
+            "url": src.get("url", ""),
+            "claims": [],
+            "source_nature": it.get("source_nature", "unknown"),
+            "nature_reason": it.get("nature_reason", ""),
+        })
+    return out
+
+
+def make_batches(items: list[dict]) -> list[list[dict]]:
+    """按条数切批——来源性质判定不再吃整篇正文，不需要字符预算了。"""
+    return [items[i:i + NATURE_BATCH] for i in range(0, len(items), NATURE_BATCH)]
+
+
+def _node_extract(state: ExtractBatchState) -> dict:
+    batches = state.get("batches") or []
+    if not batches:
+        return {"results": [], "failed_batches": 0, "events": []}
+
+    async def run():
+        sem = asyncio.Semaphore(CONCURRENCY)
+
+        async def one(b):
+            async with sem:
+                return await asyncio.to_thread(_run_nature_batch, b)
+
+        return await asyncio.gather(*(one(b) for b in batches),
+                                    return_exceptions=True)
+
+    raw = asyncio.run(run())
+
+    results, failed = [], 0
+    for i, r in enumerate(raw):
+        if isinstance(r, Exception):
+            failed += 1
+            results.append({"kind": "extract_error", "batch": i,
+                            "error": f"{type(r).__name__}: {r}"[:200]})
+        else:
+            results.extend(r)
+
+    return {
+        "results": results,
+        "failed_batches": failed,
+        "events": [{
+            "kind": "extract_batch", "batches": len(batches),
+            "sources": sum(len(b) for b in batches),
+            "results": len([r for r in results if r.get("kind") == "claims"]),
+            "failed": failed,
+        }],
+    }
+
+
+def build_extract_graph():
+    g = StateGraph(ExtractBatchState)
+    g.add_node("extract", _node_extract)
+    g.add_edge(START, "extract")
+    g.add_edge("extract", END)
+    return g
+
+
+def extract_all(items: list[dict]) -> dict:
+    """批量抽取入口。
+
+    items: 每项一个来源，形如
+      {"source_id","title","url","published","text",           # 抽取断言用整篇
+       "segments": [{"chunk_id","text","heading_path"}, ...]}  # 概括用段落
+    返回 {"results": [...], "summaries": {chunk_id: str},
+          "failed_batches": int, "events": [...]}
+    """
+    if not items:
+        return {"results": [], "summaries": {}, "failed_batches": 0, "events": []}
+    batches = make_batches(_make_nature_items(items))
+    g = build_extract_graph().compile()
+    out = g.invoke({"batches": batches})
+    out.update(summarize_segments([s for it in items for s in (it.get("segments") or [])]))
+    return out
+def summarize_segments(items: list[dict]) -> dict:
+    """为每个段落写一句话概括。
+
+    **从 node_finalize 搬到这里。** 原先它在报告写完之后才跑，产出只进
+    跨会话召回的检索索引，写作阶段根本用不上——于是写作只能看抽取出来的
+    原子断言，而断言是从整篇里挑出来的一句，父级是几万字的文章，
+    没法展开回去看上下文。
+
+    段落是写作取材的最小单位：约 700 token，一个完整论述单元，
+    概括完随时能展开回原文。
+    """
+    segs = [{"chunk_id": it["chunk_id"], "text": it.get("text") or "",
+             "heading": it.get("heading_path") or ""}
+            for it in items if (it.get("text") or "").strip()]
+    if not segs:
+        return {"summaries": {}, "failed": 0, "events": []}
+
+    batches: list[list[dict]] = []
+    cur: list[dict] = []
+    cur_chars = 0
+    for s in segs:
+        n = len(s["text"])
+        if cur and (len(cur) >= SUMMARY_BATCH or cur_chars + n > SUMMARY_BUDGET_CHARS):
+            batches.append(cur)
+            cur, cur_chars = [], 0
+        cur.append(s)
+        cur_chars += n
+    if cur:
+        batches.append(cur)
+
+    out: dict[str, str] = {}
+    failed = 0
+    for bi, batch in enumerate(batches):
+        blob = "\n\n".join(
+            f"[{j}] {s['heading']}\n{s['text'][:3000]}" for j, s in enumerate(batch))
+        try:
+            data = LLM.complete_json(
+                "summarize",
+                f"以下是 {len(batch)} 个报告段落，请为每段写一句话概括：\n\n{blob}",
+                system=prompts.SUMMARIZE,
+            )
+        except Exception as e:
+            failed += 1
+            print(f"⚠️  段落概括批次 {bi} 失败: {e}", flush=True)
+            continue
+        for it in (data.get("summaries") or []):
+            idx = it.get("index")
+            # 模型给错下标就跳过，不猜
+            if isinstance(idx, int) and 0 <= idx < len(batch):
+                txt = (it.get("summary") or "").strip()
+                if txt:
+                    out[batch[idx]["chunk_id"]] = txt
+
+    return {"summaries": out, "failed": failed,
+            "events": [{"kind": "segment_summary", "segments": len(segs),
+                        "batches": len(batches), "done": len(out),
+                        "failed": failed}]}

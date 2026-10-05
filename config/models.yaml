@@ -1,0 +1,248 @@
+# 各环节的模型配置
+# 换模型只改这里，不动代码。
+#
+# ── 模型策略（2026-10-04 定）────────────────────────────────────────
+# 全部走 MiniMax，分三档对应三种任务难度：
+#
+#   T0  MiniMax-M3               不发 thinking、不发 effort → 官方文档：省略即关闭思考
+#   T1  M3.1-Flash-Preview        output_config.effort: low
+#   T2  M3.1-Flash-Preview        output_config.effort: high
+#
+# ⚠️ 不要再用 thinking.budget_tokens
+# 那是 Anthropic 扩展思考的字段，MiniMax 不认。它的 thinking.type 合法值只有
+# adaptive 与 disabled，没有 enabled。那个字段不报 400、只是被静默忽略，于是
+# 「0 / 1024 / 4096 / 不传」四组设置实际是同一组（都等于省略 → adaptive +
+# 默认 effort=max），思考长度清一色 ~35,000 字符。曾据此得出「思考无法控制、
+# 只能换模型」——那是测错了参数名。真正的旋钮是 output_config.effort。
+#
+# T2 档之所以给足预算：effort 会连带把思考拉长（实测 high 档思考 6,743 字符、
+# low 档 575 字符），思考与正文共用 max_tokens，预算不够正文就是 0 字符。
+#
+# ── 环节切分（2026-10-04）──────────────────────────────────────────
+# 原来四个阶段各自承担了性质不同的任务，其中三处耦合不合理，已拆开：
+#   · 框架生成曾挂在 write 上（温度 0.3 的散文配置去做结构规划）
+#   · 相关性闸门与缺口评估共用 assess，前者是二元判断却挂着思考档位
+#   · 证据分派与缺口评估共用 assess
+#   · 探针的「快速定性」与「读两万字做综合」共用一档
+#
+# ── 三道防线（沿用，含义已变）──────────────────────────────────────
+# 空返回是真实存在的失败模式，所以每个环节都要配 guard：
+#   1. 给足输出预算
+#   2. 监控思考占比，超阈值告警
+#   3. 空输出自动重试并翻倍预算
+
+defaults:
+  temperature: 0.0
+  timeout_s: 180
+
+stages:
+  # ---- 探针：按任务难度分三档 ----
+
+  # 判歧义 + 判信息深度。30 条标题摘要做快速定性判断，
+  # 歧义与分歧的区分需要推理，但不该长考。
+  probe_light:
+    provider: minimax
+    model: MiniMax-M3.1-Flash-Preview
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    thinking_effort: low
+    max_output_tokens: 8192
+    temperature: 0.0
+    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 2, max_output_tokens: 16384 }
+
+  # 读 2-3 篇正文归纳领域轮廓。整场研究的地基——大纲的 grounded_in
+  # 全部指回这里，所以给最高档。
+  probe_outline:
+    provider: minimax
+    model: MiniMax-M3.1-Flash-Preview
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    thinking_effort: high
+    max_output_tokens: 16384
+    temperature: 0.0
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
+
+  # 降级说明。只在探针判定稀薄时触发，写一句话，纯措辞工作。
+  probe_degraded:
+    provider: minimax
+    model: MiniMax-M3
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    max_output_tokens: 4096
+    temperature: 0.0
+    guard: { max_reasoning_ratio: 0.5, retry_on_empty: 1, max_output_tokens: 8192 }
+
+  # ---- 框架 ----
+
+  # 研究框架生成。原先挂在 write 上，用了 0.3 的散文温度，
+  # 但框架是结构规划任务，输出是 JSON 而不是文章。
+  outline:
+    provider: minimax
+    model: MiniMax-M3.1-Flash-Preview
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    thinking_effort: high
+    max_output_tokens: 16384
+    temperature: 0.0
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
+
+  # ---- 证据生产 ----
+
+  # 批量抽取断言 + 判来源性质。报告的每一句事实都来自这里，
+  # 量大所以用 T1 而不是 T2：抽取本质是仔细读，不是综合。
+  extract:
+    provider: minimax
+    model: MiniMax-M3.1-Flash-Preview
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    thinking_effort: low
+    max_output_tokens: 8192
+    temperature: 0.0
+    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 2, max_output_tokens: 16384 }
+
+  # 相关性闸门。每个来源判一次，但是二元判断，不需要思考。
+  # 上一轮实测挂在 assess 上时触发过「reasoning 102/131 超阈值 60%」的告警，
+  # 那个信号就是混用的证据。
+  relevance:
+    provider: minimax
+    model: MiniMax-M3
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    max_output_tokens: 4096
+    temperature: 0.0
+    guard: { max_reasoning_ratio: 0.5, retry_on_empty: 1, max_output_tokens: 8192 }
+
+  # 缺口评估。决定还要不要继续搜、框架要不要改，驱动整个循环。
+  assess:
+    provider: minimax
+    model: MiniMax-M3.1-Flash-Preview
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    thinking_effort: low
+    max_output_tokens: 8192
+    temperature: 0.0
+    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 16384 }
+
+  # 证据分派。把断言映射到小节，直接决定报告结构，不能用 T0。
+  assign:
+    provider: minimax
+    model: MiniMax-M3.1-Flash-Preview
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    thinking_effort: low
+    max_output_tokens: 8192
+    temperature: 0.0
+    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 16384 }
+
+  # 段落概括。批量 12 段，每段一句话，机械生成。
+  summarize:
+    provider: minimax
+    model: MiniMax-M3
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    max_output_tokens: 8192
+    temperature: 0.0
+    batch_size: 12
+    guard: { max_reasoning_ratio: 0.5, retry_on_empty: 2, max_output_tokens: 16384 }
+
+  # ---- 占位环节（技术债，代码尚未调用）----
+  # 去重：合并内容相同或高度重复的断言。当前抽取阶段没有去重，
+  # 同一事实可能由多个来源重复进入报告。后期补齐。
+  dedupe:
+    provider: minimax
+    model: MiniMax-M3.1-Flash-Preview
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    thinking_effort: low
+    max_output_tokens: 4096
+    temperature: 0.0
+    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 8192 }
+
+  # ---- 写报告 ----
+  # 四个阶段而不是两个：写环节现在有主 agent 与子 agent 两种角色、两次不同
+  # 的调用（初稿 / 审查、写作 / 返修）。拆开是为了测试期能按阶段归因成本。
+  # 档位只有两档，符合三档策略：主 agent high、子 agent low。
+
+  # 主 agent 规划：产出写作规约 + 任务列表。看的是断言摘要不是全文。
+  write_plan:
+    provider: minimax
+    model: MiniMax-M3.1-Flash-Preview
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    thinking_effort: high
+    max_output_tokens: 16384
+    temperature: 0.0
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
+
+  # 主 agent 审查：读全稿（12 节约 3 万字），判断是否返修、返修是否有效。
+  write_audit:
+    provider: minimax
+    model: MiniMax-M3.1-Flash-Preview
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    thinking_effort: high
+    max_output_tokens: 16384
+    temperature: 0.0
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
+
+  # 子 agent 写一个任务。N 次调用，system prompt 与规约前缀固定以命中缓存。
+  write_section:
+    provider: minimax
+    model: MiniMax-M3.1-Flash-Preview
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    thinking_effort: low
+    max_output_tokens: 16384
+    temperature: 0.2
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
+
+  # 子 agent 定点返修。同角色，温度略低以免它把没问题的部分也重写。
+  write_revise:
+    provider: minimax
+    model: MiniMax-M3.1-Flash-Preview
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    thinking_effort: low
+    max_output_tokens: 16384
+    temperature: 0.1
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
+
+# 候选池与历史结论
+alternatives:
+  - id: MiniMax-M3
+    status: adopted
+    role: "T0 档：不需要思考的环节（降级说明、相关性闸门、段落概括）"
+    note: "省略 thinking 字段即关闭思考（官方文档表格）。实测零思考、正文稳定"
+
+  - id: MiniMax-M3.1-Flash-Preview
+    status: adopted
+    role: "T1 / T2 档：需要判断力的全部环节"
+    note: |
+      预检实测（tests/preflight_models.py，8 个环节用真实提示词跑）：
+      T1 low 档思考 337 到 828 字符、正文稳定；T2 high 档思考 6,743 字符。
+      8/8 环节的 JSON 均可解析（走 _parse_json 兜底），字段齐全。
+      Anthropic 端点没有 response_format，严格 JSON 靠提示词约束。
+
+  - id: MiniMax-M2.7-highspeed
+    status: rejected
+    reason: "名为高速实则最慢：简单请求 15-21 秒，思考 2488-3740 字符。抽取环节不可用"
+
+  - id: space-bunny-free
+    status: retired
+    reason: |
+      2026-10-04 起退出活跃配置。此前承担抽取、去重、缺口评估、概括四类共 21 次调用，
+      占单场研究 80% 的 token，但它是免费模型、没有服务保证，且 MiniMax 三档在
+      预检里全部通过，没有继续保留的理由。
+      ⬜ 技术债：作为故障降级通道的方案待定，需要第二组模型。
+
+  - id: muse-spark-1.3-contributor-free
+    status: blocked
+    reason: "OpenCode 免费层仅允许客户端内部调用，直连返回 403 FreeTierError"
+
+  - id: longcat-2.5-preview-free
+    status: blocked
+    reason: "同上"
+
+  - id: ling-3.1-flash-free
+    status: blocked
+    reason: "同上"

@@ -1,0 +1,67 @@
+# 检索层配置
+#
+# 分工（P5 确认）：
+#   Tavily   → 英文检索主力
+#   SearXNG  → 中文检索主力，不消耗 Tavily 额度
+# 两者都实现 SearchProvider 接口，可随时替换。
+
+searxng:
+  base_url: "http://127.0.0.1:8888"
+  # 惰性启停脚本路径，主程序发起研究前调用
+  script: ".searxng/searxng.sh"
+  timeout_s: 35
+  # 搜索后延迟多久自动关闭，秒
+  idle_shutdown_s: 60
+  engines: ["sogou", "360search", "quark", "bing"]
+  language_zh: "zh-CN"
+  language_en: "en"
+
+tavily:
+  enabled: true
+  api_key_env: "TAVILY_API_KEY"
+  base_url: "https://api.tavily.com"
+  # basic=1 credit, advanced=2 credit
+  search_depth: "basic"
+  max_results: 8
+  # advanced 模式更适合做内容提取，留着备用
+  advanced_max_results: 5
+  timeout_s: 30
+  # 明确禁用：research 端点自带编排且 4-250 credit/次，与我们的循环冲突
+  allow_research_endpoint: false
+
+# 抓取礼貌性（P7 确认）
+fetch:
+  per_domain_interval_s: 1.0
+  max_concurrency: 8
+  timeout_s: 20
+  cache_ttl_days: 7
+  # 撞到 403/429 自动跳过，绝不重试、绝不换 IP
+  skip_on_block: [403, 429, 503]
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+
+# 循环硬上限（P6 确认）
+loop:
+  max_rounds: 8
+  max_urls: 50
+  timeout_minutes: 20
+  max_tokens_per_session: 500000
+  # 连续 N 轮无新增即停
+  no_new_streak: 2
+
+# 分段与切分
+chunking:
+  min_tokens: 120
+  max_tokens: 500
+  # 递归切分的分隔符优先级，中英混合
+  separators: ["\n\n", "\n", "。", "！", "？", "；", "，", ". ", "! ", "? ", "; ", ", ", " ", ""]
+
+# 检索时的时间敏感词，命中则强制走网络并绕过缓存
+time_sensitive_markers:
+  - 最新
+  - 近况
+  - 现在
+  - 目前
+  - 近期
+  - 最新进展
+  - 现状
+  - 最近的

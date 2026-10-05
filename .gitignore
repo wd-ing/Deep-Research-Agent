@@ -1,0 +1,14 @@
+.env
+.env.local
+*.db
+*.db-wal
+*.db-shm
+.venv/
+__pycache__/
+node_modules/
+dist/
+.searxng/
+.venv*/
+data/
+*.log
+.DS_Store

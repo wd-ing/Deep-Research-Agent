@@ -1,0 +1,427 @@
+"""SQLite 访问层：裸 SQL + 薄封装。
+
+单文件数据库，向量以 float16 BLOB 存在 chunk 表里，检索时按需载入不常驻。
+"""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+import threading
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable, Sequence
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DB = REPO_ROOT / "data" / "research.db"
+MIGRATIONS = Path(__file__).resolve().parent / "migrations"
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def new_id(prefix: str = "") -> str:
+    return f"{prefix}{uuid.uuid4().hex[:12]}"
+
+
+def _jd(obj: Any) -> str | None:
+    if obj is None:
+        return None
+    import json
+    return json.dumps(obj, ensure_ascii=False)
+
+
+def _jl(text: str | None) -> Any:
+    if not text:
+        return None
+    import json
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+class Repo:
+    def __init__(self, path: str | Path = DEFAULT_DB) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._local = threading.local()
+        self._write_lock = threading.Lock()
+
+    # ---------- 连接 ----------
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        c = getattr(self._local, "conn", None)
+        if c is None:
+            c = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA foreign_keys = ON")
+            c.execute("PRAGMA busy_timeout = 30000")
+            self._local.conn = c
+        return c
+
+    def init_schema(self) -> None:
+        """按序执行未应用的迁移。
+
+        结构的**唯一来源**是 migrations/ 目录。0001_init.sql 是基线，
+        之后每次结构变更新增一个 00NN 文件，永远不改旧文件。
+
+        早先这里同时存在 schema.sql（最新形态）与 migrations/（增量脚本）
+        两份描述同一个结构，会静默漂移；为了让两者兼容，还加了「新库把迁移
+        全部盖章为已应用」和「duplicate column 就跳过」两处容错——
+        那是补丁，不是结构。现在只有一份真相，不需要它们了。
+        """
+        self.run_migrations()
+
+    def run_migrations(self) -> list[str]:
+        """执行未应用的迁移，返回本次实际执行的脚本名。"""
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations ("
+            "name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        self.conn.commit()
+        done = {r["name"] for r in self.q("SELECT name FROM schema_migrations")}
+
+        applied: list[str] = []
+        for f in sorted(MIGRATIONS.glob("*.sql")):
+            if f.name in done:
+                continue
+            with self._write_lock:
+                self.conn.executescript(f.read_text(encoding="utf-8"))
+                self.conn.execute(
+                    "INSERT INTO schema_migrations(name, applied_at) VALUES(?,?)",
+                    (f.name, now()),
+                )
+                self.conn.commit()
+            applied.append(f.name)
+        return applied
+
+    def q(self, sql: str, params: Sequence = ()) -> list[sqlite3.Row]:
+        return list(self.conn.execute(sql, params))
+
+    def q1(self, sql: str, params: Sequence = ()) -> sqlite3.Row | None:
+        cur = self.conn.execute(sql, params)
+        return cur.fetchone()
+
+    def x(self, sql: str, params: Sequence = ()) -> sqlite3.Cursor:
+        with self._write_lock:
+            cur = self.conn.execute(sql, params)
+            self.conn.commit()
+            return cur
+
+    # ---------- 会话 ----------
+
+    def create_session(self, title: str, question: str) -> str:
+        sid = new_id("s_")
+        t = now()
+        self.x(
+            "INSERT INTO session (id,title,question,status,created_at,updated_at) "
+            "VALUES (?,?,?, 'running', ?, ?)",
+            (sid, title, question, t, t),
+        )
+        return sid
+
+    def set_outline(self, session_id: str, outline: Any, plan: Any = None) -> None:
+        import json
+
+        self.x(
+            "UPDATE session SET outline_json=?, plan_json=COALESCE(?, plan_json), updated_at=? "
+            "WHERE id=?",
+            (json.dumps(outline, ensure_ascii=False),
+             json.dumps(plan, ensure_ascii=False) if plan is not None else None,
+             now(), session_id),
+        )
+
+    def finish_session(self, session_id: str, status: str = "done") -> None:
+        self.x("UPDATE session SET status=?, updated_at=? WHERE id=?",
+               (status, now(), session_id))
+
+    def archive_session(self, session_id: str) -> None:
+        """显式归档。只有归档后的会话才进入历史检索。"""
+        t = now()
+        self.x(
+            "UPDATE session SET archived_at=?, status='archived', updated_at=? WHERE id=?",
+            (t, t, session_id),
+        )
+
+    def add_cost(self, session_id: str, tokens: int) -> None:
+        self.x("UPDATE session SET cost_tokens = cost_tokens + ?, updated_at=? WHERE id=?",
+               (tokens, now(), session_id))
+
+    # ---------- 报告 ----------
+
+    def save_report(self, session_id: str, markdown: str) -> str:
+        rid = new_id("r_")
+        self.x("INSERT OR REPLACE INTO report (id,session_id,markdown,created_at) "
+               "VALUES (?,?,?,?)", (rid, session_id, markdown, now()))
+        return rid
+
+    # ---------- 来源 ----------
+
+    def add_source(self, **kw: Any) -> str:
+        # 注意：生成的 id 必须写回 kw，否则 cols 里的 id 列会取到 None
+        kw["id"] = kw.get("id") or new_id("src_")
+        kw.setdefault("fetched_at", now())
+        # 显式列出列名会让 schema 的 DEFAULT 失效，缺省值在这里补
+        kw.setdefault("source_type", "unknown")
+        cols = ["id","session_id","url","url_normalized","domain","title","source_type",
+                "engine","source_date","fetched_at","content_hash","char_count",
+                "http_status","superseded_by"]
+        vals = [kw.get(c) for c in cols]
+        self.x(
+            f"INSERT INTO source ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+            vals,
+        )
+        return kw["id"]
+
+    def seen_urls(self, session_id: str) -> set[str]:
+        rows = self.q("SELECT url_normalized FROM source WHERE session_id=?", (session_id,))
+        return {r["url_normalized"] for r in rows}
+
+    def known_content_hashes(self) -> dict[str, str]:
+        """历史全库的正文哈希 -> source_id，用于跨会话同源检测。"""
+        rows = self.q(
+            "SELECT content_hash, id FROM source "
+            "WHERE content_hash IS NOT NULL AND superseded_by IS NULL"
+        )
+        return {r["content_hash"]: r["id"] for r in rows}
+
+    # ---------- 段落：两阶段入库 ----------
+
+    def add_chunk(self, **kw: Any) -> str:
+        # 同上：生成的 id 必须写回 kw
+        kw["id"] = kw.get("id") or new_id("c_")
+        kw.setdefault("status", "pending")
+        kw.setdefault("ingested_at", now())
+        # on_topic 是 NOT NULL DEFAULT 1，显式给默认值，避免 NOT NULL 违例
+        kw.setdefault("on_topic", 1)
+        cols = ["id","session_id","report_id","source_id","origin","summary","content",
+                "heading_path","token_count","embedding","status","source_date",
+                "ingested_at","superseded_by","on_topic","topic_reason","gate_method"]
+        vals = [kw.get(c) for c in cols]
+        self.x(
+            f"INSERT INTO chunk ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+            vals,
+        )
+        return kw["id"]
+
+    def mark_chunk_topic(self, session_id: str, marks: Sequence[tuple]) -> None:
+        """回写段级相关性。marks: [(on_topic, reason, method, chunk_id), ...]"""
+        if not marks:
+            return
+        with self._write_lock:
+            self.conn.executemany(
+                "UPDATE chunk SET on_topic=?, topic_reason=?, gate_method=? WHERE id=?",
+                list(marks),
+            )
+            self.conn.commit()
+
+    def mark_summaries(self, summaries: dict[str, str]) -> None:
+        """回写段落概括。{chunk_id: summary}"""
+        if not summaries:
+            return
+        with self._write_lock:
+            self.conn.executemany(
+                "UPDATE chunk SET summary=? WHERE id=?",
+                [(v, k) for k, v in summaries.items()],
+            )
+            self.conn.commit()
+
+    def set_source_nature(self, source_id: str, nature: str, reason: str) -> None:
+        self.x("UPDATE source SET source_nature=?, nature_reason=? WHERE id=?",
+               (nature, reason, source_id))
+
+    def complete_chunks(self, updates: Sequence[tuple[str, str, bytes, int]]) -> None:
+        """批量补概括句与向量。updates: (chunk_id, summary, embedding_blob, token_count)"""
+        with self._write_lock:
+            self.conn.executemany(
+                "UPDATE chunk SET summary=?, embedding=?, status='complete' WHERE id=?",
+                [(s, b, cid) for cid, s, b, _ in updates],
+            )
+            self.conn.commit()
+
+    def ready_chunks(self, session_id: str | None = None) -> list[sqlite3.Row]:
+        """只取 status='complete' 的段落参与检索。"""
+        if session_id:
+            return self.q(
+                "SELECT * FROM chunk WHERE status='complete' AND session_id=?", (session_id,)
+            )
+        return self.q("SELECT * FROM chunk WHERE status='complete'")
+
+    def supersede_chunk(self, old_id: str, new_id: str) -> None:
+        """事实被推翻时标记取代，不静默覆盖。"""
+        self.x("UPDATE chunk SET superseded_by=? WHERE id=?", (new_id, old_id))
+
+    # ---------- 冲突 ----------
+
+    def add_contradiction(
+        self, session_id: str, topic: str, claim_a: str | None, claim_b: str | None
+    ) -> str:
+        cid = new_id("x_")
+        self.x(
+            "INSERT INTO contradiction (id,session_id,topic,claim_a,claim_b,created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (cid, session_id, topic, claim_a, claim_b, now()),
+        )
+        return cid
+
+    def open_contradictions(self, session_id: str) -> list[sqlite3.Row]:
+        return self.q(
+            "SELECT * FROM contradiction WHERE session_id=? AND resolution IS NULL",
+            (session_id,),
+        )
+
+    # ---------- 主题（展示用） ----------
+
+    def set_topics(self, session_id: str, names: Iterable[str]) -> None:
+        with self._write_lock:
+            for name in names:
+                name = name.strip()
+                if not name:
+                    continue
+                slug = name.lower().replace(" ", "-")
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO topic (id,name,slug,created_at) VALUES (?,?,?,?)",
+                    (new_id("t_"), name, slug, now()),
+                )
+                row = self.conn.execute("SELECT id FROM topic WHERE name=?", (name,)).fetchone()
+                if row:
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO session_topic (session_id,topic_id,updated_at) "
+                        "VALUES (?,?,?)",
+                        (session_id, row["id"], now()),
+                    )
+            self.conn.commit()
+
+    def topics_of(self, session_id: str) -> list[str]:
+        rows = self.q(
+            "SELECT t.name FROM topic t JOIN session_topic st ON st.topic_id=t.id "
+            "WHERE st.session_id=? ORDER BY t.name",
+            (session_id,),
+        )
+        return [r["name"] for r in rows]
+
+    def sessions_by_topic(self, topic: str) -> list[sqlite3.Row]:
+        return self.q(
+            "SELECT s.* FROM session s "
+            "JOIN session_topic st ON st.session_id=s.id "
+            "JOIN topic t ON t.id=st.topic_id "
+            "WHERE t.name=? AND s.archived_at IS NOT NULL ORDER BY s.archived_at DESC",
+            (topic,),
+        )
+
+    # ---------- 抓取缓存（7 天） ----------
+
+    def cache_get(self, url_norm: str, ttl_days: int = 7) -> str | None:
+        row = self.q1(
+            "SELECT content, fetched_at FROM fetch_cache WHERE url_normalized=?", (url_norm,)
+        )
+        if not row:
+            return None
+        from datetime import timedelta
+
+        try:
+            ft = datetime.fromisoformat(row["fetched_at"].replace("Z", "+00:00"))
+        except Exception:
+            return None
+        if datetime.now(timezone.utc) - ft > timedelta(days=ttl_days):
+            return None
+        return row["content"]
+
+    def cache_put(self, url_norm: str, url: str, content: str,
+                  content_hash: str, http_status: int) -> None:
+        self.x(
+            "INSERT OR REPLACE INTO fetch_cache "
+            "(url_normalized,url,content,content_hash,fetched_at,http_status) "
+            "VALUES (?,?,?,?,?,?)",
+            (url_norm, url, content, content_hash, now(), http_status),
+        )
+
+    # ---------- 记账 ----------
+
+    def log_llm_call(self, session_id, stage, model, input_tokens, output_tokens,
+                     latency_ms=None, cache_read_tokens=0,
+                     cache_creation_tokens=0, est_input_tokens=None) -> None:
+        """记一次调用。
+
+        input_tokens / output_tokens 必须是 API 报上来的真实值。
+        原来这里记的是 _rough_tokens() 的本地估算——估算够用来看成本量级，
+        但判断不了缓存命中，而那正是 write 环节最需要看的数。
+        est_input_tokens 把估算值留一份，以便对比偏差。
+        """
+        self.x(
+            "INSERT INTO llm_call (id,session_id,stage,model,input_tokens,"
+            "output_tokens,latency_ms,cache_read_tokens,cache_creation_tokens,"
+            "est_input_tokens,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (new_id("l_"), session_id, stage, model, input_tokens,
+             output_tokens, latency_ms, cache_read_tokens or 0,
+             cache_creation_tokens or 0, est_input_tokens, now()),
+        )
+
+    def cache_stats(self, session_id: str) -> dict:
+        """一次研究的缓存命中情况。测试期最常查的一行。"""
+        r = self.q1(
+            "SELECT COUNT(*) n, "
+            "  COALESCE(SUM(cache_read_tokens),0) read_tok, "
+            "  COALESCE(SUM(cache_creation_tokens),0) create_tok, "
+            "  COALESCE(SUM(input_tokens),0) uncached_in, "
+            "  COALESCE(SUM(est_input_tokens),0) est_in "
+            "FROM llm_call WHERE session_id=?", (session_id,))
+        n = r["n"] or 0
+        read, create = r["read_tok"] or 0, r["create_tok"] or 0
+        total = read + create + r["uncached_in"] or 0
+        return {"calls": n, "cache_read_tokens": read,
+                "cache_creation_tokens": create, "uncached_input_tokens": r["uncached_in"],
+                "cache_hit_ratio": round(read / total, 4) if total else 0.0}
+
+    def save_write_trace(self, session_id: str, spec=None, tasks=None,
+                         audit=None, stats=None) -> None:
+        """把 write 子图的中间产物落一份，供测试期检查。"""
+        self.x(
+            "INSERT INTO write_trace (session_id,spec_json,tasks_json,audit_json,"
+            "stats_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?) "
+            "ON CONFLICT(session_id) DO UPDATE SET "
+            "  spec_json=COALESCE(excluded.spec_json,write_trace.spec_json), "
+            "  tasks_json=COALESCE(excluded.tasks_json,write_trace.tasks_json), "
+            "  audit_json=COALESCE(excluded.audit_json,write_trace.audit_json), "
+            "  stats_json=COALESCE(excluded.stats_json,write_trace.stats_json), "
+            "  updated_at=excluded.updated_at",
+            (session_id,
+             _jd(spec) if spec is not None else None,
+             _jd(tasks) if tasks is not None else None,
+             _jd(audit) if audit is not None else None,
+             _jd(stats) if stats is not None else None,
+             now(), now()),
+        )
+
+    def write_trace(self, session_id: str) -> dict:
+        r = self.q1("SELECT * FROM write_trace WHERE session_id=?", (session_id,))
+        if not r:
+            return {}
+        return {"spec": _jl(r["spec_json"]), "tasks": _jl(r["tasks_json"]),
+                "audit": _jl(r["audit_json"]), "stats": _jl(r["stats_json"])}
+
+    def session_cost(self, session_id: str) -> int:
+        row = self.q1(
+            "SELECT COALESCE(SUM(input_tokens+output_tokens),0) AS t "
+            "FROM llm_call WHERE session_id=?",
+            (session_id,),
+        )
+        return int(row["t"]) if row else 0
+
+
+_repo: Repo | None = None
+_repo_lock = threading.Lock()
+
+
+def get_repo(path: str | Path | None = None) -> Repo:
+    global _repo
+    if _repo is None:
+        with _repo_lock:
+            if _repo is None:
+                _repo = Repo(path or os.environ.get("RA_DB_PATH", DEFAULT_DB))
+                _repo.init_schema()
+    return _repo
