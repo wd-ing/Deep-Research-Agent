@@ -624,8 +624,10 @@ def node_write(state: ResearchState) -> dict:
     # 段级闸门：整篇一起进出太粗，一半讲技术一半讲融资的页面会整篇进来
     pr = state.get("probe") or {}
     kws = relevance.build_keywords((pr.get("signals") or {}), state["question"])
-    segs = [c for c in repo_segments
-            if src_no.get(c["source_id"]) and (c["summary"] or "").strip()]
+    # 闸门要看到**全部**段落，包括没概括出来的。过滤发生在闸门之后，
+    # 而且只在闸门判定相关之后——不能让「概括失败」把证据变成看不见。
+    segs = [c for c in repo_segments if src_no.get(c["source_id"])]
+    n_no_summary = sum(1 for c in segs if not (c.get("summary") or "").strip())
     gate = relevance.gate_segments(segs, kws, state["question"][:80])
     repo.mark_chunk_topic(sid, gate["marks"])
 
@@ -644,7 +646,10 @@ def node_write(state: ResearchState) -> dict:
         outline=state.get("outline") or [],
         signals=(pr.get("signals") or {}),
         segments=segs, on_topic=gate["keep"], earlier=earlier,
-        src_lines=src_lines)
+        src_lines=src_lines,
+        # 概括缺失的段数要一路传到报告里。静默丢证据比报错危险得多——
+        # 报告看起来完整，实际上缺了料，而且从成品里永远看不出来。
+        n_no_summary=n_no_summary)
 
     md = out.get("report_markdown") or ""
     if head:
@@ -654,6 +659,9 @@ def node_write(state: ResearchState) -> dict:
             "events": (out.get("events") or []) + [
                 {"kind": "write", "round": state.get("round"),
                  "chars": len(md), "sources": len(src_lines),
+                 "segments_total": len(segs), "segments_kept": len(gate["keep"]),
+                 "segments_without_summary": n_no_summary,
+                 "gate": gate["stats"],
                  "degraded": bool(head)}]}
 
 

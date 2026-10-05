@@ -205,8 +205,11 @@ audit_retry = {"need_rework": True, "reason": "先修一轮",
 f3 = Fake(plan1, {}, [audit_retry, audit_stuck])
 out3 = run(f3, "场景 3：返修一轮后主 agent 说改不动")
 assert out3["rework_rounds"] == 1, f"应先返修 1 轮，实际 {out3['rework_rounds']}"
-assert len([c for c in f3.calls if c[0].startswith("write_revise")]) == 1, \
-    "只该返修一轮，不该反复重写"
+# 数返修**轮次**而不是调用次数：一次返修会走两轮工具循环
+# （先要证据、再产出正文），调用次数不等于轮次。
+rev_rounds = [e for e in (out3.get("events") or []) if e.get("kind") == "write_revise"]
+assert out3["rework_rounds"] == 1 and len(rev_rounds) == 1, \
+    f"只该返修一轮，实际 {len(rev_rounds)} 轮"
 assert "产能数字材料内自相矛盾" in out3["report_markdown"], "改不动的问题要写进存疑"
 print("  ✓ 首轮忽略 rework_effective，正常返修一轮")
 print("  ✓ 第二轮判为无效后立即停止，没有反复重写")

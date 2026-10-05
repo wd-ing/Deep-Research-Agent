@@ -45,8 +45,9 @@ def build_keywords(signals: dict, question: str) -> dict:
     """从探针轮廓取实体和术语，分强弱两档。
 
     返回 {"strong": [...], "weak": [...]}。
-    strong 是专有名词（产品、组织、人名、方法名），出现一个就高度可信；
-    weak 是通用领域词，命中也没用，不参与闸门。
+    strong 是产品、方法、组织这类「出现就基本能确定在讲这个主题」的名词；
+    weak 是通用领域词、人名、地名——命中说明不了问题，不参与闸门判定。
+    分档依据是探针给的实体类型，不是硬编码的词表。
     """
     strong: list[str] = []
     weak: list[str] = []
@@ -57,8 +58,22 @@ def build_keywords(signals: dict, question: str) -> dict:
             return
         (weak if n.lower() in WEAK_KEYWORDS else strong).append(n)
 
+    # 实体按类型分档。探针本来就给每个实体打了 type，直接用数据分，
+    # 不用硬编码人名地名词表。
+    #
+    # 为什么人名和地名不能当强信号：出现「张强」完全不说明这段在讲固态电池
+    # （同名人到处都是）；出现「中国」更不说明问题（任何产业文章都会提）。
+    # 把它们算成强信号的后果实测过：78 个 strong 里混了 14 个人名和 6 个国名地名，
+    # 规则层拦下 134/177 段、最终保留率 91%——**闸门几乎成了摆设**。
     for e in signals.get("entities") or []:
-        put(e.get("name"))
+        name = e.get("name")
+        t = (e.get("type") or "").lower()
+        if t in ("person", "place"):
+            n = (name or "").strip()
+            if 2 <= len(n) <= 60:
+                weak.append(n)
+        else:
+            put(name)
     for j in signals.get("jargon") or []:
         put(j.get("term"))
         put(j.get("en_equivalent"))
@@ -182,8 +197,15 @@ def gate_segments(segments: list[dict], kw: list[str], topic_label: str) -> dict
     keep, marks = [], []
 
     for seg in segments:
-        blob = " ".join([seg.get("heading_path") or "", seg.get("title") or "",
-                         seg.get("summary") or ""])[:3000]
+        # 概括缺失时退到正文开头，**不能**因为概括没生成就把这段漏掉——
+        # 闸门才是判断相关性��地方，概括只是它的输入之一。
+        # 之前这里只看概括，于是「概括批次失败 → 没概括 → 进不了闸门 →
+        # 段直接消失」，本该被拦的垃圾页面绕过了闸门。
+        blob = " ".join([
+            seg.get("heading_path") or "", seg.get("title") or "",
+            seg.get("summary") or "",
+            "" if (seg.get("summary") or "").strip() else (seg.get("content") or "")[:600],
+        ])[:3000]
         if not strong and not weak:
             r = _llm_judge_seg(seg, topic_label, blob, method="fallback")
         else:

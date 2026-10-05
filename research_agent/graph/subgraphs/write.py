@@ -600,6 +600,12 @@ def node_final(state: WriteState) -> dict:
     if failed:
         doubt.append("以下任务未能完成：" +
                      "、".join(f"{f.get('task')}（{f.get('reason')}）" for f in failed))
+    if state.get("n_no_summary"):
+        doubt.append(
+            f"有 {state['n_no_summary']} 个证据段落没能生成概括"
+            f"（概括环节失败），它们未进入写作材料。"
+            f"这不影响闸门判定——闸门用的是正文开头而非概括——"
+            f"但子 agent 只能看到标题与正文开头，看不到这些段的要点概括。")
     if uncovered:
         doubt.append("以下任务的产出未被任何小节采用：" + "、".join(uncovered))
     if doubt:
@@ -661,7 +667,7 @@ def build_write_graph():
 
 def run_write(session_id: str, question: str, outline: list, signals: dict,
               segments: list, on_topic: list, src_lines: list,
-              earlier: list | None = None) -> dict:
+              earlier: list | None = None, n_no_summary: int = 0) -> dict:
     """write 子图入口。返回 report_markdown 与事件。"""
     if not outline or not segments:
         return {"report_markdown":
