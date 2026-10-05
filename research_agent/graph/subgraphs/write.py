@@ -619,9 +619,10 @@ def node_audit(state: WriteState) -> dict:
         "rework_effective": d.get("rework_effective"),
     }
     _trace(state.get("session_id"), audit=audit,
-           stats={"audit_round": rounds, "high": len(targets),
-                  "findings": len(findings), "need_rework": audit["need_rework"],
-                  "rework_effective": d.get("rework_effective")})
+           stats=_merge_stats(state.get("session_id"), {
+               "audit_round": rounds, "high": len(targets),
+               "findings": len(findings), "need_rework": audit["need_rework"],
+               "rework_effective": d.get("rework_effective")}))
     # 每轮的发现要留着。之前 audit_json 每轮覆盖，R5 那轮 27 次返修
     # 只剩最后一轮的 11 条，根因只能靠读代码反推——可观测性缺口。
     _push_audit_history(state.get("session_id"), {
@@ -901,6 +902,28 @@ def _trace(session_id: str, **kw) -> None:
         get_repo().save_write_trace(session_id, **kw)
     except Exception:
         pass
+
+
+def _merge_stats(session_id: str, new: dict) -> dict:
+    """写 stats 时保住已有的 tool_reads。
+
+    stats_json 是整体替换的，而 `_record_tool_use` 是在已有 stats 上累加。
+    两者相遇的结果是：审查一跑，工具使用统计就被冲没了——
+    R6 那轮结束时查到 `{}`，而中途明明记着 read_segments 15 次。
+    工具用没用、在看哪些段，是这个系统最该看得见的一件事，不能被顺手覆盖。
+    """
+    if not session_id:
+        return new
+    try:
+        from ...db.repo import get_repo
+        old = get_repo().write_trace(session_id).get("stats") or {}
+    except Exception:
+        return new
+    if not isinstance(old, dict):
+        return new
+    merged = {k: v for k, v in old.items() if k not in new}
+    merged.update(new)
+    return merged
 
 
 def _push_audit_history(session_id: str, entry: dict) -> None:
