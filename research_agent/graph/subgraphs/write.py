@@ -583,6 +583,16 @@ def node_audit(state: WriteState) -> dict:
         "写作规约": spec,
         "草稿": draft,
     }
+    # 任务分派摘要：只有段号和条数，不给正文。
+    # 没有它，审阅人判断不了「这节做得不好」是写砸了还是**根本没材料可写**——
+    # 而这两者的正确处置完全相反：前者该返修，后者重写一万遍也写不出来。
+    tasks = state.get("tasks") or []
+    if tasks:
+        payload["任务分派（每个任务分到了几段证据）"] = [
+            {"task": t.get("id"), "covers": t.get("covers"),
+             "证据段数": len(t.get("segments") or []),
+             "要求写到": len(t.get("must_cover") or [])}
+            for t in tasks]
     if violations:
         payload["程序已查出的引用问题"] = violations
     if rounds:
@@ -625,13 +635,15 @@ def node_audit(state: WriteState) -> dict:
                "rework_effective": d.get("rework_effective")}))
     # 每轮的发现要留着。之前 audit_json 每轮覆盖，R5 那轮 27 次返修
     # 只剩最后一轮的 11 条，根因只能靠读代码反推——可观测性缺口。
+    # 首轮的 rework_effective 记 null：那一轮没有「上一轮返修」可言，
+    # 模型会顺手填个 false（实测就是），原样记下来会让看历史的人以为返修失败过。
     _push_audit_history(state.get("session_id"), {
         "round": rounds,
         "need_rework": audit["need_rework"],
         "findings": len(findings),
         "high": len(targets),
         "targets": [f"{t['task']}→{t.get('section')}" for t in targets],
-        "rework_effective": d.get("rework_effective"),
+        "rework_effective": (d.get("rework_effective") if rounds > 0 else None),
         "reason": audit["reason"][:200],
     })
     return {

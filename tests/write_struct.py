@@ -461,4 +461,40 @@ print("  ✓ 两节正文相同 → 报警")
 print("  ✓ 多节任务只产出一节 → 报警")
 print("  ✓ 报警会一路写进报告的存疑一节")
 
-print(f"\n{'='*70}\n✅ 结构自检全部通过（10 个场景）\n{'='*70}")
+# ---------- 场景 11：审查看得到证据量，首轮不记 rework_effective ----------
+print(f"\n{'='*70}\n场景 11：审查的输入与留痕\n{'='*70}")
+
+
+class SpyFake(Fake):
+    """记下每次 complete_json 收到的提示词。"""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.prompts: list[str] = []
+
+    def complete_json(self, stage, prompt, system=None):
+        self.prompts.append(prompt)
+        return super().complete_json(stage, prompt, system)
+
+
+fake0 = SpyFake(plan1, {}, [audit_ok, audit_bad, audit_after])
+# 留痕是按轮次去重追加的，前面场景已经写过 0/1 轮了，先清干净
+_repo_mod.get_repo().x("DELETE FROM write_trace WHERE session_id=?", ("s_test",))
+run(fake0, "审查拿到了任务分派摘要")
+audits = [p for p in fake0.prompts if '"草稿"' in p]
+assert audits, "审查提示没抓到"
+print(f"  审查提示里含任务分派摘要: {any('证据段数' in p for p in audits)}")
+assert any("证据段数" in p for p in audits), \
+    "审查看不到每个任务分了几段证据，判不了「写砸了」还是「没材料可写」"
+
+hist = _repo_mod.get_repo().write_trace("s_test").get("audit_history") or []
+print(f"  audit_history 轮数: {len(hist)}（R5 那次只留得下 1 轮）")
+assert hist, "审查留痕没落库"
+assert hist[0]["rework_effective"] is None, \
+    f"首轮该记 null 而不是 {hist[0]['rework_effective']!r}——那会让看历史的人误以为返修失败过"
+print(f"  第 0 轮 rework_effective 记为 {hist[0]['rework_effective']}（不是模型随手填的值）")
+print(f"  第 0 轮 targets: {hist[0]['targets'] or '（无）'}")
+for h in hist[1:]:
+    print(f"  第 {h['round']} 轮 rework_effective: {h['rework_effective']}（这一轮才有意义）")
+
+print(f"\n{'='*70}\n✅ 结构自检全部通过（11 个场景）\n{'='*70}")
