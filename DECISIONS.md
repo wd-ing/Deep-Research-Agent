@@ -1454,3 +1454,53 @@ n=30 全挂提示可能有二级限制。工程上按 **8 次/分钟**保守取�
 用户设想的「轻/重两档」如果按「单次任务轻重」划，**边界会划反**：
 `relevance` 单次 2.9 秒（很轻）但 577 次撞配额；
 `write_audit` 单次 130 秒（很重）但一轮 4 次几乎不占配额。
+
+### 2026-10-06 大纲退化查清：不是模型问题，是 529 过载 + 降级链设计缺陷
+
+**现象**：一轮跑完大纲只有 1 节（标题就是研究问题本身），报告 19,261 字
+（对照上一轮 13 节、78,462 字）。表面看像「模型偶发只给了 1 节」。
+
+**实际根因**：`plan_json` 里 **`sections` 是空数组 `[]`**——模型一个 section 都没给。
+1 节是 `node_outline` 的极简兜底造出来的。
+
+**为什么会空**：
+```
+probe_light attempt 1 → MiniMax 529 overloaded_error
+probe_quality judged=false → probe_retry attempt 2
+probe_light attempt 2 → MiniMax 529 overloaded_error   ← 两次全挂
+probe_outline: subtopics 0, entities 0, degraded=true
+    ↓
+outline 输入从 5,172 token 掉到 382（探针信号全空）
+    ↓
+模型没有真实维度可锚 → grounded_in 写不出来 → sections 空
+```
+**连续 4 次 probe_light 调用全部撞 529**，而 `MAX_ATTEMPTS` 只有 2。
+上一轮同样的代码跑出了 15 个 subtopic —— 所以这是**过载导致的偶发**，不是代码差异。
+
+**暴露的两个真问题**（用户要求先加警告，此处记录待处理）：
+
+1. **`node_probe_outline` 在深读页为空时压根不调 LLM**
+   （`probe.py:264` `if not pages: data = {}`）。可 light 已经拿到 42 条命中的标题，
+   那些信息够生成一个粗略轮廓。现在是「深读失败 = 整个探针作废」，
+   白白丢掉轻扫的结果。**应改成 pages 为空时回退用 light 的标题列表。**
+
+2. **整条降级链没有任何告警**。探针作废 → outline 输入掉 13 倍 → 报告单薄，
+   中间静默。已加：`node_outline` 在「探针降级 / sections 为空 / 通过校验 ≤2 节」
+   时打 `🚨` 并记进 warnings。
+
+3. **`MAX_ATTEMPTS=2` 对 529 这种可重试错误偏小**。529 是过载，退避后大概率能过。
+   传输层已有 3 次退避，但探针节点级只有 1 次重试（2 次尝试）。
+
+### 同轮修的 url_count bug
+
+`url_count` 原来 = `len(visited) + len(hits)`，把**抓失败**的 URL 也算进预算。
+实测一轮搜到 50 个、只成功 20 个（跳过 30：too_short 6 / blocked:403 3 / captcha 1 …），
+却把 50 的上限一次用光，研究只跑 1 轮。
+
+**修法**：拆成两个概念——
+- `visited_urls`：尝试过的（含失败），职责是**去重**，防止反复重试同一个 403
+- `url_count`：成功入库的来源数，职责是**预算**
+
+预算是为了限制「抓了多少内容」，不是「试了多少次」。
+
+顺带修了埋点：`repeat_queries` 在第 1 轮误报（那一轮的查询本来就来自大纲）。

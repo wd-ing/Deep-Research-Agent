@@ -144,6 +144,25 @@ def node_outline(state: ResearchState) -> dict:
             "kind": "definition",
         }]
 
+    # 探针给不出轮廓时，模型就没有真实维度可锚，`grounded_in` 写不出来 →
+    # sections 直接空 → 走上面的极简兜底。**整条链是静默的**：
+    # 从「探针过载降级」到「报告只剩一节」，中间没有任何一句提示。
+    # 实测（2026-10-06）：探针 529 过载 4 次全挂，outline 输入从 5,172 token
+    # 掉到 382，产出一份 19,261 字、单节的报告，而事件里全是 "degraded: true"。
+    probe_degraded = bool(state.get("probe_degraded")) or not sig
+    raw_n = len(raw_sections)
+    if probe_degraded or raw_n == 0 or len(outline) <= 2:
+        why = []
+        if probe_degraded:
+            why.append("探针降级（过载或未产出轮廓）")
+        if raw_n == 0:
+            why.append("模型产出的 sections 为空数组")
+        elif len(outline) <= 2:
+            why.append(f"只有 {len(outline)} 个小节通过 grounded_in 校验（原产出 {raw_n} 个）")
+        print(f"🚨 框架退化：{'；'.join(why)}。已退回极简框架，"
+              f"检索目标会很窄、报告会明显偏薄。", flush=True)
+        warn.append("框架退化：" + "；".join(why))
+
     qz = (plan.get("queries") or {}).get("zh") or []
     qe = (plan.get("queries") or {}).get("en") or []
     warn = []
@@ -353,6 +372,23 @@ def _entities_from(state: ResearchState, zh_only: bool) -> list[str]:
 
 
 @scoped
+def _fetched_count(state: ResearchState) -> int:
+    """**真正抓下来的**来源数，用来卡 max_urls 预算。
+
+    别和 `visited_urls` 混为一谈（2026-10-06 修）：
+
+    - `visited_urls` 记**尝试过**的 URL（含抓失败的），职责是去重，
+      防止同一个 403/超时页面被反复重试
+    - `url_count` 记**成功入库**的来源数，职责是预算
+
+    原来两者是一个数（`len(visited) + len(hits)`），于是抓失败的
+    30 个（too_short / 403 / captcha）也占额度——实测一轮搜到 50 个、
+    只成功 20 个，却把 50 的上限一次用光，研究只能跑 1 轮。
+    预算是为了限制「抓了多少内容」，不是「试了多少次」。
+    """
+    return len(state.get("sources") or [])
+
+
 def node_retrieve(state: ResearchState) -> dict:
     repo = get_repo()
     sid = state["session_id"]
@@ -387,7 +423,15 @@ def node_retrieve(state: ResearchState) -> dict:
         return _collect(flat)
 
     hits = asyncio.run(run())
-    budget_left = max(0, HARD["max_urls"] - len(visited))
+    budget_left = max(0, HARD["max_urls"] - _fetched_count(state))
+    if budget_left <= 0:
+        # 额度用完就别再抓了——原来这里抓完再截，白白花掉一次网络往返
+        events.append({"kind": "retrieve", "round": rnd, "queries": queries,
+                       "hits": 0, "accepted": 0,
+                       "note": f"URL 预算已用尽（{_fetched_count(state)}/"
+                               f"{HARD['max_urls']}），本轮不再抓取",
+                       "repeat_queries": 0, "skipped": []})
+        return {"round": rnd, "events": events}
     hits = hits[:budget_left]
 
     bypass = bool(state.get("time_sensitive"))
@@ -444,28 +488,32 @@ def node_retrieve(state: ResearchState) -> dict:
         it["segments"] = segments
 
     # 与上一轮的查询词重合多少——重复检索烧配额、产重复段落、
-    # 还会把 no_new_streak 推高导致提前停。这个数必须一眼可见。
+    # 还会把 no_new_streak 推高导致提前停。
+    # **第 1 轮不算**：那一轮的查询本来就来自大纲，是它的首搜来源。
+    # （第一版埋点没判轮次，第 1 轮误报「10 条重复」，看着像 bug。）
     prev_q = state.get("plan_queries") or {}
     prev_set = {str(x).strip().lower() for lang in ("zh", "en")
                 for x in (prev_q.get(lang) or [])}
     cur_set = {str(x).strip().lower() for lang in ("zh", "en")
                for x in (queries.get(lang) or [])}
-    repeat = sorted(prev_set & cur_set)
+    repeat = sorted(prev_set & cur_set) if rnd > 1 else []
 
     events.append({"kind": "retrieve", "round": rnd,
                    "queries": queries, "hits": len(hits),
-                   "repeat_queries": len(repeat),
+                   "repeat_queries": 0 if rnd <= 1 else len(repeat),
                    "accepted": len(new_sources), "skipped": skipped[:20]})
     used = list(state.get("used_queries") or [])
     for lang in ("zh", "en"):
         used += [str(x).strip() for x in (queries.get(lang) or [])]
     repo.save_run_trace(sid, rnd, "retrieve", {
         "queries": queries, "hits": len(hits), "accepted": len(new_sources),
-        "repeat_queries": repeat, "new_sources": len(new_sources),
-        "skipped": skipped[:10],
+        "repeat_queries": repeat if rnd > 1 else [],
+        "fetched_total": len(state.get("sources") or []) + len(new_sources),
+        "new_sources": len(new_sources), "skipped": skipped[:10],
     })
     return {"round": rnd, "visited_urls": list(seen_norms),
-            "url_count": len(visited) + len(hits), "sources": new_sources,
+            "url_count": len(state.get("sources") or []) + len(new_sources),
+            "sources": new_sources,
             "pending_extract": pending, "conflict_hashes": known_hashes,
             "used_queries": used,
             "events": events}
