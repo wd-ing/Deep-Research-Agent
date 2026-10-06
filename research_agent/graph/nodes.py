@@ -487,16 +487,16 @@ def node_retrieve(state: ResearchState) -> dict:
                              "token_count": c.token_count})
         it["segments"] = segments
 
-    # 与上一轮的查询词重合多少——重复检索烧配额、产重复段落、
-    # 还会把 no_new_streak 推高导致提前停。
-    # **第 1 轮不算**：那一轮的查询本来就来自大纲，是它的首搜来源。
-    # （第一版埋点没判轮次，第 1 轮误报「10 条重复」，看着像 bug。）
-    prev_q = state.get("plan_queries") or {}
-    prev_set = {str(x).strip().lower() for lang in ("zh", "en")
-                for x in (prev_q.get(lang) or [])}
+    # 本轮实际搜的词里，有几个是**更早的轮次已经搜过的**。
+    # 重复检索烧配额、产重复段落、还会把 no_new_streak 推高导致提前停。
+    #
+    # ⚠️ 必须拿 `used_queries`（历史实际发过的词）比，**不能拿 plan_queries 比**：
+    # `_collect_queries` 就是以 plan_queries 为 base 的，拿它比等于自己跟自己比，
+    # 必然大量重合——第一版埋点就是这么写的，于是每轮都误报「重复 10 条」。
+    used = {str(x).strip().lower() for x in (state.get("used_queries") or [])}
     cur_set = {str(x).strip().lower() for lang in ("zh", "en")
                for x in (queries.get(lang) or [])}
-    repeat = sorted(prev_set & cur_set) if rnd > 1 else []
+    repeat = sorted(used & cur_set)
 
     events.append({"kind": "retrieve", "round": rnd,
                    "queries": queries, "hits": len(hits),

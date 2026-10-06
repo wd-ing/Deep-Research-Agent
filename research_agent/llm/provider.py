@@ -378,6 +378,14 @@ class LLMClient:
                 print(f"✅ [{cfg.stage}] 第 {attempt+1} 次重试成功"
                       f"（此前中断 {drops} 次）", flush=True)
             if r.status_code != 200:
+                retry, why = _retryable_http(r.status_code, r.text)
+                if retry and net_left > 0:
+                    net_left -= 1
+                    self.warnings.append(
+                        f"[{cfg.stage}] HTTP {r.status_code} {why}，退避重试（额度剩 {net_left}）")
+                    print(f"⚠️  [{cfg.stage}] HTTP {r.status_code} {why}，退避重试（额度剩 {net_left}）", flush=True)
+                    time.sleep(3.0 * (attempt + 1))
+                    continue
                 raise RuntimeError(f"OpenCode {r.status_code}: {r.text[:300]}")
             data = r.json()
             msg = data["choices"][0]["message"]
@@ -504,6 +512,14 @@ class LLMClient:
                 print(f"✅ [{cfg.stage}] 第 {attempt+1} 次重试成功"
                       f"（此前中断 {drops} 次）", flush=True)
             if r.status_code != 200:
+                retry, why = _retryable_http(r.status_code, r.text)
+                if retry and net_left > 0:
+                    net_left -= 1
+                    self.warnings.append(
+                        f"[{cfg.stage}] HTTP {r.status_code} {why}，退避重试（额度剩 {net_left}）")
+                    print(f"⚠️  [{cfg.stage}] HTTP {r.status_code} {why}，退避重试（额度剩 {net_left}）", flush=True)
+                    time.sleep(3.0 * (attempt + 1))
+                    continue
                 raise RuntimeError(f"MiniMax {r.status_code}: {r.text[:300]}")
             blocks = r.json().get("content") or []
             text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
@@ -661,6 +677,36 @@ class LLMClient:
 
 
 # ---------- 工具 ----------
+
+def _retryable_http(status: int, body: str) -> tuple[bool, str]:
+    """5xx 该不该重试？**同一个 5xx 码的答案可能相反**（2026-10-06 实测）。
+
+    - `529 overloaded_error` / `rate_limit_error` → **重试**。
+      实测一轮研究里 `probe_light` 连续 4 次撞 529，两次尝试全挂，
+      探针整个作废 → 轮廓为空 → 大纲退化成 1 节 → 报告只有 19,261 字。
+      而传输层当时**完全没重试**：`httpx.TransportError` 才走退避，
+      5xx 是直接 `raise RuntimeError`。过载是典型的可重试错误，退避后通常能过。
+    - `500 api_error` 且消息里有 `new_sensitive` / `content_filter` → **不重试**。
+      实测也撞过同样的 500 码，但那是内容过滤，重发同样内容必然还是被拦，
+      重试只是白白烧额度。
+
+    判据取响应体里的 `error.type` 与消息文本，认不出来就按「不重试」处理——
+    猜错成「重试」最坏是浪费，重试错成「不重试」只是少一次机会。
+    """
+    # 429 必须先判：它是限流，**该退避重试**，
+    # 而它在 4xx 段里，顺序放错就会被下面的 `status < 500` 挡掉。
+    if status == 429:
+        return True, "限流"
+    if status < 500:
+        return False, ""
+    low = (body or "").lower()
+    if "overloaded" in low or "rate_limit" in low or "too_many_request" in low:
+        return True, "过载/限流"
+    if "new_sensitive" in low or "content_filter" in low or "sensitive" in low:
+        return False, "内容过滤（重发无意义）"
+    # 5xx 但认不出来：502/503/504 这类网关抖动确实可重试
+    return status in (502, 503, 504), "网关抖动" if status in (502, 503, 504) else ""
+
 
 def _msgs_chars(messages: list[dict]) -> str:
     """把多轮消息摊平成一段文本，只为本地估算 token 与记账。

@@ -260,26 +260,56 @@ class _BareFetcher(Fetcher):  # 探针阶段可能还没初始化 DB
 # ---------------------------------------------------------------- 轮廓
 
 def node_probe_outline(state: ProbeState) -> dict:
+    """生成领域轮廓。
+
+    **深读页为空时不能直接放弃**（2026-10-06 修）。
+    原先 `if not pages: data = {}` —— 深读一失败，整个探针就作废了。
+    可轻扫阶段已经拿到几十条带标题和摘要的命中（实测 42 条），
+    那些信息足够生成一个**粗但可用**的轮廓。丢掉它是白白浪费。
+
+    实测代价：那一轮深读没跑起来 → 轮廓全空 → `node_outline` 的输入
+    从 5,172 token 掉到 382 → 模型写不出 `grounded_in` → 大纲退化成 1 节
+    → 报告只有 19,261 字（对照正常的 78,462 字）。
+    """
     pages = state.get("deep_pages") or []
-    if not pages:
-        data = {}
-    else:
+    light = state.get("light_results") or []
+    fallback_used = False
+
+    if pages:
         blob = "\n\n".join(
             f"### 来源{i + 1}：{p['title']}\nURL：{p['url']}\n\n{p['text'][:6000]}"
             for i, p in enumerate(pages)
         )
-        try:
-            data = LLM.complete_json(
-                "probe_outline",
-                f"研究对象：{state['question']}\n"
-                + (f"用户已澄清指向：{state.get('user_choice')}\n" if state.get("user_choice") else "")
-                + f"\n读到的正文：\n{blob[:20000]}",
-                system=prompts.PROBE_OUTLINE,
-            )
-        except Exception as e:
-            return {"degraded": True,
-                    "events": [{"kind": "probe_outline", "error": str(e)[:200]}],
-                    "quality": "thin"}
+        src = f"\n读到的正文：\n{blob[:20000]}"
+    elif light:
+        # 回退：只用轻扫的标题 + 摘要。比没有强得多，而且要说明材料只有摘要。
+        blob = "\n".join(
+            f"[{i}] {r.get('title') or ''}\n    {(r.get('snippet') or '')[:200]}"
+            for i, r in enumerate(light[:40]) if r.get("title")
+        )
+        src = ("\n**深读没有完成，以下只有搜索结果的标题与摘要，没有正文。**"
+               "据此能判断这个题目大致覆盖哪些维度，但无法核实细节。\n"
+               f"\n搜索结果：\n{blob[:14000]}")
+        fallback_used = True
+    else:
+        return {"signals": {}, "degraded": True, "quality": "thin",
+                "headline": "轻扫与深读都没有产出任何材料，领域轮廓无法生成。",
+                "events": [{"kind": "probe_outline", "degraded": True,
+                            "note": "既无深读页也无轻扫结果"}]}
+
+    try:
+        data = LLM.complete_json(
+            "probe_outline",
+            f"研究对象：{state['question']}\n"
+            + (f"用户已澄清指向：{state.get('user_choice')}\n" if state.get("user_choice") else "")
+            + src,
+            system=prompts.PROBE_OUTLINE,
+        )
+    except Exception as e:
+        return {"degraded": True,
+                "events": [{"kind": "probe_outline", "error": str(e)[:200],
+                            "fallback_to_titles": fallback_used}],
+                "quality": "thin"}
 
     judged = state.get("judged", False)
     degraded = (not judged) or state.get("quality") in ("thin", "farm") \
@@ -333,11 +363,13 @@ def node_probe_outline(state: ProbeState) -> dict:
         "degraded": degraded,
         "headline": headline,
         "quality": "substantive" if not degraded else (state.get("quality") or "unjudged"),
+        "signals_from": "titles" if fallback_used else "deep_pages",
         "events": [{"kind": "probe_outline",
                     "subtopics": len(data.get("subtopics", [])),
                     "entities": len(data.get("entities", [])),
                     "controversies": len(data.get("controversies", [])),
-                    "degraded": degraded}],
+                    "degraded": degraded,
+                    "fallback_to_titles": fallback_used}],
     }
 
 
