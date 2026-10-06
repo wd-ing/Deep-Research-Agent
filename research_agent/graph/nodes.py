@@ -32,7 +32,20 @@ from .subgraphs import write as write_subgraph
 TIME_MARKERS = ["最新", "近况", "现在", "目前", "近期", "现状", "最近", "today",
                 "latest", "recent", "current", "now"]
 
-HARD = dict(max_rounds=8, max_urls=50, timeout_min=20, max_tokens=500_000, no_new_streak=2)
+HARD = dict(
+    max_rounds=8,        # 单轮最多迭代几轮
+    max_urls=50,         # 抓多少个 URL 就收
+    # 实测（2026-10-06 接主图那轮）：17.7 分钟 / 421k token 就跑完了，
+    # 而那是因为 assess 空转导致第 2 轮在重复检索。**修好 assess 后轮数会增加**，
+    # 原来 20 分钟的墙会立刻变成主要失败原因，所以提到 30。
+    timeout_min=30,
+    # 同上：421k / 500k 已经贴脸，没有补检索的余量。
+    max_tokens=800_000,
+    # 修好之前它是个坏计数器（`produced` 取 claims 数量、恒为 0，
+    # 于是 streak 每轮无条件 +1）。修好之后它才真的是「连续几轮没新东西」，
+    # 2 轮是合理的停止阈值，所以**这个值不动**，变的是它的含义。
+    no_new_streak=2,
+)
 MAX_QUERIES_PER_LANG = 5          # 单次每种语言的查询条数上限
 
 SPLITTER = RecursiveSplitter(max_tokens=2000, target_tokens=1000)
@@ -159,6 +172,7 @@ def node_outline(state: ResearchState) -> dict:
     return {"outline": outline, "plan_queries": queries, "events": ev,
             "round": 0, "visited_urls": [], "url_count": 0,
             "consecutive_no_new": 0, "all_evidence": [], "sources": [],
+            "used_queries": [], "last_round_segments": 0,
             "outline_revision_log": []}
 
 
@@ -252,17 +266,79 @@ def _dedup_zh(xs: list[str]) -> list[str]:
     return out
 
 
+def _segments_for_assess(repo, sid: str) -> list[dict]:
+    """assess 阶段能看到的证据段落。
+
+    **单一真相**：跟 node_write 用的是同一张表、同一套过滤（on_topic + 有概括）。
+    两边读的不一致，assess 就会对着空话说「材料不足」。
+    """
+    return [dict(r) for r in repo.q(
+        "SELECT heading_path, summary, source_date FROM chunk "
+        "WHERE session_id=? AND on_topic=1 AND summary IS NOT NULL "
+        "AND summary!='' ORDER BY rowid", (sid,))]
+
+
+def _section_terms(section: dict) -> list[str]:
+    """从一小节的题面里抽「能拿去匹配材料的词」。
+
+    不做分词——中文实体的子串匹配本来就准，而分词器会把
+    「中科深蓝汇泽」切成碎片，反而匹配不上。
+    按标点切开，取长度够的片段当实体。
+    """
+    raw = f"{section.get('title') or ''} {section.get('question') or ''}"
+    parts = re.split(r"[、，,。；;：:？?！!（）()「」\"'／/\s]+", raw)
+    out, seen = [], set()
+    for p in parts:
+        p = p.strip()
+        if len(p) < 3:
+            continue
+        has_zh = bool(re.search(r"[\u4e00-\u9fff]", p))
+        if has_zh and len(p) > 14:
+            continue                       # 中文长片段多半是整句，不是实体
+        if (not has_zh) and len(p) < 4:
+            continue
+        k = p.lower()
+        if k in seen:
+            continue
+        seen.add(k); out.append(p)
+    return out[:14]
+
+
+def _match_for_section(section: dict, segs: list[dict], cap: int = 3) -> list[str]:
+    """这节的题面词在材料里出现过几次，返回最有代表性的前 cap 条概括。"""
+    terms = _section_terms(section)
+    if not terms:
+        return []
+    hits = []
+    for s in segs:
+        blob = f"{s.get('heading_path') or ''} {s.get('summary') or ''}"
+        n = sum(1 for t in terms if t in blob)
+        if n:
+            hits.append((n, (s.get("summary") or "").strip()))
+    if not hits:
+        return []
+    hits.sort(key=lambda x: -x[0])
+    return [h[1][:80] for h in hits[:cap]]
+
+
 def _entities_from(state: ResearchState, zh_only: bool) -> list[str]:
-    ev = state.get("all_evidence") or []
-    if not ev:
+    """第二轮起的自主扩展检索词：从**段落概括**里抽实体。
+
+    原先读的是 `claims`，而 claims 从 R5 起恒为空数组（R7 实测发现的
+    三个空转点之一），所以这个机制也是死的。改成读段落概括。
+    """
+    repo = get_repo()
+    try:
+        segs = _segments_for_assess(repo, state["session_id"])
+    except Exception:
+        return []
+    if not segs:
         return []
     cands: list[str] = []
-    for e in ev[-40:]:
-        txt = (e.get("title") or "") + " " + " ".join(
-            c.get("text", "")[:200] for c in (e.get("claims") or [])[:5]
-        )
+    for s in segs[-120:]:
+        txt = f"{s.get('heading_path') or ''} {s.get('summary') or ''}"
         for pat in (r"([A-Z][A-Za-z0-9]{2,}(?:\s+[A-Z][A-Za-z0-9]{2,}){0,2})",
-                    r"([\u4e00-\u9fff]{2,8}(?:公司|团队|实验室|大学|研究院|模型))"):
+                    r"([\u4e00-\u9fff]{2,8}(?:公司|集团|团队|实验室|大学|研究院|工厂|产线))"):
             cands += re.findall(pat, txt)
     out, seen = [], set()
     for c in cands:
@@ -367,12 +443,31 @@ def node_retrieve(state: ResearchState) -> dict:
                              "token_count": c.token_count})
         it["segments"] = segments
 
+    # 与上一轮的查询词重合多少——重复检索烧配额、产重复段落、
+    # 还会把 no_new_streak 推高导致提前停。这个数必须一眼可见。
+    prev_q = state.get("plan_queries") or {}
+    prev_set = {str(x).strip().lower() for lang in ("zh", "en")
+                for x in (prev_q.get(lang) or [])}
+    cur_set = {str(x).strip().lower() for lang in ("zh", "en")
+               for x in (queries.get(lang) or [])}
+    repeat = sorted(prev_set & cur_set)
+
     events.append({"kind": "retrieve", "round": rnd,
                    "queries": queries, "hits": len(hits),
+                   "repeat_queries": len(repeat),
                    "accepted": len(new_sources), "skipped": skipped[:20]})
+    used = list(state.get("used_queries") or [])
+    for lang in ("zh", "en"):
+        used += [str(x).strip() for x in (queries.get(lang) or [])]
+    repo.save_run_trace(sid, rnd, "retrieve", {
+        "queries": queries, "hits": len(hits), "accepted": len(new_sources),
+        "repeat_queries": repeat, "new_sources": len(new_sources),
+        "skipped": skipped[:10],
+    })
     return {"round": rnd, "visited_urls": list(seen_norms),
             "url_count": len(visited) + len(hits), "sources": new_sources,
             "pending_extract": pending, "conflict_hashes": known_hashes,
+            "used_queries": used,
             "events": events}
 
 
@@ -448,55 +543,172 @@ def node_extract(state: ResearchState) -> dict:
 
 # ================================================================ 缺口评估
 
+def _unused_queries(state: ResearchState) -> set[str]:
+    """已经搜过的词。第 2 轮绝不能原样再搜一遍。"""
+    used = set(state.get("used_queries") or [])
+    q = state.get("plan_queries") or {}
+    for lang in ("zh", "en"):
+        for x in (q.get(lang) or []):
+            used.add(str(x).strip().lower())
+    return used
+
+
+def _predict_stop(state: ResearchState) -> str:
+    """按当前状态，停在这里的话是哪个条件会拦下。纯预测，不改路由。
+
+    之前跑完只知道「停了」，不知道是被哪个条件停的——而这轮恰恰是
+    `no_new_streak`（一个坏计数器）把研究按在 2 轮上。
+    """
+    if state.get("stop_reason") == "satisfied":
+        return "assess 判定证据已足够"
+    q = state.get("plan_queries") or {}
+    if not q.get("zh") and not q.get("en"):
+        return "没有可用的查询词"
+    checks = [
+        (state.get("consecutive_no_new", 0) >= HARD["no_new_streak"],
+         f"连续 {state.get('consecutive_no_new', 0)} 轮无新增（阈值 {HARD['no_new_streak']}）"),
+        (state.get("round", 0) >= HARD["max_rounds"],
+         f"轮数到顶（{state.get('round', 0)}/{HARD['max_rounds']}）"),
+        (state.get("url_count", 0) >= HARD["max_urls"],
+         f"URL 数到顶（{state.get('url_count', 0)}/{HARD['max_urls']}）"),
+        (state.get("elapsed_s", 0) >= HARD["timeout_min"] * 60,
+         f"超时（{state.get('elapsed_s', 0)/60:.0f}/{HARD['timeout_min']} 分钟）"),
+        (state.get("cost_tokens", 0) >= HARD["max_tokens"],
+         f"token 到顶（{state.get('cost_tokens', 0)}/{HARD['max_tokens']}）"),
+    ]
+    for hit, why in checks:
+        if hit:
+            return f"硬条件：{why}"
+    return ""
+
+
 @scoped
 def node_assess(state: ResearchState) -> dict:
+    """判断每节证据够不够、下一轮搜什么。
+
+    **2026-10-06 重写**：原先它读 `all_evidence[].claims`，而 claims 从 R5
+    证据重构起就是**硬编码的空数组**（`extract_batch.py:113`），
+    于是每轮都走「no claims」早退。这个空转打中了三处——
+    assess 本身、`new_claims` 的计算（恒为 0，导致 `consecutive_no_new`
+    每轮无条件 +1）、`_entities_from`（第 2 轮自主扩展）。
+    后果是第 2 轮检索用了和第 1 轮一字不差的查询词。
+
+    现在改为读**段落**：按小节把「题面命中的段落」喂进去，
+    输入从 150 条平铺 claim 降到每节 3 条概括。
+    """
+    repo = get_repo()
+    sid = state.get("session_id") or ""
     rnd = state.get("round", 0)
-    ev = state.get("all_evidence") or []
-    claims = [c for e in ev if e.get("kind") == "claims" for c in (e.get("claims") or [])]
     outline = state.get("outline") or []
 
-    if not claims:
-        return {"plan_queries": state.get("plan_queries") or {},
-                "events": [{"kind": "assess", "round": rnd, "note": "no claims"}]}
+    segs = _segments_for_assess(repo, sid) if sid else []
+    n_seg = len(segs)
 
-    brief = json.dumps({
-        "sections": [{"id": s.get("id"), "title": s.get("title")} for s in outline],
-        "claims": [{"t": c.get("text"), "e": (c.get("entities") or [])[:3]}
-                   for c in claims[-150:]],
-    }, ensure_ascii=False)[:40000]
+    # ---- 本轮是否真有新增：按**段落数**算，不是按 claims（那个恒为 0）----
+    prev_segs = state.get("last_round_segments")
+    new_segs = (n_seg - prev_segs) if prev_segs else n_seg
+    streak = state.get("consecutive_no_new", 0) + 1 if new_segs <= 0 else 0
 
-    try:
-        data = LLM.complete_json("assess", brief, system=prompts.ASSESS)
-    except Exception:
-        data = {}
+    # ---- 按小节组装输入 ----
+    section_views = []
+    for s in outline:
+        hits = _match_for_section(s, segs)
+        section_views.append({
+            "id": s.get("id"), "title": s.get("title"),
+            "question": (s.get("question") or "")[:120],
+            "题面词": _section_terms(s)[:8],
+            "命中段落数": len(_all_hits(s, segs)),
+            "材料样例": hits,
+        })
 
+    data = {}
+    if section_views and n_seg:
+        brief = json.dumps({"本轮可用段落数": n_seg,
+                            "小节": section_views}, ensure_ascii=False)[:24000]
+        try:
+            data = LLM.complete_json("assess", brief, system=prompts.ASSESS)
+        except Exception as e:
+            print(f"⚠️  [assess] 失败: {str(e)[:120]}", flush=True)
+
+    enough = bool(data.get("has_enough"))
+    gaps = [g for g in (data.get("gaps") or []) if isinstance(g, dict)]
+
+    # ---- 下一轮搜什么：**不能沿用已经搜过的词** ----
     nq = data.get("next_queries") or {}
+    used = _unused_queries(state)
+    raw = ([str(x).strip() for x in (nq.get("zh") or []) if str(x).strip()]
+           + [str(x).strip() for x in (nq.get("en") or []) if str(x).strip()])
+    fresh = [q for q in raw if q.lower() not in used]
     queries = {
-        "zh": (nq.get("zh") or [])[:MAX_QUERIES_PER_LANG],
-        "en": (nq.get("en") or [])[:MAX_QUERIES_PER_LANG],
+        "zh": [q for q in fresh if _is_zh(q)][:MAX_QUERIES_PER_LANG],
+        "en": [q for q in fresh if not _is_zh(q)][:MAX_QUERIES_PER_LANG],
     }
+    dropped = [q for q in raw if q.lower() in used]
+    fallback_used = False
     if not queries["zh"] and not queries["en"]:
-        queries = state.get("plan_queries") or {}
+        # 兜底：**绝不原样再搜一遍**。去旧词 + 自主扩展都拿不到东西时，
+        # 才允许沿用旧查询词——但那说明该收工了，不该继续烧配额。
+        if gaps or not enough:
+            queries = {"zh": _dedup_zh(_entities_from(state, True)),
+                       "en": _dedup_zh(_entities_from(state, False))}
+            fallback_used = True
+        if not queries["zh"] and not queries["en"]:
+            queries = {}
 
-    # 本轮是否真有新增
-    new_now = len([e for e in (state.get("pending_extract") or []) if e])
-    produced = len([c for c in claims])
-    prev_round_claims = state.get("last_round_claims")
-    new_claims = produced - (prev_round_claims or 0) if prev_round_claims else produced
-    streak = state.get("consecutive_no_new", 0) + 1 if new_claims <= 0 else 0
+    # 预测「如果现在就收工，是哪个条件拦下的」——纯观测，不改路由。
+    # 之前跑完只知道「停了」，不知道被谁停的，而那轮恰恰是被一个
+    # 坏掉的计数器（no_new_streak）按在 2 轮上的。
+    probe_state = dict(state)
+    probe_state.update({"plan_queries": queries or {},
+                        "consecutive_no_new": streak,
+                        "stop_reason": "satisfied" if enough else ""})
+    stop_would_be = _predict_stop(probe_state)
 
-    return {
-        "plan_queries": queries,
+    out_state = {
+        "plan_queries": queries or {},
         "consecutive_no_new": streak,
-        "last_round_claims": produced,
-        "stop_reason": "satisfied" if data.get("has_enough") else "",
-        "pending_revision": data.get("outline_revision") or {"op": "none"},
+        "last_round_segments": n_seg,
+        "stop_reason": "satisfied" if enough else "",
+        "pending_revision": {"op": "none"},   # 大纲已获用户审批，assess 不再擅自改
         "events": [{"kind": "assess", "round": rnd,
-                    "has_enough": bool(data.get("has_enough")),
-                    "covered": data.get("covered", []),
-                    "gaps": data.get("gaps", []),
-                    "new_claims": new_claims, "no_new_streak": streak}],
+                    "segments_total": n_seg, "new_segments": new_segs,
+                    "no_new_streak": streak, "has_enough": enough,
+                    "thin_sections": [v["id"] for v in section_views
+                                      if v["命中段落数"] == 0],
+                    "gaps": len(gaps),
+                    "queries_fresh": len(fresh), "queries_dropped_repeat": len(dropped),
+                    "queries_fallback": fallback_used,
+                    "stop_would_be": stop_would_be,
+                    "gap_detail": [f"{g.get('section_id')}:{str(g.get('what_missing'))[:70]}"
+                                   for g in gaps][:8]}],
     }
+    repo.save_run_trace(sid, rnd, "assess", {
+        "segments_total": n_seg, "new_segments": new_segs, "streak": streak,
+        "has_enough": enough,
+        "sections": [{"id": v["id"], "hits": v["命中段落数"]} for v in section_views],
+        "gaps": gaps[:10],
+        "queries": queries, "dropped_repeat": dropped,
+        "fallback_used": fallback_used,
+        "stop_would_be": stop_would_be,
+        "brief_chars": len(json.dumps(
+            {"本轮可用段落数": n_seg, "小节": section_views},
+            ensure_ascii=False)[:24000]),
+    })
+    return out_state
+
+
+def _all_hits(section: dict, segs: list[dict]) -> list[str]:
+    terms = _section_terms(section)
+    out = []
+    for s in segs:
+        blob = f"{s.get('heading_path') or ''} {s.get('summary') or ''}"
+        if any(t in blob for t in terms):
+            out.append(s.get("summary") or "")
+    return out
+
+
+def _is_zh(s: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", s))
 
 
 @scoped

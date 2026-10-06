@@ -418,6 +418,37 @@ class Repo:
                 "audit_history": _jl(r["audit_history_json"])
                 if "audit_history_json" in keys else []}
 
+    def save_run_trace(self, session_id: str, rnd: int, kind: str,
+                       detail: dict) -> None:
+        """落一条迭代决策。跑完能 SQL 查，不用翻 stdout。
+
+        kind: assess（这一轮判断了什么、搜什么）/ retrieve（实际搜了什么）/
+              stop（为什么停）。写失败不该影响研究，所以静默吞掉。
+        """
+        if not session_id:
+            return
+        try:
+            self.x(
+                "INSERT INTO run_trace (session_id, round, at, kind, detail_json) "
+                "VALUES (?,?,?,?,?) "
+                "ON CONFLICT(session_id, round, kind) DO UPDATE SET "
+                "  at=excluded.at, detail_json=excluded.detail_json",
+                (session_id, rnd, now(), kind, _jd(detail)),
+            )
+        except Exception:
+            pass
+
+    def run_trace(self, session_id: str) -> list[dict]:
+        rows = self.q(
+            "SELECT round, kind, at, detail_json FROM run_trace "
+            "WHERE session_id=? ORDER BY round, kind", (session_id,))
+        out = []
+        for r in rows:
+            d = _jl(r["detail_json"])
+            out.append({"round": r["round"], "kind": r["kind"],
+                        "at": r["at"], **(d if isinstance(d, dict) else {})})
+        return out
+
     def session_cost(self, session_id: str) -> int:
         row = self.q1(
             "SELECT COALESCE(SUM(input_tokens+output_tokens),0) AS t "

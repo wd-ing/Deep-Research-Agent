@@ -109,15 +109,18 @@ def main() -> None:
     n_ch = repo.q1("SELECT COUNT(*) c FROM chunk WHERE session_id=?", (sid,))["c"]
     n_pend = repo.q1("SELECT COUNT(*) c FROM chunk WHERE session_id=? AND status='pending'",
                      (sid,))["c"]
-    # 断言只活在 state 里，没落库（表里没有 claim），从 state 数
-    n_cl = sum(len(e.get("claims") or [])
-               for e in (out2.get("all_evidence") or [])
-               if e.get("kind") == "claims")
-    n_on_topic_ev = sum(1 for e in (out2.get("all_evidence") or [])
-                        if e.get("kind") == "claims" and e.get("on_topic", True))
+    # R4 时代这里数的是「断言」（all_evidence 里 kind=='claims'）。
+    # R5 起证据单位改成段落，落库是 chunk 表、闸门结果在 chunk.on_topic，
+    # 断言那套已经不存在了——再数就是永远 0，看着像坏了。
+    n_seg = repo.q1("SELECT COUNT(*) c FROM chunk WHERE session_id=? "
+                    "AND summary IS NOT NULL AND summary!=''", (sid,))["c"]
+    n_on_seg = repo.q1("SELECT COUNT(*) c FROM chunk WHERE session_id=? AND on_topic=1",
+                       (sid,))["c"]
+    n_no_sum = repo.q1("SELECT COUNT(*) c FROM chunk WHERE session_id=? "
+                       "AND (summary IS NULL OR summary='')", (sid,))["c"]
     print(f"  来源 {n_src}（相关 {n_on} / 无关 {n_off}）")
     print(f"  分块 {n_ch}（仍 pending {n_pend}）")
-    print(f"  断言 {n_cl}，来自 {n_on_topic_ev} 个通过闸门的来源")
+    print(f"  段落 {n_seg}（通过闸门 {n_on_seg}，无概括 {n_no_sum}）")
     print(f"  会话状态: {repo.q1('SELECT status FROM session WHERE id=?', (sid,))['status']}")
     print(f"  总 token: {repo.session_cost(sid)}")
 

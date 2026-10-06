@@ -63,6 +63,10 @@ class ResearchState(TypedDict, total=False):
     url_count: int
     consecutive_no_new: int
     stop_reason: str
+    # 已经发出过的检索词。assess 靠它避免第 2 轮原样重发——
+    # 重复检索烧配额、产重复段落，还会把 consecutive_no_new 推高导致提前停。
+    used_queries: list
+    last_round_segments: int      # 上轮累计的可用段落数，用来算「本轮有无新增」
 
     # ---------- 证据 ----------
     pending_extract: list        # 本轮待批量抽取的来源
