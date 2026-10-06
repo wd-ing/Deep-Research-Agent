@@ -297,22 +297,38 @@ def _segments_for_assess(repo, sid: str) -> list[dict]:
         "AND summary!='' ORDER BY rowid", (sid,))]
 
 
+# 标点之外，中文里的虚词/连接词也是天然边界：按它们切出来的多半是短语，
+# 而整句（8–12 字）在段落概括里原样出现的概率几乎是 0。
+_TERM_SPLIT = re.compile(
+    r"[、，,。；;：:？?！!（）()「」\"'／/\s—－\-_=&＆]+"
+    r"|(?:以及|并且|如何|是否|分别|什么|哪些|怎样|为什么|多少|以及)"
+    r"|(?:的|与|和|及|或|等|对|让|使|把|被|从|到|在|为|中)"
+)
+
+
 def _section_terms(section: dict) -> list[str]:
     """从一小节的题面里抽「能拿去匹配材料的词」。
 
     不做分词——中文实体的子串匹配本来就准，而分词器会把
     「中科深蓝汇泽」切成碎片，反而匹配不上。
-    按标点切开，取长度够的片段当实体。
+    按标点与虚词切开，取长度够的片段当实体。
+
+    **要二次切分**（2026-10-06 实测后加）：原先只按标点切，
+    中文问句里标点之间的部分常常是 8–12 字的整句
+    （「固—固界面失效机理」「固态电池安全性的路线依赖性」），
+    这种串在段落概括里原样出现的机会几乎是 0——
+    实测 4 个小节因此被误判成「命中 0」，而它们的材料其实都很充足
+    （sec3 的段落里「界面」出现 26 次、sec7 的「安全」22 次）。
     """
     raw = f"{section.get('title') or ''} {section.get('question') or ''}"
-    parts = re.split(r"[、，,。；;：:？?！!（）()「」\"'／/\s]+", raw)
+    parts = _TERM_SPLIT.split(raw)
     out, seen = [], set()
     for p in parts:
-        p = p.strip()
-        if len(p) < 3:
+        p = (p or "").strip()
+        if len(p) < 2:
             continue
         has_zh = bool(re.search(r"[\u4e00-\u9fff]", p))
-        if has_zh and len(p) > 14:
+        if has_zh and len(p) > 10:
             continue                       # 中文长片段多半是整句，不是实体
         if (not has_zh) and len(p) < 4:
             continue
@@ -320,24 +336,33 @@ def _section_terms(section: dict) -> list[str]:
         if k in seen:
             continue
         seen.add(k); out.append(p)
-    return out[:14]
+    return out[:16]
 
 
-def _match_for_section(section: dict, segs: list[dict], cap: int = 3) -> list[str]:
-    """这节的题面词在材料里出现过几次，返回最有代表性的前 cap 条概括。"""
+def _score_sections(section: dict, segs: list[dict]) -> list[tuple[int, str]]:
+    """这节的题面词在每条段落里命中几个，按分数降序返回 [(分数, 概括)]。
+
+    **要的是排序而不是 0/1 命中**（2026-10-06 实测后改）：
+    题面和段落用词本来就会不一样（「固—固界面失效机理」vs「固固界面接触退化」），
+    要求整串命中会全盘漏掉。打分排序能把相关段落捞上来，
+    剩下的判断交给 LLM——它才是能做语义匹配的那个。
+    """
     terms = _section_terms(section)
     if not terms:
         return []
-    hits = []
+    scored = []
     for s in segs:
         blob = f"{s.get('heading_path') or ''} {s.get('summary') or ''}"
         n = sum(1 for t in terms if t in blob)
         if n:
-            hits.append((n, (s.get("summary") or "").strip()))
-    if not hits:
-        return []
-    hits.sort(key=lambda x: -x[0])
-    return [h[1][:80] for h in hits[:cap]]
+            scored.append((n, (s.get("summary") or "").strip()))
+    scored.sort(key=lambda x: -x[0])
+    return scored
+
+
+def _match_for_section(section: dict, segs: list[dict], cap: int = 3) -> list[str]:
+    """这节最相关的 cap 条段落概括（按命中词个数排序）。"""
+    return [s[:80] for _, s in _score_sections(section, segs)[:cap]]
 
 
 def _entities_from(state: ResearchState, zh_only: bool) -> list[str]:
@@ -660,13 +685,18 @@ def node_assess(state: ResearchState) -> dict:
     # ---- 按小节组装输入 ----
     section_views = []
     for s in outline:
-        hits = _match_for_section(s, segs)
+        scored = _score_sections(s, segs)
+        best = scored[0][0] if scored else 0
         section_views.append({
             "id": s.get("id"), "title": s.get("title"),
             "question": (s.get("question") or "")[:120],
-            "题面词": _section_terms(s)[:8],
-            "命中段落数": len(_all_hits(s, segs)),
-            "材料样例": hits,
+            "题面词": _section_terms(s)[:10],
+            # 「有几条段落沾边」和「沾得多准」是两个数。
+            # 实测 sec7 命中 68 段但最高分只有 2——材料很多却都不对题；
+            # 只看命中数会给出「材料充足」的错误印象。
+            "沾边段数": len(scored),
+            "最高吻合度": best,
+            "材料样例": [x[1][:80] for x in scored[:3]],
         })
 
     data = {}
@@ -722,7 +752,7 @@ def node_assess(state: ResearchState) -> dict:
                     "segments_total": n_seg, "new_segments": new_segs,
                     "no_new_streak": streak, "has_enough": enough,
                     "thin_sections": [v["id"] for v in section_views
-                                      if v["命中段落数"] == 0],
+                                      if v["最高吻合度"] <= 1],
                     "gaps": len(gaps),
                     "queries_fresh": len(fresh), "queries_dropped_repeat": len(dropped),
                     "queries_fallback": fallback_used,
@@ -733,7 +763,8 @@ def node_assess(state: ResearchState) -> dict:
     repo.save_run_trace(sid, rnd, "assess", {
         "segments_total": n_seg, "new_segments": new_segs, "streak": streak,
         "has_enough": enough,
-        "sections": [{"id": v["id"], "hits": v["命中段落数"]} for v in section_views],
+        "sections": [{"id": v["id"], "hits": v["沾边段数"],
+                      "top": v["最高吻合度"]} for v in section_views],
         "gaps": gaps[:10],
         "queries": queries, "dropped_repeat": dropped,
         "fallback_used": fallback_used,
@@ -743,16 +774,6 @@ def node_assess(state: ResearchState) -> dict:
             ensure_ascii=False)[:24000]),
     })
     return out_state
-
-
-def _all_hits(section: dict, segs: list[dict]) -> list[str]:
-    terms = _section_terms(section)
-    out = []
-    for s in segs:
-        blob = f"{s.get('heading_path') or ''} {s.get('summary') or ''}"
-        if any(t in blob for t in terms):
-            out.append(s.get("summary") or "")
-    return out
 
 
 def _is_zh(s: str) -> bool:

@@ -92,10 +92,11 @@ segs = N._segments_for_assess(repo, SID)
 print(f"  读到的段落 {len(segs)} 条")
 for s in OUTLINE:
     hits = N._match_for_section(s, segs)
-    n = len(N._all_hits(s, segs))
-    print(f"  {s['id']}: 命中 {n} 段，样例 {hits[:1]}")
-assert len(N._all_hits(OUTLINE[1], segs)) >= 1, "sec7 应该命中宁德时代/比亚迪"
-assert len(N._all_hits(OUTLINE[2], segs)) == 0, "sec13 问八部门文件，材料里没有"
+    sc = N._score_sections(s, segs)
+    n, top = len(sc), (sc[0][0] if sc else 0)
+    print(f"  {s['id']}: 沾边 {n} 段，最高吻合度 {top}，样例 {hits[:1]}")
+assert N._score_sections(OUTLINE[1], segs), "sec7 应该命中宁德时代/比亚迪"
+assert not N._score_sections(OUTLINE[2], segs), "sec13 问八部门文件，材料里没有"
 print("  ✓ 有材料的节能命中，没材料的节能识别为 0")
 
 print(f"\n{'='*70}\n3. node_assess 真的干活了（mock LLM）")
@@ -137,8 +138,8 @@ print(f"  assess 被调用 {sum(1 for c in calls if c[0]=='assess')} 次"
 assert any(c[0] == "assess" for c in calls), "assess 还是没被调用"
 brief = [c[1] for c in calls if c[0] == "assess"][0]
 print(f"  输入规模 {len(brief)} 字（原先上限 40000 字符平铺 150 条 claim）")
-print(f"  有按小节分组: {'命中段落数' in brief}")
-assert "命中段落数" in brief, "输入没有按小节重组"
+print(f"  有按小节分组: {'沾边段数' in brief and '最高吻合度' in brief}")
+assert "沾边段数" in brief and "最高吻合度" in brief, "输入没有按小节重组"
 print("  ✓ assess 真的被调用了，输入按小节重组")
 
 ev = out["events"][0]
@@ -149,7 +150,11 @@ print(f"  丢弃的重复词: {ev['queries_dropped_repeat']} 条")
 print(f"  停止原因预测: {ev['stop_would_be'] or '（会继续检索）'}")
 assert ev["segments_total"] == 3, ev["segments_total"]
 assert ev["new_segments"] == 3, ev["new_segments"]
-assert ev["thin_sections"] == ["sec13"], ev["thin_sections"]
+assert ev["thin_sections"] == ["sec7", "sec13"], \
+    f"薄弱小节判错：{ev['thin_sections']}"
+# 判据是「最高吻合度 ≤ 1」而不是「沾边段数为 0」——
+# 沾边但都对不上题，材料照样是不够用（实测 sec7 沾边 68 段最高分只有 2）。
+print("  ✓ 薄弱小节按「最高吻合度 ≤ 1」判定，沾边多但不对题的也算薄弱")
 assert out["consecutive_no_new"] == 0, "本轮有 3 段新增，streak 不该 +1"
 print("  ✓ 有新增段落时 consecutive_no_new 归零（原先恒 +1）")
 
