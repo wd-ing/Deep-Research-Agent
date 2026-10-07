@@ -61,8 +61,20 @@ def _make_nature_items(items: list[dict]) -> list[dict]:
     **不再需要整篇正文。** 判定依据是「第一人称我们发布」「有 abstract 和
     methodology」「通篇转述无一手链接」「署名记者」这些**出处信号**，它们
     集中在标题、开头和署名处。所以只给：
-      标题 + URL + 域名 + 开头 2500 字 + 各段概括
-    段落概括反而更有用——它直接告诉你这篇在讲什么、是不是罗列。
+      标题 + URL + 域名 + 开头 2500 字 + **各段概括**
+
+    段落概括直接告诉你这篇在讲什么、是不是罗列。
+
+    ⚠️ `summaries` 取的是 `s["summary"]`（概括，约 38 字/段），
+    **不是 `s["text"]`（段落原文，约 2000 字/段）**。
+    这一点曾经错得很离谱：字段名和注释都写着「概括」，代码取的却是原文，
+    而且渲染时不截断——`extract_batch.py` 的 docstring 还写着
+    「判定不需要整篇正文」。实测那个字段贡献了 extract 输入的 **77%**
+    （327,109 / 427,005 字符），而这批原文同一次调用里已经被
+    `summarize_segments` 读过一遍。详见 `COST_C1.md` 的 C1-b。
+
+    要兜住两种退化：概括失败的段落、整篇没被切成段的来源——
+    所以开头 2500 字始终保留，它是判定信号的主要来源。
     """
     out = []
     for i, it in enumerate(items):
@@ -74,7 +86,8 @@ def _make_nature_items(items: list[dict]) -> list[dict]:
             "title": it.get("title") or "",
             "url": it.get("url") or "",
             "head": head,
-            "summaries": [s.get("text") for s in segs][:12] if segs else [],
+            "summaries": [(s.get("summary") or "").strip()
+                          for s in segs if (s.get("summary") or "").strip()][:12],
         })
     return out
 
@@ -176,13 +189,29 @@ def extract_all(items: list[dict]) -> dict:
        "segments": [{"chunk_id","text","heading_path"}, ...]}  # 概括用段落
     返回 {"results": [...], "summaries": {chunk_id: str},
           "failed_batches": int, "events": [...]}
+
+    **先概括、后判来源性质**（2026-10-06 改，依据见 `COST_C1.md` C1-b）：
+    原来反过来，于是 `_make_nature_items` 那个叫「各段概括」的字段
+    只能退而取段落**原文**、且渲染时不截断——实测它贡献了 extract 输入的 77%
+    （327,109 字符 / 427,005），而这批原文 `summarize_segments` 当场就读过一遍。
+    extract 的任务只是判「这个来源是什么性质」，依据集中在标题与开头 2500 字，
+    白读整篇是纯浪费。调换顺序后它读的是真正的概括（每段约 38 字）。
     """
     if not items:
         return {"results": [], "summaries": {}, "failed_batches": 0, "events": []}
+
+    # 1) 先概括，并挂回 segments，后面的 nature 才有「概括」可用
+    sum_out = summarize_segments(
+        [s for it in items for s in (it.get("segments") or [])])
+    for it in items:
+        for s in (it.get("segments") or []):
+            s["summary"] = (sum_out["summaries"] or {}).get(s["chunk_id"], "")
+
+    # 2) 再判来源性质
     batches = make_batches(_make_nature_items(items))
     g = build_extract_graph().compile()
     out = g.invoke({"batches": batches})
-    out.update(summarize_segments([s for it in items for s in (it.get("segments") or [])]))
+    out.update(sum_out)
     return out
 def summarize_segments(items: list[dict]) -> dict:
     """为每个段落写一句话概括。

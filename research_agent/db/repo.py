@@ -449,6 +449,20 @@ class Repo:
                         "at": r["at"], **(d if isinstance(d, dict) else {})})
         return out
 
+    def save_node_timing(self, session_id: str, node: str, ms: float,
+                         rnd: int = 0, **extra) -> None:
+        """记一个节点的墙钟耗时。
+
+        `llm_call` 只有 LLM 调用的耗时，缺了两块：检索/抓取的网络 IO，
+        以及节点里不调模型的准备工作。要做成本优化就得知道**时间花在哪**，
+        所以补这一层。
+
+        节点名编进 kind 而不是塞进 detail：run_trace 的主键是
+        (session_id, round, kind)，同一轮的多个节点用 detail 会互相覆盖。
+        """
+        self.save_run_trace(session_id, rnd, f"node:{node}",
+                            {"node": node, "ms": round(ms), **extra})
+
     def session_cost(self, session_id: str) -> int:
         row = self.q1(
             "SELECT COALESCE(SUM(input_tokens+output_tokens),0) AS t "

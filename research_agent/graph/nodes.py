@@ -80,9 +80,38 @@ def _is_time_sensitive(q: str) -> bool:
     return any(m in ql for m in TIME_MARKERS)
 
 
+def _timed_node(name: str):
+    """给节点记墙钟耗时。
+
+    `llm_call` 只记 LLM 调用的耗时，做成本优化时看不见两块：
+    检索/抓取的网络 IO，和节点里不调模型的准备工作——常常才是大头。
+
+    写进 `run_trace`（kind = `node:<名字>`）。节点名要进 kind 而不是 detail：
+    run_trace 的主键是 (session_id, round, kind)，同一轮的多个节点不能重名。
+    """
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(state: dict):
+            sid = state.get("session_id") or ""
+            t0 = time.time()
+            try:
+                return fn(state)
+            finally:
+                if sid:
+                    try:
+                        get_repo().save_node_timing(
+                            sid, name, (time.time() - t0) * 1000,
+                            int(state.get("round", 0) or 0))
+                    except Exception:
+                        pass
+        return wrapper
+    return deco
+
+
 # ================================================================ 探针
 
 @scoped
+@_timed_node("probe")
 def node_probe(state: ResearchState) -> dict:
     """探针子图封装。子图内部三次 LLM 调用与换词重试主循环都看不到。"""
     q = state["question"]
@@ -104,6 +133,7 @@ def node_probe(state: ResearchState) -> dict:
 # ================================================================ 框架
 
 @scoped
+@_timed_node("outline")
 def node_outline(state: ResearchState) -> dict:
     """基于探针轮廓定框架。grounded_in 是唯一的硬约束。"""
     pr = state.get("probe") or {}
@@ -414,6 +444,7 @@ def _fetched_count(state: ResearchState) -> int:
     return len(state.get("sources") or [])
 
 
+@_timed_node("retrieve")
 def node_retrieve(state: ResearchState) -> dict:
     repo = get_repo()
     sid = state["session_id"]
@@ -547,6 +578,7 @@ def node_retrieve(state: ResearchState) -> dict:
 # ================================================================ 抽取
 
 @scoped
+@_timed_node("extract")
 def node_extract(state: ResearchState) -> dict:
     """调用抽取子图。批次细节与并发都在子图内部。"""
     items = state.get("pending_extract") or []
@@ -858,6 +890,7 @@ def route_after_revision(state: ResearchState) -> str:
 # ================================================================ 写报告
 
 @scoped
+@_timed_node("write")
 def node_write(state: ResearchState) -> dict:
     """写报告。真正的活儿在 subgraphs/write.py，这里只做取数与落库。
 
@@ -952,6 +985,7 @@ def node_write(state: ResearchState) -> dict:
 # ================================================================ 收尾
 
 @scoped
+@_timed_node("finalize")
 def node_finalize(state: ResearchState) -> dict:
     """向量化 + 状态与成本回写。
 
