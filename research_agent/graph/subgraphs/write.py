@@ -23,7 +23,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from ...llm.provider import LLMClient
+from ...llm.provider import LLMClient, submit_run_in_context
 from ...llm.toolloop import run_tool_loop
 from .. import prompts
 from ..state import WriteState
@@ -226,8 +226,15 @@ def node_dispatch(state: WriteState) -> dict:
                              "reason": err or "empty output"})
 
     if rest := todo[1:]:
+        # 必须用 submit_run_in_context：线程不继承 contextvar，不包的话
+        # 这 11 个并发子 agent 的记账 session_id 全是 NULL
+        # （2026-10-07 实测漏记 238,901 输入 token）。
+        # 注意**不能**写成 pool.map(lambda t: run_in_context(...), rest)——
+        # 那个 lambda 是在 worker 线程里执行的，复制到的 context 是空的。
         with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-            results = list(pool.map(lambda t: _run_task(state, t, None), rest))
+            futs = [submit_run_in_context(pool, _run_task, state, t, None)
+                    for t in rest]
+            results = [f.result() for f in futs]
             for t, (secs, err) in zip(rest, results):
                 if secs:
                     ev["drafts"][t["id"]] = secs
@@ -749,8 +756,10 @@ def node_revise(state: WriteState) -> dict:
 
     rest = order[1:]
     if rest:
+        # 同上：返修的并发任务也要继承记账的 contextvar
         with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-            for tid, new, _err in pool.map(_one, rest):
+            futs = [submit_run_in_context(pool, _one, t) for t in rest]
+            for tid, new, _err in (f.result() for f in futs):
                 drafts[tid] = _merge_sections(drafts.get(tid), new, by_task[tid])
 
     return {

@@ -21,13 +21,19 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ...llm.provider import LLMClient
+from ...llm.provider import LLMClient, parallel_labelled
 from .. import prompts
 
 LLM = LLMClient()
 
 # 出现率低于这个值就判为「没提到」，走 LLM 或 fallback
 MIN_MENTION_RATIO = 0.15
+
+# 闸门 LLM 判定的并发度。规则层是纯 CPU 不用并发，
+# 只有真正落到 LLM 的段才排队（2026-10-07，C1-f）。
+# 从 6 降到 4：6 那轮实测撞了 3 次 `HTTP 529 过载/限流`，退避反而更慢。
+# 4 是保守值，**没有实测过 MiniMax 的并发上限**——撞不撞要再跑一轮才知道。
+GATE_WORKERS = 4
 
 # 通用 AI 词汇在任何相关文章里都会出现，不能当判据。
 # 这些词即使命中也不计入闸门。
@@ -186,40 +192,68 @@ def gate_segments(segments: list[dict], kw: list[str], topic_label: str) -> dict
     """段级相关性闸门。
 
     原先在来源级判，一页里「前半讲技术、后半讲融资」只能整篇进出。
-    升到段级之后，这类页面只有相关的那几段会进报告，
-    而「这页在东拉西扯」本身也变成可见的事实——段落概括会如实说。
+    升到段级之后，这类页面只有相关的那几段会进报告。
 
     与 `gate_one` 同一条路径：命中专有名词即通过（零成本），
     都没有才叫 LLM，判不了就放行。宁可漏杀不可错杀。
+
+    **两段式**（2026-10-07，C1-f）：规则层先同步跑完（纯 CPU、毫秒级），
+    只把**真正需要调 LLM** 的段收集起来并发判。
+    原先是整段循环串行：实测 92 次调用累计 250 秒，而每次平均只有 2.7 秒——
+    **那是纯延迟不是成本**（token 只占全轮 4%）。并发只省时间，不省 token。
     """
     strong = kw.get("strong") or []
     weak = kw.get("weak") or []
-    keep, marks = [], []
+    no_kw = not strong and not weak
+    verdicts: dict[int, dict] = {}
+    todo: list[int] = []
 
-    for seg in segments:
+    def _blob(seg: dict) -> str:
         # 概括缺失时退到正文开头，**不能**因为概括没生成就把这段漏掉——
-        # 闸门才是判断相关性��地方，概括只是它的输入之一。
+        # 闸门才是判断相关性的地方，概括只是它的输入之一。
         # 之前这里只看概括，于是「概括批次失败 → 没概括 → 进不了闸门 →
         # 段直接消失」，本该被拦的垃圾页面绕过了闸门。
-        blob = " ".join([
+        return " ".join([
             seg.get("heading_path") or "", seg.get("title") or "",
             seg.get("summary") or "",
-            "" if (seg.get("summary") or "").strip() else (seg.get("content") or "")[:600],
+            "" if (seg.get("summary") or "").strip()
+            else (seg.get("content") or "")[:600],
         ])[:3000]
-        if not strong and not weak:
-            r = _llm_judge_seg(seg, topic_label, blob, method="fallback")
+
+    # ---- 第一阶段：规则层，同步、零成本 ----
+    for i, seg in enumerate(segments):
+        if no_kw:
+            todo.append(i)
+            continue
+        blob = _blob(seg)
+        hits = _match(blob, strong)
+        if hits >= 1:
+            verdicts[i] = {"on_topic": True, "method": "rule", "hits": hits,
+                           "total": len(strong),
+                           "reason": f"命中专有名词 {hits}/{len(strong)}"}
+        elif weak and len(strong) == 0 and _match(blob, weak) / len(weak) >= 0.4:
+            verdicts[i] = {"on_topic": True, "method": "rule_weak",
+                           "reason": "仅有通用词密集出现"}
         else:
-            hits = _match(blob, strong)
-            if hits >= 1:
-                r = {"on_topic": True, "method": "rule", "hits": hits,
-                     "total": len(strong),
-                     "reason": f"命中专有名词 {hits}/{len(strong)}"}
-            elif weak and len(strong) == 0 and _match(blob, weak) / len(weak) >= 0.4:
-                r = {"on_topic": True, "method": "rule_weak",
-                     "reason": "仅有通用词密集出现"}
-            else:
-                r = _llm_judge_seg(seg, topic_label, blob, method="llm",
-                                   hits=hits, total=len(strong))
+            todo.append(i)
+
+    # ---- 第二阶段：只有需要 LLM 的段才并发 ----
+    def _judge(i: int) -> dict:
+        blob = _blob(segments[i])
+        return _llm_judge_seg(
+            segments[i], topic_label, blob, method="fallback" if no_kw else "llm",
+            hits=_match(blob, strong), total=len(strong))
+
+    for i, got in zip(todo, parallel_labelled(
+            todo, _judge, workers=GATE_WORKERS, label="闸门判定",
+            first_serial=True)):
+        # 并发下判定失败的项是 None —— 一律放行（宁可漏杀不可错杀）
+        verdicts[i] = got or {"on_topic": True, "method": "llm_degraded",
+                              "reason": "判定失败，放行"}
+
+    keep, marks = [], []
+    for i, seg in enumerate(segments):
+        r = verdicts[i]
         marks.append((1 if r["on_topic"] else 0, r.get("reason", ""),
                       r.get("method", ""), seg["id"]))
         if r["on_topic"]:

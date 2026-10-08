@@ -32,8 +32,14 @@ from .subgraphs import write as write_subgraph
 TIME_MARKERS = ["最新", "近况", "现在", "目前", "近期", "现状", "最近", "today",
                 "latest", "recent", "current", "now"]
 
+# 边际收益阈值（2026-10-07，C1-d）：本轮新增段落 / 累计段落 低于它就收手。
+# 定 20%：实测第 3、4 轮各只多 10 段（对累计 222 是 4.5%），边际收益早就是零，
+# 但 assess 说了 7 轮「不够」。让模型自己发现这件事太慢，交给可算的硬判据。
+MIN_ROUND_GAIN = 0.20
 HARD = dict(
-    max_rounds=8,        # 单轮最多迭代几轮
+    # 从 8 收到 4。边际收益在第 3 轮就趋零，跑满 8 轮纯属烧配额。
+    # 3–4 轮是「够用」与「别浪费」的平衡点。
+    max_rounds=4,
     max_urls=50,         # 抓多少个 URL 就收
     # 实测（2026-10-06 接主图那轮）：17.7 分钟 / 421k token 就跑完了，
     # 而那是因为 assess 空转导致第 2 轮在重复检索。**修好 assess 后轮数会增加**，
@@ -426,7 +432,6 @@ def _entities_from(state: ResearchState, zh_only: bool) -> list[str]:
     return out
 
 
-@scoped
 def _fetched_count(state: ResearchState) -> int:
     """**真正抓下来的**来源数，用来卡 max_urls 预算。
 
@@ -664,8 +669,8 @@ def _predict_stop(state: ResearchState) -> str:
     之前跑完只知道「停了」，不知道是被哪个条件停的——而这轮恰恰是
     `no_new_streak`（一个坏计数器）把研究按在 2 轮上。
     """
-    if state.get("stop_reason") == "satisfied":
-        return "assess 判定证据已足够"
+    if state.get("stop_reason"):
+        return str(state["stop_reason"])
     q = state.get("plan_queries") or {}
     if not q.get("zh") and not q.get("en"):
         return "没有可用的查询词"
@@ -685,6 +690,53 @@ def _predict_stop(state: ResearchState) -> str:
         if hit:
             return f"硬条件：{why}"
     return ""
+
+
+def _count_urgency(gaps: list[dict]) -> dict:
+    """按 urgency 分组统计缺口。用来判断「还有没有值得再搜的缺口」。
+
+    `low` 的缺口是「网上确实没有」，它不该成为继续检索的理由——
+    实测那 7 轮里每轮都填满 10 个 low/medium 缺口，于是永远说不够。
+    """
+    out: dict[str, int] = {}
+    for g in gaps or []:
+        k = str(g.get("urgency") or "?").lower()
+        out[k] = out.get(k, 0) + 1
+    return out
+
+
+def _assess_history(repo, sid: str, rnd: int) -> dict:
+    """给 assess 看「前面几轮发生了什么」。
+
+    2026-10-07 实测：只告诉它「现在缺什么」，它就会永远说不够——
+    三轮 `has_enough` 全 False，第 3 轮边际收益只剩 8% 却还有 6 个 high 缺口。
+    原因是它做不了这个推理：「这个缺口我前面报过两轮了，每轮新增的材料里
+    都没有它」⇒「那大概就是网上没有」。
+
+    **把历史喂给它，这个推理才做得出来。**
+    """
+    if rnd <= 0 or not sid:
+        return {}
+    prev = None
+    for e in reversed(repo.run_trace(sid)):
+        if e.get("kind") == "assess" and e.get("round") == rnd - 1:
+            prev = e
+            break
+    if not prev:
+        return {}
+    out: dict = {
+        "这是第几轮检索": rnd + 1,
+        "上一轮新增段落数": prev.get("new_segments"),
+        "上一轮累计段落数": prev.get("segments_total"),
+        "上一轮你的判断": ("证据已足够（已停工）" if prev.get("has_enough")
+                           else f"仍不够，缺口分级 {prev.get('gaps_by_urgency')}"),
+    }
+    pg = prev.get("gaps") or []
+    if pg:
+        out["上一轮你报过的缺口"] = [
+            {"section_id": g.get("section_id"), "urgency": g.get("urgency"),
+             "what_missing": str(g.get("what_missing"))[:80]} for g in pg]
+    return out
 
 
 @scoped
@@ -733,7 +785,9 @@ def node_assess(state: ResearchState) -> dict:
 
     data = {}
     if section_views and n_seg:
+        hist = _assess_history(repo, sid, rnd)
         brief = json.dumps({"本轮可用段落数": n_seg,
+                            "检索历史": hist or "这是第一轮，没有历史",
                             "小节": section_views}, ensure_ascii=False)[:24000]
         try:
             data = LLM.complete_json("assess", brief, system=prompts.ASSESS)
@@ -765,36 +819,57 @@ def node_assess(state: ResearchState) -> dict:
         if not queries["zh"] and not queries["en"]:
             queries = {}
 
-    # 预测「如果现在就收工，是哪个条件拦下的」——纯观测，不改路由。
-    # 之前跑完只知道「停了」，不知道被谁停的，而那轮恰恰是被一个
-    # 坏掉的计数器（no_new_streak）按在 2 轮上的。
-    probe_state = dict(state)
-    probe_state.update({"plan_queries": queries or {},
-                        "consecutive_no_new": streak,
-                        "stop_reason": "satisfied" if enough else ""})
-    stop_would_be = _predict_stop(probe_state)
+    # ---- 边际收益：本轮新增占累计的比例 ----
+    # 提示词那层（`has_enough`）是判断题；这一层是**可算的数字**。
+    # 实测（2026-10-07）：assess 连说 7 轮「不够」，而第 3、4 轮各只多 10 段、
+    # 第 7 轮只多 4 段，边际收益早就是零，却一直搜到 URL 撞天花板。
+    # 让模型自己发现这件事太慢，交给硬判据。
+    gain = new_segs / n_seg if n_seg else 1.0
+    low_gain = bool(n_seg and gain < MIN_ROUND_GAIN and rnd > 0)
+
+    # 停止原因要**可归因**：是提示词让模型说了「够了」，
+    # 还是机制层的硬判据拦下的。分不清就没法判断该改哪边。
+    stop_would_be, stop_layer = "", ""
+    if enough:
+        stop_would_be, stop_layer = "assess 说够了", "prompt"
+    elif streak >= HARD["no_new_streak"]:
+        stop_would_be, stop_layer = f"连续 {streak} 轮无新增", "mechanism"
+    elif low_gain:
+        stop_would_be = (f"边际收益过低（本轮新增 {new_segs} 段 = {gain:.0%}，"
+                         f"阈值 {MIN_ROUND_GAIN:.0%}）")
+        stop_layer = "mechanism"
+    elif rnd >= HARD["max_rounds"]:
+        stop_would_be = f"轮数到顶（{rnd}/{HARD['max_rounds']}）"
+        stop_layer = "mechanism"
 
     out_state = {
         "plan_queries": queries or {},
         "consecutive_no_new": streak,
         "last_round_segments": n_seg,
-        "stop_reason": "satisfied" if enough else "",
+        "stop_reason": stop_would_be,
         "pending_revision": {"op": "none"},   # 大纲已获用户审批，assess 不再擅自改
         "events": [{"kind": "assess", "round": rnd,
                     "segments_total": n_seg, "new_segments": new_segs,
+                    "round_gain": round(gain, 4),
                     "no_new_streak": streak, "has_enough": enough,
                     "thin_sections": [v["id"] for v in section_views
                                       if v["最高吻合度"] <= 1],
                     "gaps": len(gaps),
+                    "gaps_by_urgency": _count_urgency(gaps),
                     "queries_fresh": len(fresh), "queries_dropped_repeat": len(dropped),
                     "queries_fallback": fallback_used,
-                    "stop_would_be": stop_would_be,
-                    "gap_detail": [f"{g.get('section_id')}:{str(g.get('what_missing'))[:70]}"
+                    "stop_would_be": stop_would_be or "（会继续检索）",
+                    "stop_layer": stop_layer or "—",
+                    "gap_detail": [f"{g.get('section_id')}[{g.get('urgency')}]:"
+                                   f"{str(g.get('what_missing'))[:60]}"
                                    for g in gaps][:8]}],
     }
     repo.save_run_trace(sid, rnd, "assess", {
         "segments_total": n_seg, "new_segments": new_segs, "streak": streak,
+        "round_gain": round(gain, 4),
         "has_enough": enough,
+        "stop_would_be": stop_would_be, "stop_layer": stop_layer,
+        "gaps_by_urgency": _count_urgency(gaps),
         "sections": [{"id": v["id"], "hits": v["沾边段数"],
                       "top": v["最高吻合度"]} for v in section_views],
         "gaps": gaps[:10],
@@ -869,7 +944,9 @@ def route_after_assess(state: ResearchState) -> str:
 
 def route_after_revision(state: ResearchState) -> str:
     rnd = state.get("round", 0)
-    if state.get("stop_reason") == "satisfied":
+    # assess 现在把停止原因写成一句描述（"assess 说够了" / "边际收益过低…"），
+    # 不再是 "satisfied" 这个哨兵值——哨兵说不清是谁停的。
+    if state.get("stop_reason"):
         return "write"
     q = state.get("plan_queries") or {}
     if not q.get("zh") and not q.get("en"):

@@ -68,12 +68,103 @@ def current_session() -> str | None:
 
 @contextmanager
 def session_scope(session_id: str | None):
-    """在一场研究的范围内记账。子图、并发协程自动继承。"""
+    """在一场研究的范围内记账。子图、并发协程自动继承。
+
+    ⚠️ **线程不会自动继承 contextvar**（2026-10-07 修）。
+    `ThreadPoolExecutor.submit`/`map` 起的是**新线程**，`ContextVar`
+    在那里是空的——于是 write 阶段 11 个并发子 agent 的调用
+    `session_id` 全记成了 NULL。
+
+    后果不只是难看：`session_cost()` 少算一半，而它正是
+    `max_tokens` 硬条件的判据。实测漏掉 238,901 输入 token。
+
+    用 `run_in_context()` 包一层：复制当前 context 再在线程里跑。
+    并发协程（`asyncio.to_thread`）本来就传播 contextvar，不用管。
+    """
     tok = _CURRENT_SESSION.set(session_id)
     try:
         yield
     finally:
         _CURRENT_SESSION.reset(tok)
+
+
+def run_in_context(fn, *args, **kwargs):
+    """把 fn 绑成「在线程里也能看见当前 contextvar」的**零参**可调用对象。
+
+    ⚠️⚠️ **必须在提交任务之前、在主线程里调用它。**（2026-10-07 踩过）
+
+    `copy_context()` 复制的是「调用 run_in_context 那一刻」的 context。
+    如果写成 `pool.map(lambda t: run_in_context(f, t), items)`，
+    那个 lambda 是**在 worker 线程里跑**的，复制到的是 worker 的空 context，
+    于是修复看起来写了、实际一点用没有（而且不报错，静默继续漏记账）。
+
+    正确用法：先造好一批零参 wrapper，再 submit。
+
+        jobs = [run_in_context(_run_task, state, t, None) for t in tasks]
+        with ThreadPoolExecutor(4) as pool:
+            results = [f.result() for f in [pool.submit(j) for j in jobs]]
+
+    或者用 `submit_run_in_context(pool, fn, *args, **kwargs)` 直接拿 future。
+    """
+    if not args and not kwargs:
+        raise TypeError(
+            "run_in_context 必须显式绑定参数。它返回的是零参函数，"
+            "配合并发时记得**在主线程里先造好**再提交。")
+    import contextvars as _cv
+    ctx = _cv.copy_context()
+
+    def _wrapped():
+        return ctx.run(lambda: fn(*args, **kwargs))
+
+    return _wrapped
+
+
+def submit_run_in_context(pool, fn, *args, **kwargs):
+    """在**当前线程**复制 context 后提交任务——这才是线程池要用的入口。
+
+    存在的理由：`pool.map(lambda ...)` 会让包装在 worker 线程里才执行，
+    context 复制到的是空值，而且**不报错**。见 `run_in_context` 的警告。
+    """
+    return pool.submit(run_in_context(fn, *args, **kwargs))
+
+
+def parallel_labelled(items: list, fn, workers: int = 4, label: str = "",
+                      first_serial: bool = True) -> list:
+    """对 items 并发跑 `fn(item)`，**按原顺序**返回结果。
+
+    `first_serial=True` 时**第一个任务串行跑**，其余再并发。
+    原因是缓存惊群：并发请求会同时打到一个冷缓存，命中率反而下降。
+    write 阶段早就踩过这个（实测冷缓存 8 并发只 3 命中，预热后 7/8），
+    这里沿用同样的做法。
+
+    `fn` 抛异常时，这一项记为 `None`，不中断整批——
+    调用方按各自的语义处理（判失败、放行、还是保留旧值）。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    if not items:
+        return []
+    out: list = [None] * len(items)
+
+    def _safe(i: int, it):
+        try:
+            out[i] = fn(it)
+        except Exception as e:
+            print(f"⚠️  [{label}] 第 {i} 项失败: {type(e).__name__} {str(e)[:80]}",
+                  flush=True)
+            out[i] = None
+
+    head = items[:1] if first_serial else []
+    tail = items[1:] if first_serial else items
+    if head:
+        _safe(0, head[0])
+    if tail:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [submit_run_in_context(pool, _safe, i, it)
+                    for i, it in enumerate(tail, start=1 if first_serial else 0)]
+            for f in futs:
+                f.result()
+    return out
 
 
 class ConfigError(RuntimeError):

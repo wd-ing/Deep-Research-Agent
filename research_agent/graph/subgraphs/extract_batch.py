@@ -15,7 +15,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from ...llm.provider import EmptyOutput, LLMClient
+from ...llm.provider import EmptyOutput, LLMClient, parallel_labelled
 from .. import prompts
 from ..state import ExtractBatchState
 
@@ -34,7 +34,8 @@ PROMPT_OVERHEAD = 1800          # 提示词骨架开销，按每批重复计入
 MIN_SOURCE_CHARS = 800          # 正文短于此的源不进抽取（实测 <3千字档平均只产出 2.2 段）
 HARD_CAP_CHARS = 150000         # 防病态输入的硬上限，超过则截断（正常语料不会触发）
 SUMMARY_BUDGET_CHARS = 24000    # 一次概括调用的段落正文字符预算
-SUMMARY_BATCH = 12            # 一次最多概括几段（与 summarize 阶段 batch_size 对齐）
+SUMMARY_BATCH = 12            # 一次最多概括几段
+SUMM_WORKERS = 4              # 概括批次的并发度。缓存要预热、别打太满（2026-10-07）
 
 CONCURRENCY = 5
 
@@ -245,26 +246,37 @@ def summarize_segments(items: list[dict]) -> dict:
 
     out: dict[str, str] = {}
     failed = 0
-    for bi, batch in enumerate(batches):
+    # 批次之间完全独立（各读各的段落、写各自的 summary），所以并发跑。
+    # 实测串行时 18 批 × 7.9 秒 ≈ 142 秒，占 extract 节点的八成。
+    # 第一个批次仍串行：冷缓存下并发会一起打空，命中率反而掉
+    # （write 阶段实测过：冷缓存 8 并发只 3 命中，预热后 7/8）。
+    def _one(item) -> dict | None:
+        bi, batch = item
         blob = "\n\n".join(
             f"[{j}] {s['heading']}\n{s['text'][:3000]}" for j, s in enumerate(batch))
-        try:
-            data = LLM.complete_json(
-                "summarize",
-                f"以下是 {len(batch)} 个报告段落，请为每段写一句话概括：\n\n{blob}",
-                system=prompts.SUMMARIZE,
-            )
-        except Exception as e:
-            failed += 1
-            print(f"⚠️  段落概括批次 {bi} 失败: {e}", flush=True)
-            continue
+        data = LLM.complete_json(
+            "summarize",
+            f"以下是 {len(batch)} 个报告段落，请为每段写一句话概括：\n\n{blob}",
+            system=prompts.SUMMARIZE,
+        )
+        got: dict[str, str] = {}
         for it in (data.get("summaries") or []):
             idx = it.get("index")
             # 模型给错下标就跳过，不猜
             if isinstance(idx, int) and 0 <= idx < len(batch):
                 txt = (it.get("summary") or "").strip()
                 if txt:
-                    out[batch[idx]["chunk_id"]] = txt
+                    got[batch[idx]["chunk_id"]] = txt
+        return got
+
+    for bi, got in enumerate(parallel_labelled(
+            list(enumerate(batches)), _one, workers=SUMM_WORKERS,
+            label="段落概括", first_serial=True)):
+        if got is None:
+            failed += 1
+            print(f"⚠️  段落概括批次 {bi} 失败", flush=True)
+            continue
+        out.update(got)
 
     return {"summaries": out, "failed": failed,
             "events": [{"kind": "segment_summary", "segments": len(segs),

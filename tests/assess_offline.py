@@ -180,7 +180,9 @@ print("  ✓ 本轮没有新段落时 streak 涨 1——现在它是真的计数
 print(f"\n{'='*70}\n6. _predict_stop 能说清是哪个条件拦下的")
 print("=" * 70)
 cases = [
-    ({"stop_reason": "satisfied"}, "证据已足够"),
+    # stop_reason 现在存的是一句描述而不是 "satisfied" 哨兵值——
+    # 哨兵说不清「是谁停的」，而我们要能归因到 prompt 层还是机制层。
+    ({"stop_reason": "assess 说够了"}, "assess 说够了"),
     ({"consecutive_no_new": 2, "plan_queries": Q1}, "无新增"),
     ({"round": 9, "plan_queries": Q1}, "轮数"),
     ({"url_count": 60, "plan_queries": Q1}, "URL"),
