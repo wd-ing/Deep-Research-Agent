@@ -18,12 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import re
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from ...llm.provider import LLMClient, submit_run_in_context
+from ...llm.provider import LLMClient, parallel_labelled
 from ...llm.toolloop import run_tool_loop
 from .. import prompts
 from ..state import WriteState
@@ -203,9 +202,21 @@ def node_dispatch(state: WriteState) -> dict:
     串行跑，19 分钟里大部分在等；而它表达的依赖根本无从兑现——
     依赖方读不到被依赖方的产出。现已删除。
 
-    **第一个任务串行跑**，它顺带把共享前缀建进 prompt 缓存——实测冷缓存下
-    8 个并发只有 3 个命中、5 个付全价，预热后 7/8 命中。第一个任务本身
-    就在做正事，把它从并发批次里拿出来即可，不需要额外的预热调用。
+    **按批次串行预热**（C1-f2）。共享前缀约 8,000 token（tools + system +
+    写作规约 spec，实测两两公共前缀 11,244~12,514 字符，spec 完整落在里面），
+    缓存命中时每次省下这8,000，miss 时全价。
+
+    2026-10-07 那轮**预热只覆盖了 1 个任务**（`todo[0]` 串行，其余全部丢进
+    同一个 4 并发池），后面的批次在缓存写入生效前就发出去，于是打空：
+    30 次调用里 19 次 miss，按每次白付约 7,820 算 ≈ 148,000 token，
+    占 write_section 输入的一半。
+
+    证据是同一秒内的序列——miss 的请求规模恰好等于后续 HIT 读到的
+    cache_read（8,304 / 8,506 / 8,375 三组完全对上），说明是写入-读取的
+    因果链，不是前缀不一致。
+
+    改成**每批先串行跑一个预热、其余再并发**：`first_serial` 落在每一批，
+    不只是第一批。
     """
     tasks = state.get("tasks") or []
     drafts = dict(state.get("drafts") or {})
@@ -216,31 +227,34 @@ def node_dispatch(state: WriteState) -> dict:
         return {}
 
     ev = {"drafts": dict(drafts), "failed": list(failed)}
-    t0 = _now()
-    secs, err = _run_task(state, todo[0], revise=None)
-    ev["drafts"][todo[0]["id"]] = secs
-    first_cost = round(_now() - t0, 1)
-    if not secs:
-        ev["drafts"].pop(todo[0]["id"], None)
-        ev["failed"].append({"task": todo[0]["id"],
-                             "reason": err or "empty output"})
+    batches = [todo[i:i + CONCURRENCY]
+               for i in range(0, len(todo), CONCURRENCY)]
+    first_cost = 0.0
+    for bi, batch in enumerate(batches):
+        t0 = _now()
 
-    if rest := todo[1:]:
-        # 必须用 submit_run_in_context：线程不继承 contextvar，不包的话
-        # 这 11 个并发子 agent 的记账 session_id 全是 NULL
-        # （2026-10-07 实测漏记 238,901 输入 token）。
-        # 注意**不能**写成 pool.map(lambda t: run_in_context(...), rest)——
-        # 那个 lambda 是在 worker 线程里执行的，复制到的 context 是空的。
-        with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-            futs = [submit_run_in_context(pool, _run_task, state, t, None)
-                    for t in rest]
-            results = [f.result() for f in futs]
-            for t, (secs, err) in zip(rest, results):
-                if secs:
-                    ev["drafts"][t["id"]] = secs
-                else:
-                    ev["failed"].append({"task": t["id"],
-                                         "reason": err or "empty output"})
+        def _one(t: dict, _b=batch) -> tuple[dict, str | None]:
+            return _run_task(state, t, revise=None)
+
+        # 必须走 parallel_labelled：它内部用 submit_run_in_context 在**主线程**
+        # 造好 wrapper 再提交，线程不继承 contextvar 这件事才不会漏。
+        # 注意**不能**写成 pool.map(lambda t: run_in_context(...), batch)——
+        # 那个 lambda 是在 worker 线程里执行的，复制到的 context 是空的，
+        # 记账 session_id 会静默变 NULL（2026-10-07 实测漏记 238,901 token）。
+        results = parallel_labelled(batch, _one, workers=CONCURRENCY,
+                                    label="write", first_serial=True)
+        if bi == 0:
+            first_cost = round(_now() - t0, 1)
+        for t, r in zip(batch, results):
+            if not r:
+                ev["failed"].append({"task": t["id"], "reason": "调用失败或异常"})
+                continue
+            secs, err = r
+            if secs:
+                ev["drafts"][t["id"]] = secs
+            else:
+                ev["failed"].append({"task": t["id"],
+                                     "reason": err or "empty output"})
 
     return {
         "drafts": ev["drafts"],
@@ -314,6 +328,44 @@ def _cut_marked(text: str, covers: list[str]) -> dict[str, str]:
     return out
 
 
+def _spec_for_task(spec: dict, covers: list[str]) -> dict:
+    """裁掉与本任务无关的小节明细，只留自己那节的完整要求。
+
+    `spec["sections"]` 是**全部**小节的 must_cover / not_yours，
+    11,172 字符的规约里有 4,757 字符（43%）是它。而一个子 agent 只需要
+    自己那一节（实测均值 475 字符）——其余 9 节对它是纯噪声，
+    每节还带着 4 条 `not_yours`，读多了反而容易自我设限。
+
+    **只裁 sections，thesis / glossary / units / cautions 全留**：
+    它们是跨小节通用的写作约定，砍掉会真的影响质量。
+
+    其他小节保留 `id` + `role`（角色定位一句话），
+    让子 agent 仍知道全文有哪些部分、自己不写什么——
+    这跟紧随其后的【其他任务的职责】是互补而非重复。
+
+    ⚠️ 共享前缀因此变短（规约 11,172 → 约 6,900 字符）。
+    缓存仍会命中，只是命中量少一点；省下的输入远大于缓存损失
+    （每次省约 2,141 token，缓存前缀只缩约 2,140 token，
+    而 C1-f2 修好之后这部分本来就该被缓存吃掉）。
+    """
+    sections = spec.get("sections") or []
+    if not sections:
+        return spec
+    want = set(covers or [])
+    kept, brief = [], []
+    for s in sections:
+        sid = str(s.get("id") or "")
+        if not want or sid in want:
+            kept.append(s)                      # 自己那节：全量要求
+        else:
+            brief.append({"id": sid, "role": str(s.get("role") or "")[:60]})
+    out = dict(spec)
+    out["sections"] = kept
+    if brief:
+        out["其他小节（只列定位，你不用写）"] = brief
+    return out
+
+
 def _run_task(state: WriteState, task: dict, revise: dict | None) -> tuple[dict, str | None]:
     """调一次子 agent 写一个任务。返回 ({section_id: 正文}, 出错原因或 None)。
 
@@ -324,10 +376,11 @@ def _run_task(state: WriteState, task: dict, revise: dict | None) -> tuple[dict,
     segs = _task_segments(state, task)
     if not segs:
         return {}, "任务没有分到任何证据段落"
-    spec = state.get("spec") or {}
     tasks = state.get("tasks") or []
     sid = state.get("session_id") or ""
     covers = list(task.get("covers") or [])
+
+    spec = _spec_for_task(state.get("spec") or {}, covers)
 
     others = [{"id": t["id"], "covers": t.get("covers"),
                "职责": (t.get("mandate") or "")[:80]}
@@ -624,8 +677,36 @@ def _assemble_warnings(bodies: dict, drafts: dict, by_task: dict) -> list[str]:
 
 # ================================================================ 审查
 
+def _last_high_findings(session_id: str | None) -> list[dict]:
+    """上一轮的 high findings 原文（给审查逐条核对用）。
+
+    读 `audit_history_json` 的**倒数第二条**——最后一条是上一轮刚写的，
+    但那一轮的 targets 是「它当时要求改什么」，正是我们要的。
+    若上一轮没有 high，返回空（模型就不必填 `rework_check`）。
+    """
+    if not session_id:
+        return []
+    try:
+        from ...db.repo import get_repo
+        h = get_repo().write_trace(session_id).get("audit_history") or []
+    except Exception:
+        return []
+    for rec in reversed(h):
+        t = rec.get("targets") or []
+        if t:
+            return [{"task": x.get("task"), "section": x.get("section"),
+                     "问题": x.get("problem"), "要求": x.get("fix")}
+                    for x in t if x.get("task")]
+    return []
+
+
 def node_audit(state: WriteState) -> dict:
-    """主 agent 通读全稿。返回是否返修、返修谁、以及这一轮返修是否有效。"""
+    """主 agent 通读全稿。返回是否返修、返修谁、以及返修有没有真的解决问题。
+
+    `rework_effective` **不再采信模型自评**，改由 `rework_check` 逐条核对推出：
+    模型要回答的是「上轮那几条现在还在吗」（稿子里能查），
+    而不是「返修整体有没有用」（没有依据，只能猜）。
+    """
     draft = state.get("assembled") or ""
     spec = state.get("spec") or {}
     violations = state.get("violations") or {}
@@ -650,6 +731,19 @@ def node_audit(state: WriteState) -> dict:
         payload["程序已查出的引用问题"] = violations
     if rounds:
         payload["这是第几轮返修后的草稿"] = rounds
+        # ⚠️ 这一段是 rework_effective 从「不可靠」变成「可核对」的关键。
+        #
+        # 原来只告诉模型「这是第 N 轮」，却**不告诉它上一轮说了什么**——
+        # 于是它只能对「有没有用」笼统自评。实测两个独立 session 都出现了
+        # 同一个形状：reason 里写「已有明显改善」，字段却填 false，
+        # 代码采信了 false，于是 high 问题一个没解决就收工。
+        #
+        # 把上一轮它自己写的 problem / fix 原文喂回去，
+        # 它要回答的问题就从「整体有没有用」（无依据，只能猜）
+        # 变成「这 4 个具体问题现在各自还在不在」（稿子里能查）。
+        prev = _last_high_findings(state.get("session_id"))
+        if prev:
+            payload["上一轮你提出的问题（逐条核对，现在还在吗）"] = prev
 
     try:
         d = LLM.complete_json("write_audit", _clip(_dumps(payload), 120000),
@@ -657,7 +751,11 @@ def node_audit(state: WriteState) -> dict:
     except Exception as e:
         # 审查失败不阻断：保留现状，把问题暴露出来而不是假装没问题
         return {"audit": {"need_rework": False, "error": str(e)[:200],
-                          "findings": [], "remaining_issues": ["审查环节失败，未能核查"]},
+                          "findings": [], "targets": [], "blocked": [],
+                          "rework_check": [], "checked": 0, "still_open": 0,
+                          "rework_effective": True,
+                          "remaining_issues": ["审查环节失败，未能核查"]},
+                "rework_effective": True,
                 "events": [{"kind": "write_audit_error", "error": str(e)[:200]}]}
 
     findings = [f for f in (d.get("findings") or []) if isinstance(f, dict)]
@@ -672,42 +770,96 @@ def node_audit(state: WriteState) -> dict:
                 "fix": str(f.get("fix") or "")[:800],
                 "section": f.get("section"),
             })
+    # ---- blocked：返修解决不了的，独立成一栏 ----
+    # 原来这类内容混在 `remaining_issues` 里，和「本轮不该解决」混在一起，
+    # 路由看不出来，于是模型被迫把它们判成 high 才不会漏掉。
+    # 拆开后它们有独立地位：不影响 need_rework，但会原样进报告的存疑一节。
+    blocked = []
+    for b in (d.get("blocked") or []):
+        if isinstance(b, dict):
+            blocked.append({
+                "task": str(b.get("task") or ""),
+                "section": b.get("section"),
+                "kind": str(b.get("kind") or "no_material"),
+                "issue": str(b.get("issue") or "")[:400],
+            })
+        elif b:
+            blocked.append({"task": "", "section": None,
+                            "kind": "no_material", "issue": str(b)[:400]})
+
+    # ---- rework_effective：程序从逐条核对推出，不再采信模型自评 ----
+    # 判据只看 `rework_check`：上轮的问题还有几条 `still_there`/`changed_form`。
+    # `changed_form`（表面改了实质没改）按「仍在」算。
+    check = [c for c in (d.get("rework_check") or []) if isinstance(c, dict)]
+    still = [c for c in check
+             if str(c.get("status")) in ("still_there", "changed_form")]
+    checked = len(check)
+    if rounds > 0 and checked:
+        rework_effective = not still          # 还有条目没改掉 → 判定为无效
+    elif rounds > 0:
+        # 有上轮 high、但模型没给核对结果：**不能当成有效**。
+        # 旧实现在这里采信了一个瞎猜的 false；新实现宁可判「无效」，
+        # 让人在报告里看见，也不能在问题未解决时假装改好了。
+        rework_effective = False
+        still = [{"task": "", "section": None,
+                  "status": "no_check", "note": "模型未给逐条核对结果"}]
+    else:
+        rework_effective = True               # 首轮没有「上一轮」可言
+
+    # remaining_issues 保留（node_final 读它写存疑节），
+    # 现在 = blocked 的内容 + 模型若仍返回旧字段也一并收进来。
+    remaining = ([f"[{b['kind']}] {b['issue']}" for b in blocked]
+                 + [str(x)[:300] for x in (d.get("remaining_issues") or [])])
+
     audit = {
         "need_rework": bool(d.get("need_rework")) and bool(targets),
         "reason": str(d.get("reason") or "")[:400],
         "spec_issue": d.get("spec_issue"),
         "findings": findings,
         "targets": targets,
-        "remaining_issues": [str(x)[:300] for x in (d.get("remaining_issues") or [])],
-        "rework_effective": d.get("rework_effective"),
+        "blocked": blocked,
+        "remaining_issues": remaining,
+        "rework_effective": rework_effective,
+        "rework_check": check,
+        "still_open": len(still),
+        "checked": checked,
     }
     _trace(state.get("session_id"), audit=audit,
            stats=_merge_stats(state.get("session_id"), {
                "audit_round": rounds, "high": len(targets),
-               "findings": len(findings), "need_rework": audit["need_rework"],
-               "rework_effective": d.get("rework_effective")}))
+               "findings": len(findings), "blocked": len(blocked),
+               "need_rework": audit["need_rework"],
+               "rework_effective": rework_effective,
+               "rework_checked": checked, "rework_still_open": len(still)}))
     # 每轮的发现要留着。之前 audit_json 每轮覆盖，R5 那轮 27 次返修
     # 只剩最后一轮的 11 条，根因只能靠读代码反推——可观测性缺口。
-    # 首轮的 rework_effective 记 null：那一轮没有「上一轮返修」可言，
-    # 模型会顺手填个 false（实测就是），原样记下来会让看历史的人以为返修失败过。
+    # `rework_check` 的逐条结果也记进历史，这样「模型到底核对没核对」
+    # 是可查的，而不是只能看一个真假布尔。
     _push_audit_history(state.get("session_id"), {
         "round": rounds,
         "need_rework": audit["need_rework"],
         "findings": len(findings),
         "high": len(targets),
+        "blocked": len(blocked),
         "targets": [f"{t['task']}→{t.get('section')}" for t in targets],
-        "rework_effective": (d.get("rework_effective") if rounds > 0 else None),
+        "rework_effective": (rework_effective if rounds > 0 else None),
+        "rework_checked": checked,
+        "still_open": len(still),
+        "check_detail": [f"{c.get('task')}/{c.get('section')}:{c.get('status')}"
+                         for c in check][:20],
         "reason": audit["reason"][:200],
     })
     return {
         "audit": audit,
-        # 首轮没有「上一轮返修」，这个字段在这一轮没有意义
-        "rework_effective": (bool(d.get("rework_effective", True))
-                             if state.get("rework_rounds", 0) > 0 else True),
+        "rework_effective": rework_effective,
         "events": [{"kind": "write_audit", "rounds": rounds,
                     "high": len(targets), "findings": len(findings),
+                    "blocked": len(blocked),
                     "need_rework": audit["need_rework"],
-                    "rework_effective": d.get("rework_effective"),
+                    "rework_effective": rework_effective,
+                    "rework_checked": checked, "still_open": len(still),
+                    "check_detail": [f"{c.get('task')}/{c.get('section')}"
+                                     f":{c.get('status')}" for c in check][:20],
                     "spec_issue": str(d.get("spec_issue") or "")[:200]}],
     }
 
@@ -756,11 +908,15 @@ def node_revise(state: WriteState) -> dict:
 
     rest = order[1:]
     if rest:
-        # 同上：返修的并发任务也要继承记账的 contextvar
-        with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-            futs = [submit_run_in_context(pool, _one, t) for t in rest]
-            for tid, new, _err in (f.result() for f in futs):
-                drafts[tid] = _merge_sections(drafts.get(tid), new, by_task[tid])
+        # 同 node_dispatch（C1-f2）：返修的并发任务共享同一段前缀，
+        # 预热同样要**每批一个**，不能只有第一个任务。
+        # parallel_labelled 保证按原顺序返回，所以逐个合并不影响装配顺序。
+        for r in parallel_labelled(rest, _one, workers=CONCURRENCY,
+                                   label="revise", first_serial=True):
+            if not r:
+                continue
+            tid, new, _err = r
+            drafts[tid] = _merge_sections(drafts.get(tid), new, by_task[tid])
 
     return {
         "drafts": drafts,
@@ -821,15 +977,26 @@ def route_after_spec(state: WriteState) -> str:
 
 
 def route_after_audit(state: WriteState) -> str:
+    """还有**返修解决得了**的 high 才继续；否则收工并把 blocked 显式暴露。
+
+    三条收工线，两条是硬约束，一条是**有依据的**判断：
+
+    1. 没有 high finding        → 没什么可改的
+    2. `rework_rounds` 用完     → 改够了，剩下的问题写进存疑节
+    3. 逐条核对显示上轮问题仍在 → **改不动了**，同样写进存疑节
+
+    第 3 条以前是 `not rework_effective`，而那个字段是模型**自己填的**，
+    且它手上没有上轮的 findings，只能笼统自评。实测两个独立 session
+    都在 reason 里写着「已有明显改善」、字段却填 false，
+    于是在 high 一个没解决时收工。现在 `rework_effective` 由程序从
+    `rework_check` 的逐条结果推出，它要否决返修必须指出是哪几条没改掉。
+    """
     audit = state.get("audit") or {}
     if not audit.get("need_rework"):
         return "final"
     if state.get("rework_rounds", 0) >= MAX_REWORK:
         return "final"
     if state.get("rework_rounds", 0) > 0 and not state.get("rework_effective", True):
-        # 主 agent 说上一轮返修没奏效。停下来保留现状，别逼它反复重写。
-        # 注意必须在 rounds > 0 时才看这个字段：首轮根本没有「上一轮」，
-        # 模型却会顺手填个 false，于是首轮审查即使说「需要返修」也被跳过。
         return "final"
     return "revise"
 

@@ -187,9 +187,13 @@ cases = [
     ({"round": 9, "plan_queries": Q1}, "轮数"),
     ({"url_count": 60, "plan_queries": Q1}, "URL"),
     ({"elapsed_s": 40 * 60, "plan_queries": Q1}, "超时"),
-    ({"cost_tokens": 900_000, "plan_queries": Q1}, "token"),
     ({"plan_queries": {}}, "查询"),
 ]
+# 2026-10-08：原来这里还有一条 ({"cost_tokens": 900_000}, "token")。
+# 那条硬条件 max_tokens=800_000 已删——它读的 state["cost_tokens"] 只在
+# node_finalize 写，而 finalize 在循环之后，所以全程拿 0 比 800_000，
+# **从来没生效过**；而且实测检索期最高 398k（跑满 7 轮），实际也够不到。
+# 剩下的条件测的都是物理量（轮数/URL/墙钟/无新增），不会漂移。
 for over, tag in cases:
     base = {"round": 0, "url_count": 0, "elapsed_s": 0, "cost_tokens": 0,
             "consecutive_no_new": 0, "plan_queries": Q1}
@@ -197,6 +201,11 @@ for over, tag in cases:
     why = N._predict_stop(base)
     assert tag in why, f"预期含「{tag}」，实际「{why}」"
     print(f"  {tag:<8} → {why}")
+# 反向断言：cost_tokens 再大也不该再触发停止（那条线已经删了）
+_big = {"round": 0, "url_count": 0, "elapsed_s": 0, "cost_tokens": 9_000_000,
+        "consecutive_no_new": 0, "plan_queries": Q1}
+assert N._predict_stop(_big) == "", "max_tokens 硬条件已删，cost_tokens 不该再拦"
+print(f"  {'已删除':<8} → cost_tokens=9,000,000 不再触发停止 ✓")
 print("  ✓ 每个硬条件都能说清楚，不再是「停了但不知道为什么」")
 
 print(f"\n{'='*70}\n7. Repo.x 回滚修复（外键失败后连接不被锁死）")

@@ -45,8 +45,21 @@ HARD = dict(
     # 而那是因为 assess 空转导致第 2 轮在重复检索。**修好 assess 后轮数会增加**，
     # 原来 20 分钟的墙会立刻变成主要失败原因，所以提到 30。
     timeout_min=30,
-    # 同上：421k / 500k 已经贴脸，没有补检索的余量。
-    max_tokens=800_000,
+    # 原来这里还有一条 max_tokens=800_000，2026-10-08 删掉。理由两条：
+    #
+    # ① **它从来没生效过**。判据读 state["cost_tokens"]，而那个字段只在
+    #    node_finalize 写——finalize 跑在检索循环**之后**，建 session 时也
+    #    没进 INSERT，所以循环期间它恒为 0：`0 >= 800_000` 永远 False。
+    #    它长得像在工作（有默认值、不报错、正常返回空串）。
+    #
+    # ② **就算修好链路也够不到**。实测检索期累计：跑满 7 轮那次 398,051，
+    #    5 轮那次 344,272，2 轮那次 169,940。逐轮增量递减极快
+    #    （7 轮那次第 3、4 轮各只多 11.8k / 13.5k）。只有「4 轮都重复
+    #    首轮那种密集抓取」才可能到 832k，实测里从未发生。
+    #
+    # 剩下的四条测的都是**物理量**（轮数、URL 数、墙钟、连续无新增），
+    # 不会像 token 那样因为缓存命中而漂移。真失控时它们先撞上。
+    # 这是坑 #9 的第二次出现：设计授权了但下游没实现，外观像别的问题。
     # 修好之前它是个坏计数器（`produced` 取 claims 数量、恒为 0，
     # 于是 streak 每轮无条件 +1）。修好之后它才真的是「连续几轮没新东西」，
     # 2 轮是合理的停止阈值，所以**这个值不动**，变的是它的含义。
@@ -683,8 +696,6 @@ def _predict_stop(state: ResearchState) -> str:
          f"URL 数到顶（{state.get('url_count', 0)}/{HARD['max_urls']}）"),
         (state.get("elapsed_s", 0) >= HARD["timeout_min"] * 60,
          f"超时（{state.get('elapsed_s', 0)/60:.0f}/{HARD['timeout_min']} 分钟）"),
-        (state.get("cost_tokens", 0) >= HARD["max_tokens"],
-         f"token 到顶（{state.get('cost_tokens', 0)}/{HARD['max_tokens']}）"),
     ]
     for hit, why in checks:
         if hit:
@@ -958,8 +969,6 @@ def route_after_revision(state: ResearchState) -> str:
     if state.get("url_count", 0) >= HARD["max_urls"]:
         return "write"
     if state.get("elapsed_s", 0) >= HARD["timeout_min"] * 60:
-        return "write"
-    if state.get("cost_tokens", 0) >= HARD["max_tokens"]:
         return "write"
     return "retrieve"
 

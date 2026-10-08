@@ -357,7 +357,16 @@ class Repo:
         input_tokens / output_tokens 必须是 API 报上来的真实值。
         原来这里记的是 _rough_tokens() 的本地估算——估算够用来看成本量级，
         但判断不了缓存命中，而那正是 write 环节最需要看的数。
-        est_input_tokens 把估算值留一份，以便对比偏差。
+
+        est_input_tokens 把估算值留一份，**仅供对比偏差，没有任何读取方**
+        （`session_cost()` 与 max_tokens 硬条件都走真实 input_tokens）。
+        2026-10-08 复核：这个字段**不能**拿 est/input_tokens 比——
+        input_tokens 已经被缓存扣减过了，命中越多这个比值越大
+        （write_section 实测 est/inp 均值 2.74，单条最高 8.98，
+        而 est/(input+cache_read) 才是稳定的 1.54）。
+        偏差来源是 `_rough_tokens` 用 tiktoken cl100k_base（OpenAI 的分词器）
+        去估 MiniMax 的计费，中文系统性偏高约 1.5 倍。
+        保留它只为留个偏差基线，不要拿它做判据。
         """
         self.x(
             "INSERT INTO llm_call (id,session_id,stage,model,input_tokens,"

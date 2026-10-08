@@ -237,20 +237,26 @@ assert any(c[0].startswith("write_revise") for c in f2.calls), "应调用 write_
 print("  ✓ 只返修被点名的那一个任务（未波及其他）")
 print("  ✓ 返修后收敛并退出")
 
-# ---------- 场景 3：主 agent 说改不动，立刻停 ----------
+# ---------- 场景 3：逐条核对显示上轮问题仍在，立刻停 ----------
+# 2026-10-08：`rework_effective` 不再由模型自填，改由 `rework_check` 逐条核对推出。
+# 所以「改不动」在 mock 里要表达成「上轮那条 still_there」，而不是自填 false。
 audit_stuck = {"need_rework": True, "reason": "材料本身矛盾",
                "findings": [{"task": "t2", "section": "sec2", "severity": "high",
                              "problem": "两份来源数字冲突", "fix": "调和一下"}],
-               "remaining_issues": ["sec2 的产能数字材料内自相矛盾"],
-               "spec_issue": None, "rework_effective": False}
-# 首轮必须忽略 rework_effective（没有「上一轮」可言），所以要先返修一轮，
-# 第二轮才填 false——那才是「上一轮返修没奏效」的真实场景。
+               "blocked": [{"task": "t2", "section": "sec2",
+                            "kind": "no_material",
+                            "issue": "sec2 的产能数字材料内自相矛盾，返修改不了"}],
+               "rework_check": [{"task": "t2", "section": "sec2",
+                                 "status": "still_there"}],
+               "spec_issue": None}
+# 首轮不需要 rework_check（没有「上一轮」可言），所以要先返修一轮，
+# 第二轮才出现 still_there——那才是「上一轮返修没解决」的真实场景。
 audit_retry = {"need_rework": True, "reason": "先修一轮",
                "findings": [{"task": "t2", "section": "sec2", "severity": "high",
                              "problem": "x", "fix": "y"}],
-               "remaining_issues": [], "spec_issue": None, "rework_effective": True}
+               "blocked": [], "spec_issue": None}
 f3 = Fake(plan1, {}, [audit_retry, audit_stuck])
-out3 = run(f3, "场景 3：返修一轮后主 agent 说改不动")
+out3 = run(f3, "场景 3：返修一轮后逐条核对显示仍在")
 assert out3["rework_rounds"] == 1, f"应先返修 1 轮，实际 {out3['rework_rounds']}"
 # 数返修**轮次**而不是调用次数：一次返修会走两轮工具循环
 # （先要证据、再产出正文），调用次数不等于轮次。
@@ -258,19 +264,29 @@ rev_rounds = [e for e in (out3.get("events") or []) if e.get("kind") == "write_r
 assert out3["rework_rounds"] == 1 and len(rev_rounds) == 1, \
     f"只该返修一轮，实际 {len(rev_rounds)} 轮"
 assert "产能数字材料内自相矛盾" in out3["report_markdown"], "改不动的问题要写进存疑"
-print("  ✓ 首轮忽略 rework_effective，正常返修一轮")
-print("  ✓ 第二轮判为无效后立即停止，没有反复重写")
-print("  ✓ 改不动的问题如实写进报告存疑一节")
+print("  ✓ 首轮不需要逐条核对，正常返修一轮")
+print("  ✓ 逐条核对显示仍在后立即停止，没有反复重写")
+print("  ✓ blocked 内容如实写进报告存疑一节")
 
-# 首轮就说「改不动」也不能被采信——那是模型的字段填错，不是它真的试过
+# 首轮就报 still_there 也不能被采信——那时根本没有「上一轮」
 audit_r0 = dict(audit_stuck)
 f3b = Fake(plan1, {}, [audit_r0])
-out3b = run(f3b, "场景 3b：首轮就填 rework_effective=false（应被忽略）")
-# 关键：首轮不能因为这个字段就停下——它必须先返修一轮。
-# （Fake 每次返回同一份审查，所以第二轮才真的停，那是正确行为。）
+out3b = run(f3b, "场景 3b：首轮就报 still_there（应被忽略）")
+# 关键：首轮不能因为这个就停下——它必须先返修一轮。
 assert out3b["rework_rounds"] == 1, \
-    f"首轮应忽略 rework_effective=false 并返修一轮，实际返修 {out3b['rework_rounds']} 轮"
-print("  ✓ 首轮的 rework_effective=false 被忽略，没有误停")
+    f"首轮应忽略 still_there 并返修一轮，实际返修 {out3b['rework_rounds']} 轮"
+print("  ✓ 首轮的 still_there 被忽略，没有误停")
+
+# 模型没给逐条核对结果时，不能当成「返修有效」——旧实现采信了瞎猜的 false
+audit_nocheck = {"need_rework": True, "reason": "不核对",
+                 "findings": [{"task": "t2", "section": "sec2", "severity": "high",
+                               "problem": "x", "fix": "y"}],
+                 "blocked": [], "rework_check": [], "spec_issue": None}
+f3c = Fake(plan1, {}, [audit_retry, audit_nocheck])
+out3c = run(f3c, "场景 3c：第二轮不给核对结果")
+assert out3c["rework_rounds"] == 1, \
+    f"没给核对结果应判为无效并停手，实际返修 {out3c['rework_rounds']} 轮"
+print("  ✓ 没给逐条核对结果时按「无效」处理，不假装改好了")
 
 # ---------- 场景 4：程序引用校验 ----------
 print(f"\n{'='*70}\n场景 4：引用程序校验（硬规则 1）\n{'='*70}")
