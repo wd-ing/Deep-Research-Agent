@@ -245,6 +245,16 @@ class StageConfig:
                     "换 provider 时必须一并删掉，否则会被静默忽略——"
                     "那正是上一轮踩过的坑。"
                 )
+        # 反向也要拦（2026-10-09 补）：MiniMax 不认 reasoning_effort，
+        # 配上去同样被静默忽略，症状和上面一模一样。
+        # 有了 `providers:` 档案之后这种错配更容易发生——阶段从 xj189 换回
+        # minimax 时忘了删 reasoning_effort，就正好踩上。
+        if self.reasoning_effort is not None and self.provider == "minimax":
+            raise ConfigError(
+                f"环节 {self.stage} 配了 reasoning_effort，但 provider 是 minimax。"
+                "reasoning_effort 是 OpenAI 兼容平台的参数，MiniMax 用 "
+                "output_config.effort —— 配错会被静默忽略。"
+            )
 
 
 class ModelRegistry:

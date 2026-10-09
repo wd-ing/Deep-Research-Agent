@@ -887,13 +887,18 @@ def node_assess(state: ResearchState) -> dict:
         stop_would_be = f"轮数到顶（{rnd}/{HARD['max_rounds']}）"
         stop_layer = "mechanism"
 
+    # 框架校准的产物。算一次、后面几处都用它，别重复调 `_to_revision`
+    # （它有副作用式的过滤：题面过短的收窄会被丢掉）。
+    _rev = _to_revision(data.get("outline_review"))
+
     out_state = {
         "plan_queries": queries or {},
         "consecutive_no_new": streak,
         "last_round_segments": n_seg,
         "stop_reason": stop_would_be,
         "stop_layer": stop_layer,      # 路由的 _stop_kind 要读它（区分「够了」和「撞顶」）
-        "pending_revision": _to_revision(data.get("outline_review")),
+        "pending_revision": _rev,
+        "_expect_revision": _rev["op"] == "revise",   # 给 apply_revision 对账用
         "events": [{"kind": "assess", "round": rnd,
                     "segments_total": n_seg, "new_segments": new_segs,
                     "round_gain": round(gain, 4),
@@ -938,8 +943,7 @@ def node_assess(state: ResearchState) -> dict:
         "rev_sections": len(((data.get("outline_review") or {}).get("sections") or []))
                          if isinstance(data, dict) else 0,
         "rev_actions": _action_hist(data.get("outline_review")),
-        "rev_op": _to_revision(data.get("outline_review"))["op"]
-                  if isinstance(data, dict) else "none",
+        "rev_op": _rev["op"] if isinstance(data, dict) else "none",
     })
     return out_state
 
@@ -1002,10 +1006,24 @@ def _action_hist(review: Any) -> dict:
 
 
 def node_apply_revision(state: ResearchState) -> dict:
-    """把 LLM 自主提议的框架修订真正落到 outline 上。"""
+    """把 LLM 自主提议的框架修订真正落到 outline 上。
+
+    ⚠️ 开头这道自检是 2026-10-09 加的，理由是上一版**静默空转**：
+    `ResearchState` 里没声明 `pending_revision`，LangGraph 把 assess 算出来的
+    修订直接丢弃，本函数每次都读到 `{"op": "none"}` 然后返回空转——
+    **不报错、不告警、run_trace 里还记着 op=revise**。
+    「算出来了但没落地」光看返回值发现不了，必须比对。
+    """
     rev = state.get("pending_revision") or {"op": "none"}
     outline = list(state.get("outline") or [])
     if rev.get("op") != "revise":
+        # 自检①：state 说该改却没带修订 → 通道又断了。
+        # 这个形状和「模型没给 outline_review」**症状完全一样**，
+        # 所以必须能在这一层区分出来，否则下一个人还会猜错方向。
+        if state.get("_expect_revision"):
+            print("🚨 [apply_revision] 期待应用框架修订，但 state 里的 "
+                  "pending_revision 是空的——检查 ResearchState 是否声明了它"
+                  "（未声明的字段会被 LangGraph 静默丢弃）。", flush=True)
         return {"pending_revision": {"op": "none"}, "events": []}
 
     by_id = {s.get("id"): s for s in outline}
@@ -1037,10 +1055,23 @@ def node_apply_revision(state: ResearchState) -> dict:
     if not out:
         print(f"⚠️  [apply_revision] 本次修订会清空整个框架（删 {len(removed)}、"
               f"并 {len(merged)} 节），已放弃这次修订。", flush=True)
-        return {"pending_revision": {"op": "none"},
+        return {"pending_revision": {"op": "none"}, "_expect_revision": False,
                 "events": [{"kind": "outline_revision", "round": state.get("round"),
                             "skipped": True,
                             "reason": "修订后框架为空，原样保留"}]}
+
+    # 自检②：说要改的 vs 实际改的，对不上就打警告。
+    # 「模型给了修订但什么都没变」和「模型没给修订」在结果上一样，
+    # 只有在这里比对才发现得了。
+    promised = len(removed) + len(merged) + len(narrowed)
+    applied = (len(removed)
+               + sum(len(m.get("ids") or []) for m in (rev.get("merge") or []))
+               + len([i for i in narrowed if i in {s.get("id") for s in out}]))
+    if promised and applied != promised:
+        print(f"🚨 [apply_revision] 说要改 {promised} 处、实际改了 {applied} 处——"
+              f"有修订被静默丢弃（删 {list(removed)}、并 "
+              f"{[m.get('ids') for m in (rev.get('merge') or [])]}、"
+              f"收窄 {list(narrowed)}）", flush=True)
 
     added = []
     nxt = len(out)
@@ -1067,6 +1098,7 @@ def node_apply_revision(state: ResearchState) -> dict:
              "merged": [f"{m.get('ids')}→{m.get('into')}"
                         for m in (rev.get("merge") or [])]}
     return {"outline": out, "pending_revision": {"op": "none"},
+            "_expect_revision": False,
             "outline_revision_log": [entry],
             "events": [{"kind": "outline_revision", **entry}]}
 

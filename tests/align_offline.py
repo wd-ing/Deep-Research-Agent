@@ -246,4 +246,53 @@ print("  ✓ stop_layer 缺失时，兜底推断同样全对（这是测试中�
 assert N._stop_kind(state()) == ""
 print("  ✓ 还没到停止点时 kind 为空")
 
-print(f"\n{'=' * 70}\n✅ 框架优化循环离线自检全部通过（10 组）\n{'=' * 70}")
+# ---------------------------------------------------------------- 11 状态通道
+hdr(11, "框架校准的数据通道（2026-10-09 修的真 bug）")
+# `pending_revision` 曾经**没在 ResearchState 里声明**。LangGraph 只保留
+# TypedDict 声明过的字段，于是 assess 算出来的修订被静默丢弃，
+# apply_revision 每次读到 {"op":"none"} 空转——不报错、不告警，
+# run_trace 里还记着 op=revise。
+# **症状和「模型没给 outline_review」一模一样**，害我猜错方向好几轮。
+from langgraph.graph import START, END, StateGraph as _SG  # noqa: E402
+from research_agent.graph.state import ResearchState  # noqa: E402
+
+# 声明本身要挡住回归：删掉这一行下面就会失败
+assert "pending_revision" in ResearchState.__annotations__, \
+    "ResearchState 必须声明 pending_revision，否则 LangGraph 会静默丢弃它"
+print("  ✓ ResearchState 声明了 pending_revision")
+
+_seen: dict = {}
+
+
+def _assess(s):
+    return {"pending_revision": {"op": "revise", "narrow": [{"id": "sec1"}]},
+            "_expect_revision": True}
+
+
+def _apply(s):
+    _seen["rev"] = s.get("pending_revision")
+    _seen["expect"] = s.get("_expect_revision")
+    return {"outline": [{"id": "sec1", "question": "已改"}]}
+
+
+_g = _SG(ResearchState)
+_g.add_node("assess", _assess)
+_g.add_node("apply_rev", _apply)
+_g.add_edge(START, "assess")
+_g.add_edge("assess", "apply_rev")
+_g.add_edge("apply_rev", END)
+_g.compile().invoke({"session_id": "s"})
+assert _seen.get("rev") and _seen["rev"].get("op") == "revise", \
+    f"修订没能穿过 LangGraph：{_seen.get('rev')}"
+assert _seen.get("expect") is True, "_expect_revision 也没传过去"
+print("  ✓ 经真实 LangGraph 图，修订确实到达了 apply 节点")
+print("  ✓ _expect_revision 也能传过去（自检信号没被吞）")
+
+# 自检信号：通道再断时会告警
+_broken = {"session_id": SID, "outline": [dict(s) for s in BASE],
+           "pending_revision": {"op": "none"}, "_expect_revision": True}
+_out = N.node_apply_revision(_broken)
+assert _out.get("events") == [], "通道断了却报告'改过了'"
+print("  ✓ 通道断裂时返回空事件（配合 🚨 告警，不会伪装成改过）")
+
+print(f"\n{'=' * 70}\n✅ 框架优化循环离线自检全部通过（11 组）\n{'=' * 70}")

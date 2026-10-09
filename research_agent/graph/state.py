@@ -54,6 +54,21 @@ class ResearchState(TypedDict, total=False):
     # ---------- 框架 ----------
     outline: list                # [{id,title,question,grounded_in,kind}]
     outline_revision_log: Annotated[list, operator.add]
+    # assess 算出的框架修订，等 apply_revision 去落地。
+    #
+    # ⚠️ **这一行曾经不存在**，于是整条校准链路是断的（2026-10-09 修）：
+    # LangGraph **只保留 TypedDict 里声明过的字段**，未声明的返回值会被静默
+    # 丢弃。node_assess 把 {"op":"revise",...} 写进返回值、node_apply_revision
+    # 从 state 读它，中间这一格是空的——于是「算出来了但没落地」。
+    #
+    # 症状长得和「模型没给 outline_review」**一模一样**：
+    # run_trace 里 op=revise（模型确实给了），outline_revision_log 却是空的。
+    # 排查时我在「模型没给」和「代码丢了」之间猜了好几轮——
+    # **教训：数据通道（state 声明）出问题，症状会伪装成上游行为问题。**
+    pending_revision: dict       # {"op":"none"} 或 {"op":"revise", narrow/merge/remove}
+    # assess 记下「我这一轮算出了修订」，apply_revision 拿它对账。
+    # 两者对不上就说明中间丢了（历史上就是这么静默空转的）。
+    _expect_revision: bool
     plan_queries: dict           # {"zh": [...], "en": [...]}
     plan_approved: bool
 

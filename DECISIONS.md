@@ -1877,3 +1877,46 @@ MODEL_SEAT_QUOTA_EXHAUSTED   → 重试无效，额度得管理员调 → 直接
 > 这是坑 #1 的第三次形态。前两次是 `thinking.budget_tokens`（参数名猜错，
 > 四组测试其实是同一组）和 `rework_effective`（模型答不出来却给了答案）。
 > 三次的共同点：**都是「读不到」被当成了「没有」**。
+
+### 2026-10-09 框架校准一直是空转：`pending_revision` 没在 state 里声明
+
+**发现路径**：xj189 全切之后跑了一轮，看 assess 的耗时构成，
+发现 `run_trace` 里记着 `rev_op=revise`（模型确实给了 outline_review），
+但 `outline_revision_log` 是空的、`outline` 一个小节都没被收窄。
+**两个证据打架**——正是我前一轮加埋点想区分的两种情况。
+
+**根因**：`ResearchState` 里**没有 `pending_revision` 这个字段**。
+LangGraph **只保留 TypedDict 声明过的键**，未声明的返回值被静默丢弃。
+于是：
+
+```
+node_assess   算出 {"op":"revise",...}  → 写进返回值 →  被丢弃
+node_apply_revision  从 state 读到 {"op":"none"} → 空转
+```
+
+**症状和「模型没给 outline_review」一模一样**：
+run_trace 显示 `op=revise`（那是 assess 的原始输出，绕过了 state），
+而落库结果没变（那是走了 state 的）。
+我为此猜了好几轮——先怀疑模型随机不给，又专门写了
+`tests/assess_align_probe.py` 跑了 9 次对照组（3/3 全给），
+最后才顺着「为什么 run_trace 有而落库没有」查到 state 声明。
+
+**修法**：
+1. `ResearchState` 补 `pending_revision`（以及给自检用的 `_expect_revision`）
+2. `node_apply_revision` 加两道自检：
+   - **通道断**：state 说该改、却没带修订 → 🚨 告警并点名 state 声明
+   - **有损耗**：说要改 N 处、实际改了 M 处 → 🚨 告警并列出丢掉的动作
+3. `tests/align_offline.py` 加第 11 组，**经真实 LangGraph 图**断言修订能穿过去
+
+**教训**：**数据通道出问题，症状会伪装成上游行为问题。**
+「模型没给」和「代码丢了」在最终产物上完全一样，
+只有拿「通道两端」两个独立证据对账才能分开——
+run_trace 记的是节点原始输出，落库记的是穿过 state 之后的东西，
+**这两者不一致就说明问题在中间，不在两头。**
+
+> **这是坑 #9 的第四次**：机制实现完整、调用点齐全，唯独中间的数据通道没接上。
+> 前三次：`WRITE_PLAN_TASKS` 两节任务、`claims` 硬编码空数组、
+> `node_apply_revision` 从没被触发。
+> **模式**：凡是「A 算出来 → 写进 state → B 读出来应用」的链路，
+> 都要单独验一次**穿过 state 之后还在不在**。单元测试两边都过，
+> 中间接不上也照样全绿。

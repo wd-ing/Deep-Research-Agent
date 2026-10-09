@@ -69,19 +69,26 @@ providers:
     model: deepseek-v4-flash-0731
     base_url: https://ai.xj.189.cn/api/v1
     api_key_env: XJ189_API_KEY
-    # 思考档位：七个值实测**全部 HTTP 200**（none/minimal/low/medium/high/xhigh/max），
-    # 但 reasoning_content 长度不随档位明显变化，**这个旋钮大概率不起作用**——
-    # 别照着 MiniMax 那样「用 effort 分档省时间」，得另找控制手段。
-    # 先按 low 配（最保守），实测确认后再调。
-    reasoning_effort: low
-    # ⚠️ **thinking 吃光输出预算**（2026-10-09 实测，与 MiniMax 同一个失效模式）：
-    #   max_tokens=2048 → 正文 0 字符，reasoning_content 5,574 字符
-    #   max_tokens=8192 → 正文出来了（completion 2,327）
+    # ⚠️ **这里不要写 reasoning_effort。**（2026-10-09 实测，3/3 复验）
+    #
+    # 该平台**省略该字段 = 关思考**，传**任何**值（含 none）= 开思考——
+    # 和平台文档写的「默认 max、none 是一个档位」正好相反。
+    #   不传        reasoning_content = [0, 0, 0]     1.5~3.0s
+    #   none        [140, 121, 399]                   2.3~3.6s
+    #   low         [432, 213, 374]                   2.6~7.1s
+    #   high        [485, 456, 382]                   3.8~10.5s
+    #
+    # 所以**档案层留空 = 默认关思考**，需要推理的阶段自己在 stages 下写
+    # `reasoning_effort: high/low`。这样「高并发内容轻关思考、其余开思考」
+    # 就落在配置里，代码一行都不用动。
+    #
+    # ⚠️ **thinking 吃光输出预算**（与 MiniMax 同一失效模式）：
+    #   max_tokens=2048 → 正文 0 字符，reasoning 5,574
+    #   max_tokens=8192 → 正常（实测生成 10 节规约只花 1,852 token）
     #   max_tokens=16384 → **504 网关超时**
-    # 所以这个模型的 max_output_tokens 是个窄窗口，给小了没正文、给大了网关挂。
-    # 各阶段配 8192 起步，**不要照抄 MiniMax 的 16384**。
+    # 所以 max_output_tokens 是个窄窗口：给小了没正文、给大了网关挂。
     max_output_tokens: 8192
-    # 网关对长生成会 504，超时必须给足，否则好好的调用被砍在网关上
+    # 网关对长生成会 504，超时必须给足
     timeout_s: 300
 
 defaults:
@@ -95,39 +102,51 @@ defaults:
   # （effort:low，均 17–26 秒）几乎不超时——这正说明它是超时不是抖动。
   timeout_s: 300
 
-stages:
-  # ---- 探针：按任务难度分三档 ----
+# ── 思考分档（2026-10-09，全切 xj189 之后）─────────────────────────
+#
+# xj189 的旋钮是 `reasoning_effort`，而实测**省略该字段 = 关思考**、
+# 传任何值（含 none）= 开。所以「哪个阶段开思考」完全由 stages 下的
+# 有无这一行决定，**档案层留空即可**。
+#
+# 分档依据是 C1d2 那轮的真实数据（调用次数 / 均输出 / 总耗时）：
+#
+#   档 0  关思考   relevance(92次,均36token) summarize(18次,均263)
+#                  extract(6) probe_light(1) probe_degraded(1)
+#                  理由：这四档占全部调用的 68%、耗时的 24%，
+#                  而输出只有 36~535 token——给它们开思考是纯浪费。
+#
+#   档 1  low      outline(1) assess(2) write_section(30) write_revise(5)
+#                  write_section 用 low 而不是 high：它调用最多（30 次），
+#                  边际成本最高，而正文质量未必更好。**这是待验证的保守取值。**
+#
+#   档 2  high     probe_outline(1) write_plan(2) write_audit(2)
+#                  理由：规划与审查是核心推理，量大但调用少。
+#
+# ⚠️ **质量全部未验证**。这批档位是按「调用次数 × 输出长度」推的，
+#    不是按质量实测。切过去的第一件事是跑一轮对比，看每档该给的
+#    思考强度给对了没有。
 
-  # 判歧义 + 判信息深度。30 条标题摘要做快速定性判断，
-  # 歧义与分歧的区分需要推理，但不该长考。
+stages:
+  # ---- 探针 ----
   probe_light:
-    provider: minimax
-    model: MiniMax-M3.1-Flash-Preview
-    base_url: https://api.minimaxi.com/anthropic
-    api_key_env: MINIMAX_API_KEY
-    thinking_effort: low
-    max_output_tokens: 8192
+    provider: xj189
     temperature: 0.0
     guard: { max_reasoning_ratio: 0.6, retry_on_empty: 2, max_output_tokens: 16384 }
 
   # 读 2-3 篇正文归纳领域轮廓。整场研究的地基——大纲的 grounded_in
   # 全部指回这里，所以给最高档。
   probe_outline:
-    provider: minimax
-    model: MiniMax-M3.1-Flash-Preview
-    base_url: https://api.minimaxi.com/anthropic
-    api_key_env: MINIMAX_API_KEY
-    thinking_effort: high
-    max_output_tokens: 16384
+    provider: xj189
+    reasoning_effort: high
     temperature: 0.0
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
 
   # 降级说明。只在探针判定稀薄时触发，写一句话，纯措辞工作。
   probe_degraded:
-    provider: minimax
-    model: MiniMax-M3
-    base_url: https://api.minimaxi.com/anthropic
-    api_key_env: MINIMAX_API_KEY
+    provider: xj189
+    # 输出极轻（relevance 实测均 36 token），8192 是浪费；
+    # 而且 guard 上限也是 8192 会让「空返回翻倍」无处可翻。
+    # 4096 留出翻倍空间，且这两档都是**关思考**的，不碰窄窗口。
     max_output_tokens: 4096
     temperature: 0.0
     guard: { max_reasoning_ratio: 0.5, retry_on_empty: 1, max_output_tokens: 8192 }
@@ -137,12 +156,8 @@ stages:
   # 研究框架生成。原先挂在 write 上，用了 0.3 的散文温度，
   # 但框架是结构规划任务，输出是 JSON 而不是文章。
   outline:
-    provider: minimax
-    model: MiniMax-M3.1-Flash-Preview
-    base_url: https://api.minimaxi.com/anthropic
-    api_key_env: MINIMAX_API_KEY
-    thinking_effort: high
-    max_output_tokens: 16384
+    provider: xj189
+    reasoning_effort: high
     temperature: 0.0
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
 
@@ -151,12 +166,7 @@ stages:
   # 批量抽取断言 + 判来源性质。报告的每一句事实都来自这里，
   # 量大所以用 T1 而不是 T2：抽取本质是仔细读，不是综合。
   extract:
-    provider: minimax
-    model: MiniMax-M3.1-Flash-Preview
-    base_url: https://api.minimaxi.com/anthropic
-    api_key_env: MINIMAX_API_KEY
-    thinking_effort: low
-    max_output_tokens: 8192
+    provider: xj189
     temperature: 0.0
     guard: { max_reasoning_ratio: 0.6, retry_on_empty: 2, max_output_tokens: 16384 }
 
@@ -164,43 +174,30 @@ stages:
   # 上一轮实测挂在 assess 上时触发过「reasoning 102/131 超阈值 60%」的告警，
   # 那个信号就是混用的证据。
   relevance:
-    provider: minimax
-    model: MiniMax-M3
-    base_url: https://api.minimaxi.com/anthropic
-    api_key_env: MINIMAX_API_KEY
+    provider: xj189
+    # 输出极轻（relevance 实测均 36 token），8192 是浪费；
+    # 而且 guard 上限也是 8192 会让「空返回翻倍」无处可翻。
+    # 4096 留出翻倍空间，且这两档都是**关思考**的，不碰窄窗口。
     max_output_tokens: 4096
     temperature: 0.0
     guard: { max_reasoning_ratio: 0.5, retry_on_empty: 1, max_output_tokens: 8192 }
 
   # 缺口评估。决定还要不要继续搜、框架要不要改，驱动整个循环。
   assess:
-    provider: minimax
-    model: MiniMax-M3.1-Flash-Preview
-    base_url: https://api.minimaxi.com/anthropic
-    api_key_env: MINIMAX_API_KEY
-    thinking_effort: low
-    max_output_tokens: 8192
+    provider: xj189
+    reasoning_effort: low
     temperature: 0.0
     guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 16384 }
 
   # 证据分派。把断言映射到小节，直接决定报告结构，不能用 T0。
   assign:
-    provider: minimax
-    model: MiniMax-M3.1-Flash-Preview
-    base_url: https://api.minimaxi.com/anthropic
-    api_key_env: MINIMAX_API_KEY
-    thinking_effort: low
-    max_output_tokens: 8192
+    provider: xj189
     temperature: 0.0
     guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 16384 }
 
   # 段落概括。批量 12 段，每段一句话，机械生成。
   summarize:
-    provider: minimax
-    model: MiniMax-M3
-    base_url: https://api.minimaxi.com/anthropic
-    api_key_env: MINIMAX_API_KEY
-    max_output_tokens: 8192
+    provider: xj189
     temperature: 0.0
     batch_size: 12
     guard: { max_reasoning_ratio: 0.5, retry_on_empty: 2, max_output_tokens: 16384 }
@@ -209,11 +206,10 @@ stages:
   # 去重：合并内容相同或高度重复的断言。当前抽取阶段没有去重，
   # 同一事实可能由多个来源重复进入报告。后期补齐。
   dedupe:
-    provider: minimax
-    model: MiniMax-M3.1-Flash-Preview
-    base_url: https://api.minimaxi.com/anthropic
-    api_key_env: MINIMAX_API_KEY
-    thinking_effort: low
+    provider: xj189
+    # 输出极轻（relevance 实测均 36 token），8192 是浪费；
+    # 而且 guard 上限也是 8192 会让「空返回翻倍」无处可翻。
+    # 4096 留出翻倍空间，且这两档都是**关思考**的，不碰窄窗口。
     max_output_tokens: 4096
     temperature: 0.0
     guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 8192 }
@@ -225,12 +221,8 @@ stages:
 
   # 主 agent 规划：产出写作规约 + 任务列表。看的是断言摘要不是全文。
   write_plan:
-    provider: minimax
-    model: MiniMax-M3.1-Flash-Preview
-    base_url: https://api.minimaxi.com/anthropic
-    api_key_env: MINIMAX_API_KEY
-    thinking_effort: high
-    max_output_tokens: 16384
+    provider: xj189
+    reasoning_effort: high
     temperature: 0.0
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
 
@@ -246,34 +238,22 @@ stages:
   # 两次触发思考占比护栏。它是全套里最重的一环，也是断连唯一集中的地方。
   # 判定依据见 DESIGN_R6_REVIEW.md 2.2 与 DECISIONS.md。
   write_audit:
-    provider: minimax
-    model: MiniMax-M3.1-Flash-Preview
-    base_url: https://api.minimaxi.com/anthropic
-    api_key_env: MINIMAX_API_KEY
-    thinking_effort: high
-    max_output_tokens: 16384
+    provider: xj189
+    reasoning_effort: high
     temperature: 0.0
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
 
   # 子 agent 写一个任务。N 次调用，system prompt 与规约前缀固定以命中缓存。
   write_section:
-    provider: minimax
-    model: MiniMax-M3.1-Flash-Preview
-    base_url: https://api.minimaxi.com/anthropic
-    api_key_env: MINIMAX_API_KEY
-    thinking_effort: low
-    max_output_tokens: 16384
+    provider: xj189
+    reasoning_effort: low
     temperature: 0.2
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
 
   # 子 agent 定点返修。同角色，温度略低以免它把没问题的部分也重写。
   write_revise:
-    provider: minimax
-    model: MiniMax-M3.1-Flash-Preview
-    base_url: https://api.minimaxi.com/anthropic
-    api_key_env: MINIMAX_API_KEY
-    thinking_effort: low
-    max_output_tokens: 16384
+    provider: xj189
+    reasoning_effort: low
     temperature: 0.1
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
 

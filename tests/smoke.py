@@ -143,12 +143,17 @@ def t_llm_config():
     """
     from research_agent.llm.provider import (
         ModelRegistry, ConfigError, NEEDS_GUARD, THINKING_EFFORTS,
+        OPENAI_COMPAT,
     )
     import yaml, tempfile, os
     reg = ModelRegistry()
 
-    T0, T1, T2 = ("MiniMax-M3", "MiniMax-M3.1-Flash-Preview",
-                  "MiniMax-M3.1-Flash-Preview")
+    # OpenAI 兼容平台实测全档位都收（2026-10-09 七档全部 HTTP 200），
+    # 所以这里不设白名单大小限制，只挡明显拼错的。
+    REASONING_EFFORTS = {"none", "minimal", "low", "medium",
+                         "high", "xhigh", "max"}
+    KNOWN_PROVIDERS = {"minimax", "gemini"} | set(OPENAI_COMPAT)
+
     for stage in sorted(NEEDS_GUARD):
         cfg = reg.stage(stage)
         # 防线
@@ -157,27 +162,45 @@ def t_llm_config():
         assert cfg.guard.max_output_tokens > cfg.max_output_tokens, \
             f"{stage} 重试时预算没地方翻倍"
         assert 0 < cfg.guard.max_reasoning_ratio <= 1, f"{stage} 思考阈值不合理"
-        # 思考档位：只认三档，且 effort 只能配在 minimax 上
-        assert cfg.provider == "minimax", f"{stage} 偏离 MiniMax 统一策略: {cfg.provider}"
-        if cfg.thinking_effort is None:
-            assert cfg.model == T0, \
-                f"{stage} 不设 effort 时只能用 {T0}，实际 {cfg.model}"
+        # 思考档位：**按 provider 分别校验**（2026-10-09 从「统一 MiniMax」
+        # 改成多 provider，见 xj189 那节）。
+        #
+        # 原来这里断言「所有环节必须是 minimax」——那是当时的策略，
+        # 策略一改断言就该跟着改，**但不能改成「什么都行」**：
+        # 真正要守住的是「旋钮要用对 provider 的字段，且值合法」。
+        assert cfg.provider in KNOWN_PROVIDERS, \
+            f"{stage} 用了未登记的 provider: {cfg.provider}"
+        if cfg.provider == "minimax":
+            # MiniMax 用 output_config.effort，档位有白名单
+            if cfg.thinking_effort is not None:
+                assert cfg.thinking_effort in THINKING_EFFORTS, \
+                    f"{stage} effort 非法: {cfg.thinking_effort}"
+            assert not cfg.reasoning_effort, \
+                f"{stage} 是 minimax，不该发 reasoning_effort"
         else:
-            assert cfg.model == T1 == T2 or cfg.model == T1, \
-                f"{stage} 设了 effort 却不是 M3.1: {cfg.model}"
-            assert cfg.thinking_effort in ("low", "high"), \
-                f"{stage} effort 只用 low / high 两档，实际 {cfg.thinking_effort}"
+            # OpenAI 兼容平台用 reasoning_effort。
+            # **None 是合法值且有含义**：省略该字段 = 关思考（实测 3/3 reasoning=0）。
+            # 所以这里不能只查「在不在白名单里」，得先放行 None。
+            assert cfg.reasoning_effort is None \
+                or cfg.reasoning_effort in REASONING_EFFORTS, \
+                f"{stage} reasoning_effort 非法: {cfg.reasoning_effort!r}"
+            assert not cfg.thinking_effort, \
+                f"{stage} 是 {cfg.provider}，不该发 thinking_effort"
 
-    # 核心环节必须给到最高档
+    # 核心环节必须给到最高档（跨 provider 通用：取该平台最强的那个旋钮）
     for core in ("outline", "probe_outline", "write_plan", "write_audit"):
-        assert reg.stage(core).thinking_effort == "high", \
-            f"{core} 是核心环节，应当用 high 档"
+        c = reg.stage(core)
+        strongest = c.reasoning_effort or c.thinking_effort
+        assert strongest == "high", \
+            f"{core} 是核心环节，应当用 high 档，实际 {strongest}"
 
     # 写环节的主 agent 与子 agent 分档，这是 R4 架构的基础
     for stage in ("write_plan", "write_audit"):
-        assert reg.stage(stage).thinking_effort == "high"
+        c = reg.stage(stage)
+        assert (c.reasoning_effort or c.thinking_effort) == "high"
     for stage in ("write_section", "write_revise"):
-        assert reg.stage(stage).thinking_effort == "low"
+        c = reg.stage(stage)
+        assert (c.reasoning_effort or c.thinking_effort) == "low"
     # 返修温度要低于初稿，避免它把没问题的部分一起重写
     assert reg.stage("write_revise").temperature < reg.stage("write_section").temperature
 
@@ -201,12 +224,26 @@ def t_llm_config():
     # 「只用 low 与 high」是本项目的选型策略，对真实配置断言，不在这里冒充契约。
     expect_error(lambda r: r["stages"]["extract"].__setitem__("thinking_effort", "none"),
                  "用了接口不支持的 effort 值")
-    expect_error(lambda r: r["stages"]["extract"].__setitem__("provider", "opencode"),
-                 "effort 配在非 minimax provider 上")
+    # 错配必须报错：把 MiniMax 的旋钮挂到 OpenAI 兼容平台上。
+    # ⚠️ 这里**必须同时写 thinking_effort**——原来的写法只改 provider，
+    # 而 extract 现在本来就是 xj189 且不带 thinking_effort（关思考），
+    # 改 provider 造不出错配，断言就废了（2026-10-09 实测踩到）。
+    def _mismatch(r):
+        r["stages"]["extract"]["provider"] = "opencode"
+        r["stages"]["extract"]["thinking_effort"] = "low"
+    expect_error(_mismatch, "effort 配在非 minimax provider 上")
+    # 反向错配同样要拦：OpenAI 的旋钮挂回 minimax 会被静默忽略
+    def _mismatch2(r):
+        r["stages"]["extract"].pop("thinking_effort", None)
+        r["stages"]["extract"]["provider"] = "minimax"
+        r["stages"]["extract"]["reasoning_effort"] = "high"
+    expect_error(_mismatch2, "reasoning_effort 配在 minimax 上")
 
-    n_t0 = sum(1 for s in NEEDS_GUARD if reg.stage(s).thinking_effort is None)
-    return (f"{len(NEEDS_GUARD)} 个环节防线齐备（{n_t0} 个 T0 / "
-            f"{len(NEEDS_GUARD)-n_t0} 个 T1T2），三档之外与错配 provider 均拒绝启动")
+    n_off = sum(1 for s in NEEDS_GUARD if reg.stage(s).reasoning_effort is None
+                and reg.stage(s).thinking_effort is None)
+    return (f"{len(NEEDS_GUARD)} 个环节防线齐备（{n_off} 个关思考 / "
+            f"{len(NEEDS_GUARD)-n_off} 个开思考），"
+            f"非法档位与错配 provider 均拒绝启动")
 
 
 # ---------- 6. 检索后端 ----------
