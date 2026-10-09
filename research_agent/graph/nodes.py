@@ -276,6 +276,17 @@ def node_await_approval(state: ResearchState) -> dict:
     from langgraph.types import interrupt
 
     pr = state.get("probe") or {}
+    # 审批时把「这一节有多少材料撑着」一起给出去。
+    # 大纲是在材料到位之前写的，所以用户要能一眼看出哪几节偏薄——
+    # 否则他批的是一份未经检验的框架（详见 runner.py 文件头）。
+    outline_view = []
+    for s in (state.get("outline") or []):
+        v = {"id": s.get("id"), "title": s.get("title"),
+             "question": s.get("question"), "kind": s.get("kind")}
+        note = str(s.get("材料支撑") or "").strip()
+        if note:
+            v["修订说明"] = note
+        outline_view.append(v)
     payload = {
         "session_id": state["session_id"],
         "question": state["question"],
@@ -283,7 +294,25 @@ def node_await_approval(state: ResearchState) -> dict:
         "probe": {k: pr.get(k) for k in
                   ("quality", "degraded", "headline", "ambiguity", "deep_urls_read")},
         "signals": (pr.get("signals") or {}),
-        "outline": state.get("outline", []),
+        "outline": outline_view,
+        "已修订": bool(state.get("outline_revision_log")),
+        "修订记录": list(state.get("outline_revision_log") or [])[-3:],
+        # ★ 这份框架是「材料撑得住的」还是「尽力而为的」——
+        #   两者可信度完全不同，用户有权在批准之前知道。
+        #   撞了轮数/URL/超时上限时，材料其实并不够。
+        "框架可信度": {
+            "种类": _stop_kind(state) or "仍在补充材料",
+            "停止原因": state.get("stop_reason") or "",
+            "说明": ("材料已经够了，这份框架的每一节都有材料支撑"
+                     if _stop_kind(state) == "satisfied"
+                     else "还没搜到够的材料就被上限拦下了，"
+                          "这份框架只是尽力而为——请当作方向而非承诺"),
+        },
+        "当前材料": {
+            "来源数": state.get("url_count", 0),
+            "段落数": len(state.get("segments") or []),
+            "过闸门": len(state.get("on_topic") or []),
+        },
         "queries": state.get("plan_queries", {}),
         "recalled": [
             {"id": c["id"], "summary": c.get("summary"),
@@ -797,7 +826,12 @@ def node_assess(state: ResearchState) -> dict:
     data = {}
     if section_views and n_seg:
         hist = _assess_history(repo, sid, rnd)
-        brief = json.dumps({"本轮可用段落数": n_seg,
+        # 框架还没获审批时，才让 assess 顺便评估「这节的要求材料撑不撑得住」。
+        # 已审批的框架绝不该被程序改动——所以这里只**告诉**模型状态，
+        # 由它决定给不给 outline_review（设计约定，不是硬门控）。
+        approved = bool(state.get("plan_approved"))
+        brief = json.dumps({"框架状态": "已获用户审批" if approved else "尚未审批",
+                            "本轮可用段落数": n_seg,
                             "检索历史": hist or "这是第一轮，没有历史",
                             "小节": section_views}, ensure_ascii=False)[:24000]
         try:
@@ -858,7 +892,8 @@ def node_assess(state: ResearchState) -> dict:
         "consecutive_no_new": streak,
         "last_round_segments": n_seg,
         "stop_reason": stop_would_be,
-        "pending_revision": {"op": "none"},   # 大纲已获用户审批，assess 不再擅自改
+        "stop_layer": stop_layer,      # 路由的 _stop_kind 要读它（区分「够了」和「撞顶」）
+        "pending_revision": _to_revision(data.get("outline_review")),
         "events": [{"kind": "assess", "round": rnd,
                     "segments_total": n_seg, "new_segments": new_segs,
                     "round_gain": round(gain, 4),
@@ -871,6 +906,8 @@ def node_assess(state: ResearchState) -> dict:
                     "queries_fallback": fallback_used,
                     "stop_would_be": stop_would_be or "（会继续检索）",
                     "stop_layer": stop_layer or "—",
+                    "outline_actions": _action_hist(data.get("outline_review")),
+                    "outline_given": bool(data.get("outline_review")),
                     "gap_detail": [f"{g.get('section_id')}[{g.get('urgency')}]:"
                                    f"{str(g.get('what_missing'))[:60]}"
                                    for g in gaps][:8]}],
@@ -890,6 +927,19 @@ def node_assess(state: ResearchState) -> dict:
         "brief_chars": len(json.dumps(
             {"本轮可用段落数": n_seg, "小节": section_views},
             ensure_ascii=False)[:24000]),
+        # ★ 框架校准的可观测性（2026-10-08 加）
+        #
+        # 上一轮现场跑完 0/14 节被校准，而同一份 brief 隔离重跑 4/4 都给了
+        # outline_review——**现场没留下任何证据能区分这两种情况**：
+        # run_trace 只存了 gaps，模型到底返没返回 outline_review 查不到。
+        # 这几个字段就是为了下次能一眼看出是「模型没给」还是「给了没解析出来」。
+        "rev_keys": sorted(data.keys()) if isinstance(data, dict) else [],
+        "rev_given": bool(data.get("outline_review")) if isinstance(data, dict) else False,
+        "rev_sections": len(((data.get("outline_review") or {}).get("sections") or []))
+                         if isinstance(data, dict) else 0,
+        "rev_actions": _action_hist(data.get("outline_review")),
+        "rev_op": _to_revision(data.get("outline_review"))["op"]
+                  if isinstance(data, dict) else "none",
     })
     return out_state
 
@@ -899,6 +949,58 @@ def _is_zh(s: str) -> bool:
 
 
 @scoped
+def _to_revision(review: Any) -> dict:
+    """把 assess 的 `outline_review` 翻成 `node_apply_revision` 认得的形状。
+
+    **格式不对就当没给**，绝不因为模型改了输出结构就让流程报错——
+    那一轮大纲原样保留，损失只是「没修正」，不是「跑不动」。
+    """
+    if not isinstance(review, dict):
+        return {"op": "none"}
+    secs = review.get("sections")
+    if not isinstance(secs, list) or not secs:
+        return {"op": "none"}
+
+    narrow, remove, merge = [], [], []
+    for s in secs:
+        if not isinstance(s, dict):
+            continue
+        sid = str(s.get("id") or "")
+        if not sid:
+            continue
+        act = str(s.get("动作") or "").strip()
+        if act == "收窄题面":
+            q = str(s.get("收窄后question") or "").strip()
+            # 收窄后必须仍是**一个能回答的问题**，不能是空或一截短语
+            if len(q) >= 12:
+                narrow.append({"id": sid, "question": q,
+                               "reason": str(s.get("理由") or "")[:200]})
+        elif act == "并入":
+            into = str(s.get("并入") or "").strip()
+            if into and into != sid:
+                merge.append({"ids": [sid], "into": into,
+                              "reason": str(s.get("理由") or "")[:200]})
+        elif act == "删去":
+            remove.append({"id": sid, "reason": str(s.get("理由") or "")[:200]})
+
+    if not (narrow or remove or merge):
+        return {"op": "none"}
+    return {"op": "revise", "narrow": narrow, "remove": remove,
+            "merge": merge, "reason": "按材料校准框架"}
+
+
+def _action_hist(review: Any) -> dict:
+    """埋点：四种动作各出现多少次。没有就返回空 dict，不占事件体积。"""
+    if not isinstance(review, dict) or not isinstance(review.get("sections"), list):
+        return {}
+    hist: dict[str, int] = {}
+    for s in review["sections"]:
+        if isinstance(s, dict):
+            a = str(s.get("动作") or "?").strip()
+            hist[a] = hist.get(a, 0) + 1
+    return hist
+
+
 def node_apply_revision(state: ResearchState) -> dict:
     """把 LLM 自主提议的框架修订真正落到 outline 上。"""
     rev = state.get("pending_revision") or {"op": "none"}
@@ -909,6 +1011,9 @@ def node_apply_revision(state: ResearchState) -> dict:
     by_id = {s.get("id"): s for s in outline}
     removed = {r.get("id"): r.get("reason", "") for r in (rev.get("remove") or [])}
     merged = {tuple(m.get("ids") or []): m for m in (rev.get("merge") or [])}
+    # 收窄题面：结构不动，只把要求换成材料撑得住的问法。
+    # 这是四种动作里**最保守**的一个——不增不减小节，只改 question。
+    narrowed = {r["id"]: r for r in (rev.get("narrow") or []) if r.get("id")}
 
     dropped_ids = set()
     out = []
@@ -920,7 +1025,22 @@ def node_apply_revision(state: ResearchState) -> dict:
             continue
         if any(sid_ in (m.get("ids") or []) for m in (rev.get("merge") or [])):
             continue  # 合并目标保留，被合并的丢弃
+        if sid_ in narrowed:
+            # 复制一份再改，别就地改 state 里的对象
+            s = dict(s)
+            s["question"] = narrowed[sid_]["question"]
+            s["材料支撑"] = (narrowed[sid_].get("reason") or "")[:120]
         out.append(s)
+
+    # ⚠️ 全部小节被删/合并光 → 框架空了，后面 write 装配会炸。
+    # 回退：保留原框架，不做这次修订。
+    if not out:
+        print(f"⚠️  [apply_revision] 本次修订会清空整个框架（删 {len(removed)}、"
+              f"并 {len(merged)} 节），已放弃这次修订。", flush=True)
+        return {"pending_revision": {"op": "none"},
+                "events": [{"kind": "outline_revision", "round": state.get("round"),
+                            "skipped": True,
+                            "reason": "修订后框架为空，原样保留"}]}
 
     added = []
     nxt = len(out)
@@ -941,8 +1061,11 @@ def node_apply_revision(state: ResearchState) -> dict:
 
     entry = {"round": state.get("round"), "reason": rev.get("reason", ""),
              "added": added,
+             "narrowed": [{"id": r["id"], "to": r["question"][:60]}
+                          for r in (rev.get("narrow") or [])],
              "removed": list(removed.keys()),
-             "merged": [m.get("into") for m in (rev.get("merge") or [])]}
+             "merged": [f"{m.get('ids')}→{m.get('into')}"
+                        for m in (rev.get("merge") or [])]}
     return {"outline": out, "pending_revision": {"op": "none"},
             "outline_revision_log": [entry],
             "events": [{"kind": "outline_revision", **entry}]}
@@ -953,24 +1076,73 @@ def route_after_assess(state: ResearchState) -> str:
     return "apply_revision"
 
 
+def _stop_kind(state: ResearchState) -> str:
+    """这次停下来是「够了」还是「撞顶了」。
+
+    **审批前这两种情况必须分开**（2026-10-08）：
+
+    - `satisfied` —— assess 说够了。框架是**材料撑得住**的，值得照着写。
+    - `forced`    —— 撞了轮数 / URL / 超时 / 无新增上限。
+      材料其实不够，框架只是**尽力而为**，用户审批时必须知道这一点，
+      否则又变成「给未验证的承诺盖章」——只是换了个时间点。
+
+    `prompt` 层（assess 判够）还是 `mechanism` 层（硬判据拦下），
+    和 `stop_layer` 字段是同一件事，但那个记在 state 里、不参与路由；
+    这里返回的是**路由要用的**，两者必须一致，所以都从 `stop_reason` 推。
+    """
+    if not state.get("stop_reason"):
+        return ""
+    # assess 算的时候把 stop_layer 一起写进了 state（路由要用，不能只留在事件里）。
+    # 下面是**兜底**：stop_layer 缺失时按 stop_reason 反推。
+    # 必须覆盖 assess 实际会写出的全部 5 种文案，否则会出现
+    # 「边际收益过低」被当成 prompt（= 材料够了），而它其实是硬判据。
+    layer = str(state.get("stop_layer") or "")
+    if not layer:
+        r = str(state["stop_reason"])
+        prompt_markers = ("assess 说够了",)
+        layer = "prompt" if r.startswith(prompt_markers) else "mechanism"
+    return "satisfied" if layer == "prompt" else "forced"
+
+
+def _should_stop(state: ResearchState) -> bool:
+    """assess 之后该不该收工。**判据只有 `_predict_stop` 一份。**
+
+    2026-10-08 踩过一次坑：挪审批点时我另写了一个同名逻辑的 `_should_stop`，
+    结果 `_predict_stop` 变成**死代码**——只有 `assess_offline.py` 还在测它，
+    而它已经不决定任何路由了。测试全绿，行为却可能不一致
+    （坑 #6：自检覆盖不到出问题的地方）。
+
+    所以这里**不重复任何判据**，只问 `_predict_stop` 有没有给出停的理由。
+    """
+    return bool(_predict_stop(state))
+
+
+def route_after_assess(state: ResearchState) -> str:
+    """assess 之后：没审批过就先校准框架，已审批就只决定继续还是收工。
+
+    **审批点从 outline 之后挪到了第一次 assess 之后**：
+    大纲是在只有探针轮廓的时候写的，材料到位之后才知道它撑不撑得住。
+    让用户审批一个未经材料检验的框架，等于给未验证的承诺盖章
+    （实测有一节要求「逐家核验四家企业完整台账」，而材料全是媒体转述，
+    这个要求从一开始就做不到）。
+
+    代价是审批推迟一轮检索 + 抽取（实测约 2 分钟），
+    但那两步本来就要跑，只是不再跑在审批前面。
+    """
+    if not state.get("plan_approved"):
+        # 先过一遍 apply_revision：材料撑不住的题面在这里被收窄，
+        # 用户看到的就是**贴过材料**的框架。没有 outline_review 时是空转。
+        return "revise"
+    return "write" if _should_stop(state) else "retrieve"
+
+
 def route_after_revision(state: ResearchState) -> str:
-    rnd = state.get("round", 0)
-    # assess 现在把停止原因写成一句描述（"assess 说够了" / "边际收益过低…"），
-    # 不再是 "satisfied" 这个哨兵值——哨兵说不清是谁停的。
-    if state.get("stop_reason"):
-        return "write"
-    q = state.get("plan_queries") or {}
-    if not q.get("zh") and not q.get("en"):
-        return "write"      # 没有任何查询可用，继续跑也是空转
-    if state.get("consecutive_no_new", 0) >= HARD["no_new_streak"]:
-        return "write"
-    if rnd >= HARD["max_rounds"]:
-        return "write"
-    if state.get("url_count", 0) >= HARD["max_urls"]:
-        return "write"
-    if state.get("elapsed_s", 0) >= HARD["timeout_min"] * 60:
-        return "write"
-    return "retrieve"
+    """框架已按材料校准完：够了就给人看，不够就继续搜。"""
+    if state.get("plan_approved"):
+        return "write" if _should_stop(state) else "retrieve"
+    # 审批前：够料与否都要过审批——审批的价值不只在于纠正大纲，
+    # 还在于在烧掉几十万 token 之前让人能喊停。
+    return "approve" if _should_stop(state) else "retrieve"
 
 
 # ================================================================ 写报告

@@ -3,16 +3,25 @@
 只用 StateGraph / interrupt / SQLite checkpointer（P6 确认），
 不用它的 agent 抽象与 tool 装饰器。
 
-主图结构（2026-10-04）：
+主图结构（2026-10-08，审批点后置）：
 
-    probe(子图) → outline → await_approval(interrupt) → ┐
-                                                          │
-    ┌─────────────────────────────────────────────────────┘
-    │
-    ▼
-  retrieve → extract(子图) → assess → apply_revision ─┬─→ write → finalize → END
-    ▲                                                 │
-    └─────────────────────────────────────────────────┘
+    probe(子图) → outline → ┐
+                            ▼
+    retrieve → extract(子图) → assess ─┬─→ await_approval(interrupt) → assess
+                  ▲                   │                                  │
+                  │                   └─→ retrieve（还要搜）              │
+                  └──────────────────────────────────────────────────────┘
+
+    assess 说够了 → apply_revision → await_approval → write → finalize → END
+
+**审批为什么在第一次 assess 之后**：大纲是在只有探针轮廓时写的
+（探针深读 2 页 4,192 字符，正式材料 39 来源 140 段——差 13 倍），
+它的粒度天然可能超过材料能支撑的程度。实测有一节要求
+「四家企业分别披露了哪些研发、中试、装车验证或量产节点」，
+而材料全是媒体转述、没有任何企业公告——**这个要求从一开始就做不到**。
+让用户审批一个未经材料检验的框架，等于给未验证的承诺盖章。
+
+代价是审批推迟一轮检索 + 抽取（约 2 分钟），但那两步本来就要跑。
 """
 
 from __future__ import annotations
@@ -49,15 +58,21 @@ def build_graph(checkpointer):
 
     g.add_edge(START, "probe")
     g.add_edge("probe", "outline")
-    g.add_edge("outline", "await_approval")
-    g.add_edge("await_approval", "retrieve")
+    # 审批点在第一次 assess 之后，不在 outline 之后——理由见文件头
+    g.add_edge("outline", "retrieve")
     g.add_edge("retrieve", "extract")
     g.add_edge("extract", "assess")
-    g.add_edge("assess", "apply_revision")
+    g.add_conditional_edges(
+        "assess", route_after_assess,
+        # 未审批 → 先按材料校准框架（没有 outline_review 时 apply_revision 是空转）
+        # 已审批 → 只剩「继续搜」和「收工」两个选择，绝不再碰框架
+        {"revise": "apply_revision", "retrieve": "retrieve", "write": "write"},
+    )
     g.add_conditional_edges(
         "apply_revision", route_after_revision,
-        {"retrieve": "retrieve", "write": "write"},
+        {"approve": "await_approval", "retrieve": "retrieve", "write": "write"},
     )
+    g.add_edge("await_approval", "assess")      # 审批完立刻回裁判，不白跑一轮
     g.add_edge("write", "finalize")
     g.add_edge("finalize", END)
 

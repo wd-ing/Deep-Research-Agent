@@ -52,6 +52,14 @@ NEEDS_GUARD = {
 # 注意 none 不是关闭思考——那个值会返回 400。
 THINKING_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
+# 走 `/chat/completions` 的 OpenAI 兼容平台，共用同一份实现。
+#
+# **模型不写死在代码里**：具体模型名、base_url、api_key_env、思考档位
+# 全部从 `config/models.yaml` 读。换平台只改配置，不动这里。
+#   · opencode —— 已有，接过 write 板块
+#   · xj189    —— 2026-10-09 加，DeepSeek 系（deepseek-v4-flash-0731）
+OPENAI_COMPAT = {"opencode", "xj189"}
+
 
 # ---------- 当前会话 ----------
 # LLMClient 是全局单例，调用点遍布主图与子图，逐个传 session_id 不现实。
@@ -256,6 +264,19 @@ class ModelRegistry:
         if s is None:
             raise ConfigError(f"models.yaml 里没有环节 {name}")
         d = self.raw.get("defaults", {})
+
+        # 阶段可以只写 `provider: xj189`，其余（模型名 / 地址 / 密钥 / 思考档位）
+        # 从 `providers:` 档案里继承。**这是「模型不写死在代码里」的关键**：
+        # 换模型、换平台只改配置的一行，不必把 7 行抄到每个阶段上。
+        prov_name = s.get("provider") or d.get("provider")
+        prof = (self.raw.get("providers") or {}).get(prov_name) or {}
+        if not s.get("model") and prof.get("model"):
+            s = {**prof, **{k: v for k, v in s.items() if k != "provider"}}
+        elif prof:
+            # 档案补齐缺失项，阶段自己写的优先
+            s = {**{k: v for k, v in prof.items() if k != "provider"}, **s}
+            s["provider"] = prov_name
+
         if name in NEEDS_GUARD and s.get("guard") is None:
             # 之前这里默默用 GuardPolicy 的默认值，配置被删或拼错都不报错，
             # 防线没了却看不出来。护栏是显式决策，不该有隐式兜底。
@@ -275,7 +296,7 @@ class ModelRegistry:
             thinking_effort=s.get("thinking_effort"),
             timeout_s=float(s.get("timeout_s", d.get("timeout_s", 180))),
             base_url=s.get("base_url", d.get("base_url", "")).rstrip("/"),
-            api_key_env=s.get("api_key_env", d.get("api_key_env", "OPENCODE_API_KEY")),
+            api_key_env=s.get("api_key_env") or d.get("api_key_env"),
             batch_size=int(s.get("batch_size", 20)),
             guard=GuardPolicy.from_dict(s.get("guard")),
         )
@@ -312,7 +333,7 @@ class LLMClient:
         json_mode: bool = False,
     ) -> str:
         cfg = self.registry.stage(stage)
-        if cfg.provider == "opencode":
+        if cfg.provider in OPENAI_COMPAT:
             text, usage = self._opencode(cfg, prompt, system, json_mode)
         elif cfg.provider == "minimax":
             text, usage = self._minimax(cfg, prompt, system, json_mode)
@@ -349,10 +370,10 @@ class LLMClient:
           · tool_use 后面不能直接跟普通文本轮次，必须先 tool_result
         """
         cfg = self.registry.stage(stage)
-        if cfg.provider == "minimax":
-            blocks, usage = self._minimax_tools(cfg, system, messages, tools)
-        elif cfg.provider == "opencode":
+        if cfg.provider in OPENAI_COMPAT:
             blocks, usage = self._opencode_tools(cfg, system, messages, tools)
+        elif cfg.provider == "minimax":
+            blocks, usage = self._minimax_tools(cfg, system, messages, tools)
         else:
             raise ConfigError(
                 f"环节 {stage} 的 provider {cfg.provider} 暂不支持工具调用")
@@ -367,9 +388,9 @@ class LLMClient:
                 usage: dict | None = None) -> None:
         """记一次调用。usage 是 API 报上来的真实值，缺失时退回本地估算。
 
-        真实值里最要紧的是 cache_read_input_tokens：write 环节 12 个子 agent
+        真实值里最要紧的是缓存命中：write 环节 12 个子 agent
         共享一段固定前缀，它决定我们到底省没省钱。只记本地估算的话，
-        这个数永远看不到。
+        这个数永远看不到。各家 usage 字段名不同，统一走 `_cache_read` 收口。
         """
         try:
             from ..db.repo import get_repo
@@ -379,10 +400,14 @@ class LLMClient:
                 session_id=_CURRENT_SESSION.get(),
                 stage=cfg.stage,
                 model=f"{cfg.provider}/{cfg.model}",
-                input_tokens=int(u.get("input_tokens") or 0) or _rough_tokens(prompt),
-                output_tokens=int(u.get("output_tokens") or 0) or _rough_tokens(out),
+                input_tokens=(int(u.get("input_tokens") or 0)
+                              or int(u.get("prompt_tokens") or 0)
+                              or _rough_tokens(prompt)),
+                output_tokens=(int(u.get("output_tokens") or 0)
+                               or int(u.get("completion_tokens") or 0)
+                               or _rough_tokens(out)),
                 latency_ms=int(u.get("latency_ms") or 0) or None,
-                cache_read_tokens=int(u.get("cache_read_input_tokens") or 0),
+                cache_read_tokens=_cache_read(u),
                 cache_creation_tokens=int(u.get("cache_creation_input_tokens") or 0),
                 est_input_tokens=_rough_tokens(prompt),
             )
@@ -391,12 +416,24 @@ class LLMClient:
 
     # ---------- OpenCode ----------
 
+    def _headers(self, cfg: StageConfig) -> dict:
+        """请求头。平台特有头在这里按 provider 挂，**不进代码逻辑**。
+
+        opencode 要一个会话头做归因；xj189 不需要（它的鉴权只有 Bearer）。
+        """
+        h = {"Authorization": f"Bearer {os.environ.get(cfg.api_key_env or '', '')}",
+             "Content-Type": "application/json"}
+        if cfg.provider == "opencode":
+            h["x-opencode-session"] = self.registry.session_header()
+        return h
+
     def _opencode(
         self, cfg: StageConfig, prompt: str, system: str | None, json_mode: bool
     ) -> tuple[str, dict]:
-        key = os.environ.get(cfg.api_key_env or "OPENCODE_API_KEY", "")
+        key = os.environ.get(cfg.api_key_env or "", "")
         if not key:
-            raise ConfigError(f"未设置 {cfg.api_key_env or 'OPENCODE_API_KEY'}")
+            raise ConfigError(
+                f"未设置 {cfg.api_key_env or '(该阶段未配置 api_key_env)'}")
 
         msgs = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": prompt}
@@ -409,8 +446,14 @@ class LLMClient:
         attempts = 1 + empty_left + net_left
         last_reason = ""
         drops = 0          # 因连接中断而重试的次数，用于在恢复时明确告知
+        # 限流有**独立的额度**：它不是抖动，是服务端要求放慢，混进传输额度
+        # 会让一次限流就把重试机会耗光（2026-10-08 relevance 连撞 429 实测）。
+        limit_left = 3
+        # 限流重试不占 attempts（那里面是空返回和断连的额度），
+        # 所以循环上限要多放行几次，否则限流额度根本用不到。
+        max_tries = attempts + limit_left
 
-        for attempt in range(attempts):
+        for attempt in range(max_tries):
             payload: dict[str, Any] = {
                 "model": cfg.model,
                 "messages": msgs,
@@ -427,11 +470,7 @@ class LLMClient:
             try:
                 r = self._client.post(
                     f"{cfg.base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {key}",
-                        "Content-Type": "application/json",
-                        "x-opencode-session": self.registry.session_header(),
-                    },
+                    headers=self._headers(cfg),
                     json=payload,
                     timeout=cfg.timeout_s,
                 )
@@ -470,14 +509,23 @@ class LLMClient:
                       f"（此前中断 {drops} 次）", flush=True)
             if r.status_code != 200:
                 retry, why = _retryable_http(r.status_code, r.text)
-                if retry and net_left > 0:
-                    net_left -= 1
+                # 限流**不占传输额度**：它不是抖动，是服务端要求放慢。
+                # 混进 retry_on_transport 的话，一次限流就把重试机会耗光
+                # （2026-10-08 实测 relevance 连撞 429，退避到额度剩 0 还在撞）。
+                kind, wait = classify_limit(r.text, dict(r.headers))
+                if retry and limit_left > 0 and kind != "seat_quota":
+                    limit_left -= 1
+                    sleep_s = min(max(wait, 3.0 * (attempt + 1)), 60.0)
                     self.warnings.append(
-                        f"[{cfg.stage}] HTTP {r.status_code} {why}，退避重试（额度剩 {net_left}）")
-                    print(f"⚠️  [{cfg.stage}] HTTP {r.status_code} {why}，退避重试（额度剩 {net_left}）", flush=True)
-                    time.sleep(3.0 * (attempt + 1))
+                        f"[{cfg.stage}] HTTP {r.status_code} {why}，"
+                        f"按 Retry-After 等待 {sleep_s:.0f}s 后重试"
+                        f"（限流额度剩 {limit_left}）")
+                    print(f"⚠️  [{cfg.stage}] HTTP {r.status_code} {why}，"
+                          f"等待 {sleep_s:.0f}s 重试（限流额度剩 {limit_left}）",
+                          flush=True)
+                    time.sleep(sleep_s)
                     continue
-                raise RuntimeError(f"OpenCode {r.status_code}: {r.text[:300]}")
+                raise RuntimeError(f"{cfg.provider} {r.status_code}: {r.text[:300]}")
             data = r.json()
             msg = data["choices"][0]["message"]
             text = (msg.get("content") or "").strip()
@@ -688,9 +736,10 @@ class LLMClient:
     def _opencode_tools(self, cfg: StageConfig, system: str | None,
                         messages: list[dict], tools: list[dict]) -> tuple[list, dict]:
         """OpenAI 形状。返回 Anthropic 形状的块，好让调用方不必分支。"""
-        key = os.environ.get(cfg.api_key_env or "OPENCODE_API_KEY", "")
+        key = os.environ.get(cfg.api_key_env or "", "")
         if not key:
-            raise ConfigError(f"未设置 {cfg.api_key_env or 'OPENCODE_API_KEY'}")
+            raise ConfigError(
+                f"未设置 {cfg.api_key_env or '(该阶段未配置 api_key_env)'}")
         msgs = ([{"role": "system", "content": system}] if system else []) + [
             {"role": m["role"], "content": m["content"]} for m in messages]
         payload: dict[str, Any] = {
@@ -702,13 +751,11 @@ class LLMClient:
         t0 = time.time()
         r = self._client.post(
             f"{cfg.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {key}",
-                     "Content-Type": "application/json",
-                     "x-opencode-session": self.registry.session_header()},
+            headers=self._headers(cfg),
             json=payload, timeout=cfg.timeout_s,
         )
         if r.status_code != 200:
-            raise RuntimeError(f"OpenCode {r.status_code}: {r.text[:300]}")
+            raise RuntimeError(f"{cfg.provider} {r.status_code}: {r.text[:300]}")
         j = r.json()
         msg = j["choices"][0]["message"]
         blocks: list[dict] = []
@@ -769,7 +816,73 @@ class LLMClient:
 
 # ---------- 工具 ----------
 
-def _retryable_http(status: int, body: str) -> tuple[bool, str]:
+def _cache_read(usage: dict) -> int:
+    """从各家 usage 里取出「缓存命中了多少输入 token」。
+
+    **三个口径都要收**——实测同名概念放在三个不同位置，谁也不规范：
+      · Anthropic 系（MiniMax）：`cache_read_input_tokens`
+      · OpenAI 标准（DeepSeek 官方）：`prompt_tokens_details.cached_tokens`
+      · 聚合平台实测（xj189 2026-10-09）：**顶层** `cached_tokens`
+
+    ⚠️ 最后这条是踩坑 #1 的又一次：先按 OpenAI 标准去 `prompt_tokens_details` 里找，
+    读到 0，就得出「平台不支持缓存」的结论；打出来才发现它在**最外层**。
+    **字段名对不上不代表字段不存在**——先看原始报文。
+
+    这里只取缓存命中数，**不去改写输入总量的口径**：
+    各平台 `prompt_tokens` 到底是「总量」还是「未命中部分」并不统一，
+    猜错就是假的命中率。
+    """
+    u = usage or {}
+    for path in (("cache_read_input_tokens",),
+                 ("prompt_tokens_details", "cached_tokens"),
+                 ("cached_tokens",)):
+        cur: object = u
+        for k in path:
+            if not isinstance(cur, dict):
+                cur = None
+                break
+            cur = cur.get(k)
+        if cur is not None:
+            try:
+                return int(cur)
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def classify_limit(body: str, headers: dict | None = None) -> tuple[str, float]:
+    """平台限流的三种情形**处置完全不同**（2026-10-09 平台文档）。
+
+    返回 `(kind, retry_after_seconds)`，kind 取值：
+
+    - `"seat_quota"` —— `MODEL_SEAT_QUOTA_EXHAUSTED`。
+      **重试无效**，额度得管理员调。再试就是白烧一轮时间和配额。
+    - `"account_concurrency"` —— 「当前账户并发已达上限」。
+      等在途调用腾出位置，退避要**更长**（并发槽位释放比频率窗口慢）。
+    - `"rate"` —— 「服务组/模型调用频率已达上限」。按 Retry-After 等。
+
+    `retry_after` 取响应头 `Retry-After`，缺失则按 kind 给保守默认值。
+    """
+    low = (body or "").lower()
+    hdr = {k.lower(): v for k, v in (headers or {}).items()}
+
+    ra = 0.0
+    try:
+        ra = float(hdr.get("retry-after") or 0)
+    except (TypeError, ValueError):
+        ra = 0.0
+
+    if "model_seat_quota_exhausted" in low:
+        return "seat_quota", max(ra, 60.0)
+    if "并发已达上限" in (body or "") or "concurrency" in low:
+        return "account_concurrency", max(ra, 15.0)
+    if "调用频率已达上限" in (body or "") or "rate limit" in low:
+        return "rate", max(ra, 5.0)
+    return "", ra
+
+
+def _retryable_http(status: int, body: str,
+                    headers: dict | None = None) -> tuple[bool, str]:
     """5xx 该不该重试？**同一个 5xx 码的答案可能相反**（2026-10-06 实测）。
 
     - `529 overloaded_error` / `rate_limit_error` → **重试**。
@@ -780,6 +893,9 @@ def _retryable_http(status: int, body: str) -> tuple[bool, str]:
     - `500 api_error` 且消息里有 `new_sensitive` / `content_filter` → **不重试**。
       实测也撞过同样的 500 码，但那是内容过滤，重发同样内容必然还是被拦，
       重试只是白白烧额度。
+    - `MODEL_SEAT_QUOTA_EXHAUSTED` → **不重试**（见 `classify_limit`）。
+      这是坑 #13 的第三次形态：同一个 429 码，可能是频率（该退避）
+      也可能是额度耗尽（重发必然还撞）。
 
     判据取响应体里的 `error.type` 与消息文本，认不出来就按「不重试」处理——
     猜错成「重试」最坏是浪费，重试错成「不重试」只是少一次机会。
@@ -787,10 +903,13 @@ def _retryable_http(status: int, body: str) -> tuple[bool, str]:
     # 429 必须先判：它是限流，**该退避重试**，
     # 而它在 4xx 段里，顺序放错就会被下面的 `status < 500` 挡掉。
     if status == 429:
-        return True, "限流"
+        kind, _ = classify_limit(body, headers)
+        return kind != "seat_quota", kind or "限流"
     if status < 500:
         return False, ""
     low = (body or "").lower()
+    if classify_limit(body, headers)[0] == "seat_quota":
+        return False, "额度耗尽（重试无效，需管理员调额度）"
     if "overloaded" in low or "rate_limit" in low or "too_many_request" in low:
         return True, "过载/限流"
     if "new_sensitive" in low or "content_filter" in low or "sensitive" in low:

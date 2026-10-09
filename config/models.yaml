@@ -31,6 +31,59 @@
 #   2. 监控思考占比，超阈值告警
 #   3. 空输出自动重试并翻倍预算
 
+# ── 可用的 provider 档案（2026-10-09）──────────────────────────────
+#
+# **模型不写死在代码里。** 每个阶段在 `stages:` 下声明自己用哪个 `provider:`，
+# 下面这些档案给出对应的模型名 / 地址 / 密钥变量 / 思考档位。
+# 换平台只改这一行，代码一行都不动。
+#
+#   minimax  —— Anthropic Messages 协议，走 `output_config.effort` 控制思考
+#   opencode —— OpenAI 兼容，走 `reasoning_effort`
+#   xj189    —— OpenAI 兼容，DeepSeek 系（deepseek-v4-flash-0731，100 万上下文）
+#
+# xj189 接入预检已实测（2026-10-09，`tests/preflight_xj189.py`）：
+#   · 严格 JSON      ✓ 带不带 response_format 都能解析
+#   · 工具调用        ✓ OpenAI 标准格式，**支持一个回合多个 tool_calls**，
+#                       arguments 是 JSON 字符串 —— write 子 agent 的工具循环能直接用
+#   · reasoning_effort 七个档位全部 200，但**思考长度不随档位变**，旋钮疑似无效
+#   · 缓存            ✓ 支持，字段是**顶层 `cached_tokens`**
+#                       （740 token 前缀不命中、3,489 命中 3,328，门槛在两者之间）
+#
+# xj189 的平台限流有三种，处置完全不同（`classify_limit`）：
+#   · 「服务组/模型调用频率已达上限」 → 按 Retry-After 退避，可重试
+#   · 「当前账户并发已达上限」         → 等在途调用腾位，退避要更长
+#   · MODEL_SEAT_QUOTA_EXHAUSTED      → **重试无效**，得管理员调额度
+# 所以限流额度与传输断连额度**分开计**，否则一次限流就把重试机会耗光。
+
+providers:
+  minimax:
+    provider: minimax
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+  opencode:
+    provider: opencode
+    base_url: https://api.opencode.ai/v1
+    api_key_env: OPENCODE_API_KEY
+  xj189:
+    provider: xj189
+    model: deepseek-v4-flash-0731
+    base_url: https://ai.xj.189.cn/api/v1
+    api_key_env: XJ189_API_KEY
+    # 思考档位：七个值实测**全部 HTTP 200**（none/minimal/low/medium/high/xhigh/max），
+    # 但 reasoning_content 长度不随档位明显变化，**这个旋钮大概率不起作用**——
+    # 别照着 MiniMax 那样「用 effort 分档省时间」，得另找控制手段。
+    # 先按 low 配（最保守），实测确认后再调。
+    reasoning_effort: low
+    # ⚠️ **thinking 吃光输出预算**（2026-10-09 实测，与 MiniMax 同一个失效模式）：
+    #   max_tokens=2048 → 正文 0 字符，reasoning_content 5,574 字符
+    #   max_tokens=8192 → 正文出来了（completion 2,327）
+    #   max_tokens=16384 → **504 网关超时**
+    # 所以这个模型的 max_output_tokens 是个窄窗口，给小了没正文、给大了网关挂。
+    # 各阶段配 8192 起步，**不要照抄 MiniMax 的 16384**。
+    max_output_tokens: 8192
+    # 网关对长生成会 504，超时必须给足，否则好好的调用被砍在网关上
+    timeout_s: 300
+
 defaults:
   temperature: 0.0
   # 180 秒不够。实测（2026-10-05，R6 三轮真实数据）：

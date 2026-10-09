@@ -8,8 +8,12 @@ write 阶段一轮要 15–20 分钟，而用户明说「测试只打要改的�
   2. 529 这类可重试 5xx 会不会被退避重试
   3. assess 会不会真的点名到具体主体、第 2 轮查询会不会换
 
-所以这里直接驱动主图到 `route_after_revision` 为止，**不走 write / finalize**。
+所以这里直接驱动主图到收工为止，**不走 write / finalize**。
 省掉的不是时间，是随机性——write 那 20 分钟里任何一处抖动都会让对比失效。
+
+**2026-10-08：审批点后置**。第一次 invoke 不再停在 outline 之后，
+而是跑到「第一次 assess + 框架按材料校准」之后才 interrupt。
+所以本 harness 现在还会打印**框架被怎么校准的**（收窄/并入/删去）。
 
 跑法
 ----
@@ -45,7 +49,7 @@ from langgraph.types import Command  # noqa: E402
 
 from research_agent.db.repo import get_repo  # noqa: E402
 from research_agent.graph.runner import get_graph  # noqa: E402
-from research_agent.graph.nodes import route_after_revision  # noqa: E402
+from research_agent.graph.nodes import route_after_assess  # noqa: E402
 from research_agent.graph.subgraphs import write as write_subgraph  # noqa: E402
 
 # ---- 把 write 打桩，让它瞬间返回 ----
@@ -127,6 +131,27 @@ def show_trace(repo, sid: str, seen: set) -> None:
                       f"这正是要修的 bug")
 
 
+def _show_confidence(state) -> None:
+    """审批前 tell 用户这份框架是「材料撑得住」还是「尽力而为」。"""
+    o = state.get("outline") or []
+    log = state.get("outline_revision_log") or []
+    if not log:
+        print("     框架未修订（assess 没给 outline_review，或全部判「保持」）")
+        return
+    e = log[-1]
+    print(f"\n  ── 框架按材料校准了一轮（第 {e.get('round')} 轮）──")
+    if e.get("narrowed"):
+        for n in e["narrowed"]:
+            print(f"     收窄 {n['id']} → {n['to']}")
+    if e.get("merged"):
+        print(f"     并入 {e['merged']}")
+    if e.get("removed"):
+        print(f"     删去 {e['removed']}")
+    if e.get("skipped"):
+        print(f"     ⚠️ 本次修订被放弃：{e.get('reason')}")
+    print(f"     修订后 {len(o)} 节（原 {len(o) + len(e.get('removed') or [])} 节）")
+
+
 def main() -> None:
     repo = get_repo()
     sid = repo.create_session(QUESTION[:40], QUESTION)
@@ -135,16 +160,20 @@ def main() -> None:
     g = get_graph()
     cfg = {"configurable": {"thread_id": sid}}
 
-    tick("启动：probe → outline …")
+    tick("启动：probe → outline → retrieve → extract → assess …")
     out = g.invoke({"session_id": sid, "question": QUESTION, "title": QUESTION[:40],
                     "elapsed_s": 0.0, "cost_tokens": 0}, config=cfg)
-    tick("已停在审批点")
+    # 2026-10-08 起审批点后置：不再停在 outline 之后，
+    # 而是**第一次 assess + 框架校准之后**才 interrupt。
+    # 所以第一次 invoke 会跑完若干轮检索才停下来。
+    tick("已停在审批点（材料已就位、框架已按材料校准）")
     show_probe(out)
     show_outline(out)
+    _show_confidence(out)
 
     recall = out.get("recalled_chunks") or []
     seen: set = set()
-    tick("批准，继续 retrieve → extract → assess …（不走 write）")
+    tick("批准，继续 assess → （够料就收工 / 没够就再搜）")
     state = out
     rounds = 0
     while True:
@@ -154,9 +183,8 @@ def main() -> None:
             config=cfg)
         show_trace(repo, sid, seen)
         rounds += 1
-        # 路由要往前走（去 write）就停。write 已被打桩，
-        # 但这一行仍留着——它记录**是谁决定收工的**。
-        nxt = route_after_revision(state)
+        # 已审批：只剩「继续搜」和「收工」，框架不会再被改
+        nxt = route_after_assess(state)
         tick(f"路由决定：{nxt}")
         if nxt != "retrieve":
             aev = [e for e in (state.get("events") or [])
