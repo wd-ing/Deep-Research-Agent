@@ -254,13 +254,28 @@ def summarize_segments(items: list[dict]) -> dict:
         bi, batch = item
         blob = "\n\n".join(
             f"[{j}] {s['heading']}\n{s['text'][:3000]}" for j, s in enumerate(batch))
-        data = LLM.complete_json(
+        # **强制工具调用输出**（2026-10-09）。原来是纯提示词让模型手写 JSON，
+        # 实测 xj189 上 **9% 的批次崩在 JSON 中途**（`Expecting ',' delimiter:
+        # line 1 column 630`——第 630 字符，**中间位置不是结尾截断**），
+        # 崩掉的批次整批丢掉，那些段落在写作阶段**根本看不到**（静默丢证据）。
+        # 改成工具之后平台在解码层面保证 arguments 是合法 JSON，
+        # 同一组数据实测 3/3 通过、5.2~8.8 秒。
+        data = LLM.complete_json_forced(
             "summarize",
             f"以下是 {len(batch)} 个报告段落，请为每段写一句话概括：\n\n{blob}",
+            name="emit_summaries",
+            schema={"type": "object", "properties": {"summaries": {
+                "type": "array", "description": "与输入段落一一对应的概括",
+                "items": {"type": "object", "properties": {
+                    "index": {"type": "integer",
+                             "description": "段落下标，对应输入里的 [n]"},
+                    "summary": {"type": "string", "description": "一句话概括"}},
+                    "required": ["index", "summary"]}}},
+                "required": ["summaries"]},
             system=prompts.SUMMARIZE,
         )
         got: dict[str, str] = {}
-        for it in (data.get("summaries") or []):
+        for it in ((data or {}).get("summaries") or []):
             idx = it.get("index")
             # 模型给错下标就跳过，不猜
             if isinstance(idx, int) and 0 <= idx < len(batch):

@@ -680,24 +680,35 @@ def _assemble_warnings(bodies: dict, drafts: dict, by_task: dict) -> list[str]:
 def _last_high_findings(session_id: str | None) -> list[dict]:
     """上一轮的 high findings 原文（给审查逐条核对用）。
 
-    读 `audit_history_json` 的**倒数第二条**——最后一条是上一轮刚写的，
-    但那一轮的 targets 是「它当时要求改什么」，正是我们要的。
-    若上一轮没有 high，返回空（模型就不必填 `rework_check`）。
+    读 `audit_history_json`。⚠️ 里面的 `targets` 存的是**字符串**列表
+    （`"t5→sec5"`），不是 dict——我第一版按 dict 写，直接
+    `AttributeError: 'str' object has no attribute 'get'`，
+    **把整场研究的 write_audit 节点打崩**（2026-10-09 实测）。
+
+    原文（problem/fix）在 `audit.targets` 里才有，那是 dict 形状。
+    两者形状不同，这里分开取。
     """
     if not session_id:
         return []
     try:
         from ...db.repo import get_repo
-        h = get_repo().write_trace(session_id).get("audit_history") or []
+        tr = get_repo().write_trace(session_id)
     except Exception:
         return []
-    for rec in reversed(h):
-        t = rec.get("targets") or []
-        if t:
-            return [{"task": x.get("task"), "section": x.get("section"),
-                     "问题": x.get("problem"), "要求": x.get("fix")}
-                    for x in t if x.get("task")]
-    return []
+    hist = tr.get("audit_history") or []
+    # `targets` 只是 "t5→sec5" 这样的标签，用它确认上一轮确实要求过返修
+    asked = [t for rec in reversed(hist) if isinstance(rec, dict)
+             for t in (rec.get("targets") or []) if isinstance(t, str)]
+    if not asked:
+        return []
+    # problem/fix 的原文在当前 audit 里（它是最后一轮的结论）
+    out = []
+    for t in (tr.get("audit") or {}).get("targets") or []:
+        if not isinstance(t, dict) or not t.get("task"):
+            continue
+        out.append({"task": t.get("task"), "section": t.get("section"),
+                    "问题": t.get("problem"), "要求": t.get("fix")})
+    return out
 
 
 def node_audit(state: WriteState) -> dict:

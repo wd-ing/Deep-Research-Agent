@@ -322,6 +322,44 @@ class ModelRegistry:
         return uuid.uuid4().hex
 
 
+def to_openai_tools(tools: list[dict]) -> list[dict]:
+    """Anthropic 形状的工具定义 → OpenAI 形状。
+
+    ⚠️ **这个转换曾经不存在**，2026-10-09 首次切到 OpenAI 兼容平台时
+    整场 write 的工具循环全挂：
+
+        xj189 400 MODEL_INVALID_REQUEST:
+        "The request failed because it is missing `tools.function` parameter"
+
+    `EvidenceTools.specs()` 返回的是 Anthropic 形状
+    （`{name, description, input_schema}`，R5 时为 MiniMax 写的），
+    而 OpenAI 系要求 `{type:"function", function:{name, parameters}}`。
+
+    更该记的是**预检为什么没发现**：`tests/preflight_xj189.py` 里
+    我是**手搓标准格式**去测的，测通了就写「工具调用 ✓」——
+    **测的不是项目真正会发的那种**。坑 #1 的第四次形态。
+    """
+    out = []
+    for t in tools or []:
+        if not isinstance(t, dict):
+            continue
+        # 已经是 OpenAI 形状就别动（自己写的 fixture 可能就是这个形状）
+        if t.get("type") == "function" and isinstance(t.get("function"), dict):
+            out.append(t)
+            continue
+        name = t.get("name")
+        if not name:
+            continue
+        out.append({"type": "function", "function": {
+            "name": name,
+            "description": t.get("description") or "",
+            "parameters": t.get("input_schema")
+                         or t.get("parameters")
+                         or {"type": "object", "properties": {}},
+        }})
+    return out
+
+
 class LLMClient:
     """统一调用入口。厂商差异收敛在这里。"""
 
@@ -329,6 +367,9 @@ class LLMClient:
         self.registry = registry or ModelRegistry()
         self._client = httpx.Client(timeout=180.0)
         self.warnings: list[str] = []
+        # 排队超时的累计次数。**不是重试能解决的问题**——并发降不下来它还会来，
+        # 所以单独记一个计数，跑完看 run_trace 就知道该不该调 GATE_WORKERS。
+        self._queue_pressure = 0
 
     def close(self) -> None:
         self._client.close()
@@ -357,6 +398,38 @@ class LLMClient:
     def complete_json(self, stage: str, prompt: str, system: str | None = None) -> Any:
         raw = self.complete(stage, prompt, system=system, json_mode=True)
         return _parse_json(raw)
+
+    def complete_json_forced(self, stage: str, prompt: str,
+                             name: str, schema: dict,
+                             system: str | None = None) -> Any:
+        """**用工具调用把输出约束成 JSON**（约束解码的可用替代）。
+
+        为什么不用纯提示词 + `response_format`：
+        纯提示词是让模型「手写」一整段 JSON 文本，实测在 OpenAI 兼容平台上
+        **长 JSON 会在中途崩**（2026-10-09：xj189 段落概括 9% 失败率，
+        报 `Expecting ',' delimiter: line 1 column 630`——第 630 字符，
+        **中间位置而非结尾截断**，就是写崩了）。
+
+        改成工具之后，模型只填 `arguments` 对象，**平台在解码层面就保证
+        它是合法 JSON**，不需要模型自己维持引号/逗号/括号的配平。
+        同一组数据实测 3/3 通过、5.2~8.8 秒（纯提示词是 9% 失败）。
+
+        ⚠️ **必须用 `tool_choice` 强制指定**。只把工具列进 `tools` 的话，
+        模型可能选择直接回文本而不调工具——那就退化成纯提示词了。
+        """
+        tool = {"type": "function", "function": {
+            "name": name, "description": f"以结构化形式返回 {stage} 的结果",
+            "parameters": schema,
+        }}
+        cfg = self.registry.stage(stage)
+        blocks, usage = self._openai_compat_forced(cfg, system, prompt, tool)
+        self._record(cfg, prompt, "", usage)
+        for b in blocks:
+            if b.get("type") == "tool_use":
+                return b.get("input")
+        raise EmptyOutput(
+            f"环节 {stage} 要求调用 {name}，但模型返回了文本而不是工具调用。"
+            "检查是不是漏传 tool_choice。")
 
     # ---------- 工具调用 ----------
 
@@ -525,13 +598,22 @@ class LLMClient:
                 kind, wait = classify_limit(r.text, dict(r.headers))
                 if retry and limit_left > 0 and kind != "seat_quota":
                     limit_left -= 1
-                    sleep_s = min(max(wait, 3.0 * (attempt + 1)), 60.0)
+                    # 排队超时不能等——并发的根源没变，等多久它还会排不下。
+                    # 短等一下（让队列自己泄掉一点）就重试，
+                    # 并且**明确告诉调用方该降并发**，别让人以为重试能解决。
+                    if kind == "queue_timeout":
+                        sleep_s = min(wait, 5.0)
+                        self._queue_pressure += 1
+                        note = "（排队超时：重试无用，**该降并发**）"
+                    else:
+                        sleep_s = min(max(wait, 3.0 * (attempt + 1)), 60.0)
+                        note = ""
                     self.warnings.append(
                         f"[{cfg.stage}] HTTP {r.status_code} {why}，"
-                        f"按 Retry-After 等待 {sleep_s:.0f}s 后重试"
-                        f"（限流额度剩 {limit_left}）")
+                        f"等待 {sleep_s:.0f}s 后重试"
+                        f"（限流额度剩 {limit_left}）{note}")
                     print(f"⚠️  [{cfg.stage}] HTTP {r.status_code} {why}，"
-                          f"等待 {sleep_s:.0f}s 重试（限流额度剩 {limit_left}）",
+                          f"等待 {sleep_s:.0f}s 重试（限流额度剩 {limit_left}）{note}",
                           flush=True)
                     time.sleep(sleep_s)
                     continue
@@ -753,7 +835,56 @@ class LLMClient:
         msgs = ([{"role": "system", "content": system}] if system else []) + [
             {"role": m["role"], "content": m["content"]} for m in messages]
         payload: dict[str, Any] = {
-            "model": cfg.model, "messages": msgs, "tools": tools,
+            "model": cfg.model, "messages": msgs,
+            "tools": to_openai_tools(tools),
+            "max_tokens": cfg.max_output_tokens, "temperature": cfg.temperature,
+        }
+        if cfg.reasoning_effort:
+            payload["reasoning_effort"] = cfg.reasoning_effort
+        t0 = time.time()
+        r = self._client.post(
+            f"{cfg.base_url}/chat/completions",
+            headers=self._headers(cfg),
+            json=payload, timeout=cfg.timeout_s,
+        )
+        if r.status_code != 200:
+            raise RuntimeError(f"{cfg.provider} {r.status_code}: {r.text[:300]}")
+        j = r.json()
+        msg = j["choices"][0]["message"]
+        blocks: list[dict] = []
+        for tc in (msg.get("tool_calls") or []):
+            fn = tc.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                args = {}
+            blocks.append({"type": "tool_use", "id": tc.get("id"),
+                           "name": fn.get("name"), "input": args})
+        if msg.get("content"):
+            blocks.append({"type": "text", "text": msg["content"]})
+        u = j.get("usage") or {}
+        u["latency_ms"] = int((time.time() - t0) * 1000)
+        return blocks, u
+
+    def _openai_compat_forced(self, cfg: StageConfig, system: str | None,
+                              prompt: str, tool: dict) -> tuple[list, dict]:
+        """带 `tool_choice` 的强制调用。返回 Anthropic 形状的块。
+
+        与 `_opencode_tools` 的区别只有一个：多发 `tool_choice`，
+        让平台**强制**模型走工具而不是回文本。这是
+        `complete_json_forced` 的后端，见那里的说明。
+        """
+        key = os.environ.get(cfg.api_key_env or "", "")
+        if not key:
+            raise ConfigError(
+                f"未设置 {cfg.api_key_env or '(该阶段未配置 api_key_env)'}")
+        msgs = ([{"role": "system", "content": system}] if system else []) + [
+            {"role": "user", "content": prompt}]
+        payload: dict[str, Any] = {
+            "model": cfg.model, "messages": msgs,
+            "tools": [tool],
+            "tool_choice": {"type": "function",
+                            "function": {"name": tool["function"]["name"]}},
             "max_tokens": cfg.max_output_tokens, "temperature": cfg.temperature,
         }
         if cfg.reasoning_effort:
@@ -861,15 +992,22 @@ def _cache_read(usage: dict) -> int:
 
 
 def classify_limit(body: str, headers: dict | None = None) -> tuple[str, float]:
-    """平台限流的三种情形**处置完全不同**（2026-10-09 平台文档）。
+    """平台限流的几种情形**处置完全不同**（2026-10-09 实测）。
 
-    返回 `(kind, retry_after_seconds)`，kind 取值：
+    返回 `(kind, retry_after_seconds)`：
 
     - `"seat_quota"` —— `MODEL_SEAT_QUOTA_EXHAUSTED`。
       **重试无效**，额度得管理员调。再试就是白烧一轮时间和配额。
+    - `"queue_timeout"` —— `MODEL_QUEUE_TIMEOUT`「模型请求**排队超时**」。
+      ⚠️ **这不是限流，是服务端队列排不下。**实测并发 8 全过、16 就开始报它，
+      而平台文档写的是「同一 IP 每分钟 300 次」——**两者不是一回事**：
+      窗口没满，但瞬时并发把队列压爆了。
+      **处置是降并发，不是等**——等 Retry-After 对它没用，因为并发的
+      来源没变（原来会被归到 `rate`，白等 5 秒然后再排一次队）。
     - `"account_concurrency"` —— 「当前账户并发已达上限」。
       等在途调用腾出位置，退避要**更长**（并发槽位释放比频率窗口慢）。
-    - `"rate"` —— 「服务组/模型调用频率已达上限」。按 Retry-After 等。
+    - `"rate"` —— 「服务组/模型调用频率已达上限」`MODEL_RATE_LIMITED`。
+      窗口真满了，按 Retry-After 等。
 
     `retry_after` 取响应头 `Retry-After`，缺失则按 kind 给保守默认值。
     """
@@ -884,9 +1022,14 @@ def classify_limit(body: str, headers: dict | None = None) -> tuple[str, float]:
 
     if "model_seat_quota_exhausted" in low:
         return "seat_quota", max(ra, 60.0)
+    # 排队超时要在「rate_limit_error」之前判——响应体的 type 字段就是它，
+    # 先按 rate 判会把「等 5 秒」当成处置，而正确做法是降并发。
+    if "model_queue_timeout" in low or "排队超时" in (body or ""):
+        return "queue_timeout", max(ra, 2.0)
     if "并发已达上限" in (body or "") or "concurrency" in low:
         return "account_concurrency", max(ra, 15.0)
-    if "调用频率已达上限" in (body or "") or "rate limit" in low:
+    if "调用频率已达上限" in (body or "") or "model_rate_limited" in low \
+            or "rate limit" in low:
         return "rate", max(ra, 5.0)
     return "", ra
 
