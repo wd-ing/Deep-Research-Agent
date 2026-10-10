@@ -221,6 +221,9 @@ stages:
 
   # 主 agent 规划：产出写作规约 + 任务列表。看的是断言摘要不是全文。
   write_plan:
+    # 流式：为绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测
+    # 37.7s 擦线过，离 60 秒只差 22 秒；同参数流式跑过 245.5s）。**只为规避超时，不是为了提速**。
+    stream: true
     provider: xj189
     reasoning_effort: high
     temperature: 0.0
@@ -238,6 +241,9 @@ stages:
   # 两次触发思考占比护栏。它是全套里最重的一环，也是断连唯一集中的地方。
   # 判定依据见 DESIGN_R6_REVIEW.md 2.2 与 DECISIONS.md。
   write_audit:
+    # 流式：为绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测
+    # 已连撞三次 504、环节判定不可用；同参数流式跑过 245.5s）。**只为规避超时，不是为了提速**。
+    stream: true
     provider: xj189
     reasoning_effort: high
     temperature: 0.0

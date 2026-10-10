@@ -31,7 +31,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import httpx
 
@@ -224,6 +224,15 @@ class StageConfig:
     base_url: str = ""
     api_key_env: str = ""
     batch_size: int = 20
+    # 该环节是否用流式调用。
+    #
+    # **只为绕开 xj189 前面 nginx 的 60 秒读超时**（2026-10-10 实测：
+    # `write_audit` 连撞三次 504、环节判定不可用；同参数流式跑过 245.5 秒）。
+    # nginx 测的是「两次读到数据之间的间隔」，流式持续推块就永不空闲。
+    #
+    # 只给离 60 秒近的环节开——`relevance` 2.3s、`summarize` 6.8s
+    # 离得远，全量流式属于为看不见的收益买单。
+    stream: bool = False
     guard: GuardPolicy = field(default_factory=GuardPolicy)
 
     def validate(self) -> None:
@@ -308,6 +317,7 @@ class ModelRegistry:
             base_url=s.get("base_url", d.get("base_url", "")).rstrip("/"),
             api_key_env=s.get("api_key_env") or d.get("api_key_env"),
             batch_size=int(s.get("batch_size", 20)),
+            stream=bool(s.get("stream", d.get("stream", False))),
             guard=GuardPolicy.from_dict(s.get("guard")),
         )
         cfg.validate()
@@ -358,6 +368,93 @@ def to_openai_tools(tools: list[dict]) -> list[dict]:
                          or {"type": "object", "properties": {}},
         }})
     return out
+
+
+class SSEAccum:
+    """把 OpenAI 形状的 SSE 增量攒成一次完整响应。
+
+    **为什么需要它**：xj189 前面有 nginx 的 `proxy_read_timeout 60s`
+    （实测 `write_audit` 连撞三次 504），而流式输出能绕过——
+    nginx 测的是「两次读到数据之间的间隔」，流式持续推块就永不空闲。
+    实测同参数流式跑过 245.5 秒，非流式 61.0 秒就 504。
+
+    **最容易错的地方**：工具调用的 `function.arguments` 是**分片到达**的
+    （实测 570 片拼成 2,430 字符），必须按 `index` 累积再拼，
+    一次 `json.loads` 会直接炸。而工具失效是**静默的**——降级成单次调用、
+    不报错，所以这里拼错很难发现。
+
+    顺带把 `reasoning_content` 也攒起来（实测 174 块增量），
+    前端要做「展示思考」时直接用。
+    """
+
+    def __init__(self) -> None:
+        self.text: list[str] = []
+        self.reasoning: list[str] = []
+        self.usage: dict = {}
+        # index -> {"id", "name", "args": [片段…]}
+        self._calls: dict[int, dict] = {}
+        self.role: str | None = None
+
+    def feed(self, obj: dict) -> None:
+        if obj.get("usage"):
+            self.usage = obj["usage"]
+        for ch in obj.get("choices") or []:
+            d = ch.get("delta") or {}
+            if d.get("role"):
+                self.role = d["role"]
+            if d.get("content"):
+                self.text.append(d["content"])
+            if d.get("reasoning_content"):
+                self.reasoning.append(d["reasoning_content"])
+            for tc in (d.get("tool_calls") or []):
+                # index 缺省时退化成 0——单工具调用很常见
+                i = tc.get("index")
+                i = 0 if i is None else int(i)
+                slot = self._calls.setdefault(
+                    i, {"id": None, "name": None, "args": []})
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    slot["name"] = fn["name"]
+                if fn.get("arguments"):
+                    slot["args"].append(fn["arguments"])
+
+    def blocks(self) -> list[dict]:
+        """攒成 Anthropic 形状的块，和非流式路径的返回保持一致。"""
+        out: list[dict] = []
+        txt = "".join(self.text)
+        if txt:
+            out.append({"type": "text", "text": txt})
+        for i in sorted(self._calls):
+            slot = self._calls[i]
+            raw = "".join(slot["args"])
+            try:
+                args = json.loads(raw) if raw else {}
+            except Exception:
+                # 拼出来的 JSON 坏了：宁可空参数，也不能让整个工具循环崩掉
+                args = {}
+            out.append({"type": "tool_use", "id": slot["id"],
+                        "name": slot["name"], "input": args})
+        return out
+
+    def text_only(self) -> str:
+        return "".join(self.text)
+
+
+def _sse_lines(resp) -> Iterator[dict]:
+    """把 SSE 响应流解析成一个个 JSON 对象（`[DONE]` 与 keep-alive 丢掉）。"""
+    import json as _json
+    for line in resp.iter_lines():
+        if not line or not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            yield _json.loads(data)
+        except Exception:
+            continue
 
 
 class LLMClient:
@@ -548,6 +645,50 @@ class LLMClient:
                 payload["reasoning_effort"] = cfg.reasoning_effort
             if json_mode:
                 payload["response_format"] = {"type": "json_object"}
+
+            # ---- 流式分支：只为绕开 xj189 前面 nginx 的 60 秒读超时 ----
+            # 见 StageConfig.stream 的说明与 SSEAccum。
+            if cfg.stream:
+                payload["stream"] = True
+                payload["stream_options"] = {"include_usage": True}
+                t0 = time.time()
+                try:
+                    with self._client.stream(
+                            "POST", f"{cfg.base_url}/chat/completions",
+                            headers=self._headers(cfg), json=payload,
+                            timeout=cfg.timeout_s) as resp:
+                        if resp.status_code != 200:
+                            body = resp.read().decode("utf-8", "replace")
+                            raise RuntimeError(
+                                f"{cfg.provider} {resp.status_code}: {body[:300]}")
+                        acc = SSEAccum()
+                        for obj in _sse_lines(resp):
+                            acc.feed(obj)
+                except httpx.TransportError as e:
+                    last_reason = f"transport: {type(e).__name__}"
+                    if net_left <= 0:
+                        self.warnings.append(
+                            f"[{cfg.stage}] 流式连接中断额度用尽"
+                            f"（{type(e).__name__}）")
+                        raise
+                    net_left -= 1
+                    time.sleep(2.0 * (attempt + 1))
+                    continue
+                txt = acc.text_only()
+                usage = dict(acc.usage or {})
+                usage["latency_ms"] = int((time.time() - t0) * 1000)
+                if not txt:
+                    # 流式下空返回同样是真实失效模式，走同一套翻倍预算
+                    last_reason = "empty"
+                    if empty_left <= 0:
+                        break
+                    empty_left -= 1
+                    budget = min(cfg.guard.max_output_tokens, budget * 2)
+                    self.warnings.append(
+                        f"[{cfg.stage}] 流式返回空内容，预算翻倍至 {budget} "
+                        f"后重试（空返回额度还剩 {empty_left}）")
+                    continue
+                return txt, usage
 
             t0 = time.time()
             try:
