@@ -465,7 +465,8 @@ class LLMClient:
         self._client = httpx.Client(timeout=180.0)
         self.warnings: list[str] = []
         # 排队超时的累计次数。**不是重试能解决的问题**——并发降不下来它还会来，
-        # 所以单独记一个计数，跑完看 run_trace 就知道该不该调 GATE_WORKERS。
+        # 所以单独记一个计数：`cost_report.py` 读它来判断该不该调 GATE_WORKERS。
+        # （2026-10-10 补：之前只写不读，是个死变量，等于白记。）
         self._queue_pressure = 0
 
     def close(self) -> None:

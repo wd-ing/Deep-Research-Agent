@@ -105,6 +105,20 @@ def main() -> None:
     print(f"  单次超过 60 秒的阶段：")
     for s in slow:
         print(f"    {s['stage']:<16}{s['n']:>3} 次，最长 {s['mx']} 秒")
+    # 60 秒这条线现在只对**非流式**环节有意义：xj189 前面 nginx 有
+    # proxy_read_timeout 60s，而开了流式的环节靠持续推数据块绕开了它
+    # （实测 assess 跑过 86.8 秒）。所以这里必须标出哪些是流式的，
+    # 否则会误报。流式状态从配置读，不从 DB 读（DB 里没有这个字段）。
+    from research_agent.llm.provider import ModelRegistry
+    streaming = {s for s, c in
+                 ((s, ModelRegistry().stage(s)) for s in
+                  (r["stage"] for r in q(
+                      "SELECT DISTINCT stage FROM llm_call WHERE session_id=?", sid)))
+                 if c.stream}
+    if streaming:
+        print(f"  ⚠️ 其中开了流式、不受 60 秒墙限制的：{sorted(streaming)}")
+    print(f"  ⚠️ **失败的调用（504/429）在 DB 里没有任何记录**——"
+          f"它们是异常不是记账行，只能从 stdout 的 ⚠️ 行数统计。")
 
     print(f"\n【四】流程走了几圈")
     assess = [n for n in q(

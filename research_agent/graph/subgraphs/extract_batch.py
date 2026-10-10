@@ -72,7 +72,7 @@ def _make_nature_items(items: list[dict]) -> list[dict]:
     而且渲染时不截断——`extract_batch.py` 的 docstring 还写着
     「判定不需要整篇正文」。实测那个字段贡献了 extract 输入的 **77%**
     （327,109 / 427,005 字符），而这批原文同一次调用里已经被
-    `summarize_segments` 读过一遍。详见 `COST_C1.md` 的 C1-b。
+    `summarize_segments` 读过一遍。详见 `OPTIMIZATION_LOG.md` 的 C1-b。
 
     要兜住两种退化：概括失败的段落、整篇没被切成段的来源——
     所以开头 2500 字始终保留，它是判定信号的主要来源。
@@ -191,7 +191,7 @@ def extract_all(items: list[dict]) -> dict:
     返回 {"results": [...], "summaries": {chunk_id: str},
           "failed_batches": int, "events": [...]}
 
-    **先概括、后判来源性质**（2026-10-06 改，依据见 `COST_C1.md` C1-b）：
+    **先概括、后判来源性质**（2026-10-06 改，依据见 `OPTIMIZATION_LOG.md` C1-b）：
     原来反过来，于是 `_make_nature_items` 那个叫「各段概括」的字段
     只能退而取段落**原文**、且渲染时不截断——实测它贡献了 extract 输入的 77%
     （327,109 字符 / 427,005），而这批原文 `summarize_segments` 当场就读过一遍。
