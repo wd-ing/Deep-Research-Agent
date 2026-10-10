@@ -983,6 +983,30 @@ class LLMClient:
         if cfg.reasoning_effort:
             payload["reasoning_effort"] = cfg.reasoning_effort
         t0 = time.time()
+
+        # ---- 流式分支 ----
+        # 工具循环是 write_section 的主战场（实测 30 次调用 / 33 次工具读取），
+        # 而它**每轮都带上一轮的工具结果**，输入比单次调用大得多。
+        # 实测平均 14.5s、最长 48.9s —— 工具那一轮就撞 60 秒墙，
+        # 降级成单次调用（子 agent 拿不到证据全文，**而且不报错**）。
+        if cfg.stream:
+            payload["stream"] = True
+            payload["stream_options"] = {"include_usage": True}
+            with self._client.stream(
+                    "POST", f"{cfg.base_url}/chat/completions",
+                    headers=self._headers(cfg), json=payload,
+                    timeout=cfg.timeout_s) as resp:
+                if resp.status_code != 200:
+                    body = resp.read().decode("utf-8", "replace")
+                    raise RuntimeError(
+                        f"{cfg.provider} {resp.status_code}: {body[:300]}")
+                acc = SSEAccum()
+                for obj in _sse_lines(resp):
+                    acc.feed(obj)
+            usage = dict(acc.usage or {})
+            usage["latency_ms"] = int((time.time() - t0) * 1000)
+            return acc.blocks(), usage
+
         r = self._client.post(
             f"{cfg.base_url}/chat/completions",
             headers=self._headers(cfg),

@@ -131,15 +131,19 @@ stages:
   probe_light:
     provider: xj189
     temperature: 0.0
-    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 2, max_output_tokens: 16384 }
+    max_output_tokens: 4096
+    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 2, max_output_tokens: 8192 }
 
   # 读 2-3 篇正文归纳领域轮廓。整场研究的地基——大纲的 grounded_in
   # 全部指回这里，所以给最高档。
   probe_outline:
     provider: xj189
+    # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
+    stream: true
     reasoning_effort: high
     temperature: 0.0
-    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
+    max_output_tokens: 4096
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 8192 }
 
   # 降级说明。只在探针判定稀薄时触发，写一句话，纯措辞工作。
   probe_degraded:
@@ -157,9 +161,12 @@ stages:
   # 但框架是结构规划任务，输出是 JSON 而不是文章。
   outline:
     provider: xj189
+    # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
+    stream: true
     reasoning_effort: high
     temperature: 0.0
-    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
+    max_output_tokens: 4096
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 8192 }
 
   # ---- 证据生产 ----
 
@@ -168,7 +175,8 @@ stages:
   extract:
     provider: xj189
     temperature: 0.0
-    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 2, max_output_tokens: 16384 }
+    max_output_tokens: 4096
+    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 2, max_output_tokens: 8192 }
 
   # 相关性闸门。每个来源判一次，但是二元判断，不需要思考。
   # 上一轮实测挂在 assess 上时触发过「reasoning 102/131 超阈值 60%」的告警，
@@ -185,22 +193,27 @@ stages:
   # 缺口评估。决定还要不要继续搜、框架要不要改，驱动整个循环。
   assess:
     provider: xj189
+    # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
+    stream: true
     reasoning_effort: low
     temperature: 0.0
-    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 16384 }
+    max_output_tokens: 4096
+    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 8192 }
 
   # 证据分派。把断言映射到小节，直接决定报告结构，不能用 T0。
   assign:
     provider: xj189
     temperature: 0.0
-    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 16384 }
+    max_output_tokens: 4096
+    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 8192 }
 
   # 段落概括。批量 12 段，每段一句话，机械生成。
   summarize:
     provider: xj189
     temperature: 0.0
     batch_size: 12
-    guard: { max_reasoning_ratio: 0.5, retry_on_empty: 2, max_output_tokens: 16384 }
+    max_output_tokens: 4096
+    guard: { max_reasoning_ratio: 0.5, retry_on_empty: 2, max_output_tokens: 8192 }
 
   # ---- 占位环节（技术债，代码尚未调用）----
   # 去重：合并内容相同或高度重复的断言。当前抽取阶段没有去重，
@@ -227,7 +240,8 @@ stages:
     provider: xj189
     reasoning_effort: high
     temperature: 0.0
-    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
+    max_output_tokens: 4096
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 8192 }
 
   # 独立审阅人：读全稿（12 节约 3 万字），判断是否返修、返修是否有效。
   #
@@ -247,21 +261,30 @@ stages:
     provider: xj189
     reasoning_effort: high
     temperature: 0.0
-    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
+    max_output_tokens: 8192
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 16384 }
 
   # 子 agent 写一个任务。N 次调用，system prompt 与规约前缀固定以命中缓存。
   write_section:
     provider: xj189
+    # 流式：工具循环每轮带上一轮结果、输入更大，实测最长 48.9s
+    # 已贴 60 秒墙（工具那一轮直接 504 且**静默降级**，不报错）
+    stream: true
     reasoning_effort: low
     temperature: 0.2
-    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
+    max_output_tokens: 4096
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 8192 }
 
   # 子 agent 定点返修。同角色，温度略低以免它把没问题的部分也重写。
   write_revise:
     provider: xj189
+    # 流式：工具循环每轮带上一轮结果、输入更大，实测最长 48.9s
+    # 已贴 60 秒墙（工具那一轮直接 504 且**静默降级**，不报错）
+    stream: true
     reasoning_effort: low
     temperature: 0.1
-    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
+    max_output_tokens: 4096
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 8192 }
 
 # 候选池与历史结论
 alternatives:
