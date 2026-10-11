@@ -5,6 +5,7 @@ import { StageBar, Timeline } from './views/RunView'
 import { ApprovalView } from './views/ApprovalView'
 import { ReportView } from './views/ReportView'
 import { SegDrawer, NatureBadge } from './components/SegDrawer'
+import { ThinkingPanel } from './components/ThinkingPanel'
 
 function Sidebar({
   list, cur, onPick, onNew,
@@ -113,6 +114,7 @@ export default function App() {
         {(s.view === 'running' || (s.view === 'idle' && sid && !report)) && (
           <>
             <StageBar current={s.node} />
+            <ThinkingPanel thinking={s.thinking} activeStage={s.node} />
             <div className="flex-1 overflow-auto">
               <Timeline progress={s.progress} />
             </div>

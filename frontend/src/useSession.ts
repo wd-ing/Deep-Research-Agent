@@ -29,7 +29,7 @@ export function useSession(sid: string | null) {
   const [node, setNode] = useState<string | null>(null)
   const [approval, setApproval] = useState<ApprovalPayload | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [thinking, setThinking] = useState<{ stage: string; text: string } | null>(null)
+  const [thinking, setThinking] = useState<Record<string, string>>({})
   const [seg, setSeg] = useState<SegmentRow | null>(null)
 
   const esRef = useRef<EventSource | null>(null)
@@ -59,7 +59,7 @@ export function useSession(sid: string | null) {
   useEffect(() => {
     if (!sid) {
       setView('idle'); setDetail(null); setProgress([])
-      setNode(null); setApproval(null); setError(null)
+      setNode(null); setApproval(null); setError(null); setThinking({})
       return
     }
     let alive = true
@@ -92,8 +92,14 @@ export function useSession(sid: string | null) {
             setProgress((p) => [...p, ev.event])
             break
           case 'thinking':
-            // 二轮先不展示，攒起来三轮用；只记最后一段，避免高频 setState
-            setThinking({ stage: ev.stage, text: ev.delta })
+            // 思考增量按 stage 累积（不是只留最后一段）。
+            // 后端同一 stage 会分批推，最后一批带 `final:true`。
+            // 累积量可能到几千字（实测 assess 一轮 7,009 字），
+            // 所以拼接用「取尾部」而不是整段重赋——否则每 0.25 秒重渲整棵子树。
+            setThinking((prev) => {
+              const cur = prev[ev.stage] || ''
+              return { ...prev, [ev.stage]: cur + ev.delta }
+            })
             break
           case 'done':
             void (async () => {
@@ -129,7 +135,8 @@ export function useSession(sid: string | null) {
   }, [sid, loadApproval, loadDetail])
 
   const start = useCallback(async (id: string) => {
-    setView('running'); setProgress([]); setError(null); setApproval(null)
+    setView('running'); setProgress([]); setError(null)
+    setApproval(null); setThinking({})
     await jpost(`/api/sessions/${id}/run`)
   }, [])
 
