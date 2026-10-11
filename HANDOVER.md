@@ -222,6 +222,20 @@ SELECT audit_history_json FROM write_trace WHERE session_id=?;
 程序就无从判断它原本想编在哪一层。反过来，提示词管不住的
 （`##` 自造标题）由程序兜底。改动时**两处都要看**。
 
+**图节点名和 LLM stage 名是两套命名，别混。**
+node 是 `probe` / `outline` / `assess` / `write`，
+stage 是 `probe_outline` / `outline` / `assess` / `write_plan` / `write_audit` /
+`write_section` / `write_revise`（`config/models.yaml` 的 `stages`）。
+拿 node 去查 thinking[stage] **永远查不到**——
+2026-10-11 前端思考面板就栽在这，表现是面板一直显示
+「这一阶段还没有思考内容」。前端有 `NODE_TO_STAGE_PREFIX` 映射表兜着。
+
+**React Hooks 必须无条件执行。**写前端组件时，
+`if (!data.length) return null` **不能放在任何 Hook 之后**——
+两种情况 Hook 数量不同，React 直接崩（整页白屏 +
+`Rendered more hooks than during the previous render`）。
+纯计算别包 `useMemo`，包了也是多余的 Hook。踩过。
+
 **`<!-- lead -->` 标记是删引言标题的唯一依据**（2026-10-11）。
 子 agent 若想在正文开头写一句概括本节的小标题，必须先打这个标记，
 装配时它会被降成正文段落、不进目录也不编号。
@@ -419,7 +433,7 @@ write 子图结构自检 7/7 全过，而连续三个 bug 全在 `node_write` �
 | 事项 | 说明 |
 |---|---|
 | **前端二轮：框架完成** | **当前下一步。** 一轮的后端接口已全部就绪并实测通过，方案见 `DESIGN_R8_FRONTEND.md`。Vite+React，三块页面：发起研究（进度可视化）/ 审批（框架+材料支撑+可信度）/ 报告阅读（Markdown + 引用点击跳转） |
-| **前端三轮：美化与体验** | 思考过程实时展示（后端已在推 `thinking` 事件，前端消费即可）、进度图表、引用 hover 预览、存疑节高亮 |
+| **前端三轮剩余项** | 思考过程实时展示 ✅（`343207d`）。**还差**：正文流式打字（后端只推 reasoning）、检索轮次图表、引用 hover 预览、存疑节高亮 |
 | 流式第二步：正文增量 | 一轮只推了 `reasoning`（思考增量），`text`（正文增量）留给三轮 |
 | `blocked` 分类的实测数据 | v5 跑出 `blocked=0`。**2026-10-11 两度核对，结论是「材料确实够」**：①判据在 `prompts.py:488-518` 写得很完整；②真实数据复核——143 段证据，报告里 **17 个数值断言全部能在证据中找到出处，零编造**（`tool_reads={read_segments:21}`，子 agent 确实调过工具）。**中间我一度用构造草稿得出相反结论，那是坏探针，已作废**（见坑 11）。真正材料稀缺的场景还没测到，`bad_assignment` / `spec_conflict` 两类仍无真实数据。 |
 | `assess` 思考档位 | 配的 `low`，但实测 `low` 判断力约等于「关」。要改 high 还是关，待定。 |

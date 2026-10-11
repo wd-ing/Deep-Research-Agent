@@ -2280,3 +2280,44 @@ DOM 里本来就是两个独立按钮。
 > 让你以为「事件没绑上」这种不存在的问题。
 
 这和 `HANDOVER` 坑 3 是同一类错误：**观察到的现象来自我的操作方式，不是被测系统。**
+
+### 2026-10-11 前端三轮：思考过程实时展示
+
+后端一轮就把 `thinking` 事件推出来了（合并到 40 字/0.25 秒一帧），
+二轮只是「先攒着」，三轮接上。
+
+**按 stage 分 tab，不合成一整屏。** 实测一轮的思考量：
+`probe_outline` 881 字 / `outline` 2,940 字 / **`assess` 7,009 字**。
+而 assess 那 7,009 字里是**逐个小节的材料充足度判断**
+（「sec2 沾边2段、最高吻合度1，属于 high，因为可能通过检索获得」）
+——这是用户最该看到的决策依据。混在一整屏里会被前面的内容淹没。
+
+**自动跟随滚动，但用户一上滑就停。** 正在读思考内容时被人一直拽到底部，
+是最烦人的一种自作主张。
+
+---
+
+### 2026-10-11 我在写前端时连踩两个坑（都是「看起来对」的错）
+
+**① Hooks 顺序违规 → 整页白屏。**
+我把 `useMemo` 写在了 `if (!stages.length) return null` 之后——
+于是「有思考 / 没思考」两种情况下 Hook 数量不同，
+React 报 `Rendered more hooks than during the previous render` 直接崩。
+
+**而且那个 useMemo 根本没必要**（纯计算而已），包了只是多一个 Hook。
+已改成普通推导 + 挪到早退之前。
+
+> 规则：**所有 Hook 必须无条件执行**。早退只影响渲染，不影响调用。
+
+**② 图节点名和 LLM stage 名是两套命名，我当成一套了。**
+- node：`probe` / `outline` / `assess` / `write`
+- stage（`config/models.yaml` 的 `stages`）：`probe_outline` / `outline` /
+  `assess` / `write_plan` / `write_audit` / `write_section` / `write_revise`
+
+拿 `thinking[node]` 去查**永远查不到**——
+面板一直显示「这一阶段还没有思考内容」，而内容其实已经收到了。
+加了 `NODE_TO_STAGE_PREFIX` 映射表（probe → probe_ 前缀，write → write_ 前缀）。
+
+> 和之前那几次一样：**字段/命名不能猜，要从真实数据读。**
+> 今天的四次：引用编号（显示编号 vs source.id）、事件字段名（probe_deep 的
+> read/tried/chars）、审批页读错 state（WriteState 的字段）、这次的两套命名。
