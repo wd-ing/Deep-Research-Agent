@@ -91,7 +91,8 @@ xj189 的思考旋钮是 `reasoning_effort`，**省略该字段才是关思考**
 
 | 路径 | 是什么 |
 |---|---|
-| `research_agent/graph/runner.py` | 主图装配（边在这里）|
+| `research_agent/server.py` | **FastAPI 服务**：REST + SSE + 审批。前端第一轮已补齐事件推送（astream）与引用查询 |
+| `research_agent/graph/runner.py` | 主图装配（边在这里）+ **两个图实例**：同步 `get_graph()` / 异步 `get_agraph()` |
 | `research_agent/graph/nodes.py` | 主图节点：probe/outline/retrieve/extract/assess/apply_revision/write/finalize（**最容易出问题的地方**）|
 | `research_agent/graph/state.py` | `ResearchState` / `WriteState`（**漏声明字段会被 LangGraph 静默丢弃**）|
 | `research_agent/graph/subgraphs/write.py` | write 子图：规划 / 并发写作 / 审查 / 返修（1,000+ 行）|
@@ -134,6 +135,31 @@ cd "/Users/wd/Documents/Deep Research Agent"
 # 测子 agent 对新约定的遵守率（改提示词约定后跑它）
 .venv/bin/python tests/lead_mark_probe.py
 ```
+
+**跑 server（前端后端）**：
+
+```bash
+cd "/Users/wd/Documents/Deep Research Agent"
+set -a; . ./.env; set +a          # ⚠️ uvicorn 不会自己读 .env
+RA_DB_PATH=/tmp/ra_fe.db .venv/bin/python -m uvicorn research_agent.server:app \
+    --host 127.0.0.1 --port 8000
+
+# 看事件流（另开一个终端）
+curl -N http://127.0.0.1:8000/api/stream/<session_id>
+```
+
+| 端点 | 干什么 |
+|---|---|
+| `POST /api/sessions` | 建会话 |
+| `POST /api/sessions/{sid}/run` | 启动研究（`?streaming=false` 退回同步路径）|
+| `GET /api/sessions/{sid}/approval` | **待审批的框架**（没有就 `waiting:false`）|
+| `POST /api/sessions/{sid}/approve` | 审批并续跑 |
+| `GET /api/sessions/{sid}` | 报告 + 来源 + 主题 |
+| `GET /api/sessions/{sid}/seg/{ref}` | **按段号取原文**（`S1·5`），报告里点引用走它 |
+| `GET /api/sessions/{sid}/segments?refs=A,B` | 批量取多段 |
+
+SSE 事件类型：`connected` / `node`（节点到达）/ `progress`（该节点的结构化事件）/
+`thinking`（思考增量，**已后端合并**）/ `done` / `error`。
 
 `.env` 四个 key：`TAVILY_API_KEY` / `OPENCODE_API_KEY` / `MINIMAX_API_KEY` /
 `XJ189_API_KEY` / `AGNES_API_KEY`。**绝不可回显、不可提交**（已在 `.gitignore`）。
@@ -194,6 +220,12 @@ SELECT audit_history_json FROM write_trace WHERE session_id=?;
 
 **`llm_call` 表会混进历史 session。**统计必须带 `where session_id=?`。
 
+⚠️ **端点里要用 `asyncio.create_task`，端点就必须是 `async def`。**
+同步端点被 FastAPI 丢进线程池，那里**没有运行中的事件循环**，
+`create_task` 直接 `RuntimeError: no running event loop` → 500。
+**我第一版只把 `run_session` 改了、`approve` 漏了，结果点了批准就 500**
+（同一个错犯两次）。凡是端点里要 create_task，先确认 def 前面有没有 async。
+
 ⚠️ **`tests/parallel_check.py` 当前是坏的**（2026-10-11 发现，**在干净的
 `bcdb673` 上同样失败，不是最近改动引入的**）。现象是断言
 `calls == [len(b) for b in batches]` 失败，而它上面打印的
@@ -201,6 +233,27 @@ SELECT audit_history_json FROM write_trace WHERE session_id=?;
 但同一次运行 120/120 条概括全部产出、失败 0 批。
 所以更像是 C1-j 修完 ContextVar 记账之后测试的 mock 没跟上，
 而不是并发真的乱序。**跑它之前先修 mock，别把失败当成真 bug 去查代码。**
+
+## 六之二、跑 server 的两个坑（2026-10-11 踩的）
+
+**① uvicorn 不会自动读 `.env`。**
+`RA_DB_PATH=... .venv/bin/python -m uvicorn research_agent.server:app`
+这样起服务，`XJ189_API_KEY` 是空的，跑到 `probe` 就报
+`ConfigError: 未设置 XJ189_API_KEY`。**测试脚本是自己读 `.env` 的，
+server 不是**。要么 `set -a; . ./.env; set +a`，要么给 uvicorn 装
+`--env-file .env`。**看到「未设置 XXX_API_KEY」先查这里，别去查代码。**
+
+**② `astream` 要单独的异步图，`SqliteSaver` 用不了。**
+`SqliteSaver` 只支持同步方法，`astream()` 直接抛
+`NotImplementedError: does not support async methods`。
+所以 `runner.py` 里有**两个**图：`get_graph()`（同步，5 个测试调用点依赖）
+和 `get_agraph()`（异步，server 进度推送用）。两条路径写同一个
+`checkpoints.db`，所以能接力。
+
+⚠️ **别把 `AsyncSqliteSaver.from_conn_string()` 的返回值直接传给
+`compile()`**——它返回的是异步上下文管理器，不是实例，会报
+`Invalid checkpointer provided ... Received _AsyncGeneratorContextManager`。
+`get_agraph()` 里手动 `__aenter__` 并把 cm 存成模块级变量持有。
 
 ---
 

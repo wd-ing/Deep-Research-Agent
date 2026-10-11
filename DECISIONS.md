@@ -2133,3 +2133,70 @@ v5 抓到的两个问题（**整节未写**、**硫化锂数据前后矛盾**）
 **教训**：结构没坏的时候，先证明它坏，别急着提改造方案。
 我今天两次都是「发现一个问题 → 立刻设计改造」，
 而这两次的问题最终都不存在。
+
+### 2026-10-11 前端第一轮：后端接口与能力补齐（用户定三轮）
+
+**用户拍板的三轮划分**：
+1. **一轮**：后端接口和能力补齐（含流式）——「这样不用一遍做前端一边发现问题回来补后段」
+2. **二轮**：前端框架完成
+3. **三轮**：前端美化和体验优化
+
+这个划分比我原先提的更合理：**接口一次给全，前端只写一遍**。
+
+**技术决策（用户拍板）**：
+- `run` / `approve` **新增 astream 路径，保留原 invoke 做回退**（`?streaming=false`）
+- 一轮结束**跑一次真实研究端到端验证**（约 25 分钟、花额度）
+
+**一轮做了什么 / 核对结果**
+
+| 项 | 状态 |
+|---|---|
+| 报告入库 | **核对后免做**——`nodes.py:1264` 早就有 `save_report`；`report` 表 0 行是因为从没走 server 路径跑过 |
+| 节点进度外推 | ✅ 新增，真实研究跑通 |
+| 审批 payload 暴露 | ✅ `GET /api/sessions/{sid}/approval` |
+| 引用查询 | ✅ `GET .../seg/{ref}` 与 `.../segments?refs=`，复用 `EvidenceTools` 段号索引 |
+| 流式思考回调 | ✅ contextvar 钩子，实测数据见下 |
+
+**三个坑（都是实测撞出来的）**
+
+1. **端点必须 `async def`**。同步端点被 FastAPI 丢进线程池，
+   那里没有运行中的事件循环，`asyncio.create_task` 抛
+   `RuntimeError: no running event loop`。
+   ⚠️ 我一开始测 contextvar 继承是在真协程里测的，
+   **没考虑端点本身是同步的**——推理对、结论错。
+
+2. **必须有独立的异步图**。`SqliteSaver` 只支持同步方法，
+   `astream()` 抛 `NotImplementedError: does not support async methods`。
+   ⇒ `runner.py` 现在有 `get_graph()`（同步，**5 个测试调用点依赖**）
+   和 `get_agraph()`（异步）两个实例，写同一个 `checkpoints.db` 所以能接力。
+
+3. **`AsyncSqliteSaver.from_conn_string()` 返回异步上下文管理器，不是实例**。
+   直接传给 `compile()` 报 `Invalid checkpointer provided ...
+   Received _AsyncGeneratorContextManager`。要手动 `__aenter__`
+   并把 cm 存成模块变量持有（否则连接被 GC 关掉）。
+
+**流式思考：实测数据（这一条最关键）**
+
+平台吐 `reasoning_content` 的粒度**极碎**：
+
+| | 一块一帧 | 合并后 |
+|---|---:|---:|
+| `probe_outline` 一轮块数 | **2,336** | **7** |
+| 平均每块 | 7.2 字符 | **546 字符** |
+
+⇒ **必须后端合并**。规则：攒够 40 字或 0.25 秒推一次，
+收尾时把残余推掉（带 `final: true`），内容一字不少只是帧数降下来。
+队列 `maxsize` 也从 1000 提到 2000。
+
+**跨线程继承已实测**（不是推理）：write 子图用 `ThreadPoolExecutor`，
+而 `run_in_context` 会 `copy_context()`，**连 `_DELTA_HOOK` 一起复制**，
+所以并发子 agent 的思考增量不丢。同 C1-j 那个坑的正解。
+
+**实测 SSE 事件轨迹**（真实研究）：
+```
+probe → outline → retrieve → extract → assess → apply_revision → retrieve …
+```
+**这就是真实的框架校准循环**，前端能逐节点看到，零错误。
+
+**离线回归**：write_struct 13 场景全过、align_offline 11 组全过
+（provider 改动没破坏既有行为——因为钩子默认 None，不传就完全不启用）。

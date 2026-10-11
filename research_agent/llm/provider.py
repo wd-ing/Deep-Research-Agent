@@ -31,7 +31,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator, Optional
 
 import httpx
 
@@ -72,6 +72,51 @@ _CURRENT_SESSION: ContextVar[str | None] = ContextVar(
 
 def current_session() -> str | None:
     return _CURRENT_SESSION.get()
+
+
+# 思考/正文增量的回调。形如 fn(session_id, stage, kind, chunk)。
+# **默认 None = 完全不启用**，所以现有调用点行为一个字都不变。
+#
+# 为什么用 contextvar 而不是逐层传参：`complete()` 有几十个调用点
+# （节点、子图、工具循环、并发子 agent），串参数会污染整条调用链。
+# 而并发子 agent 的 ThreadPoolExecutor 不继承 contextvar——
+# 所以要用必须连 `submit_run_in_context` 一起用，
+# 否则增量会归到空 session（同一个坑 C1-j 已经踩过一次）。
+_DELTA_HOOK: ContextVar[Optional[Callable[[str | None, str, str, str], None]]] = \
+    ContextVar("_DELTA_HOOK", default=None)
+
+# 关思考的环节：不推增量（没有 reasoning，正文碎片对前端只是噪音）
+_NO_DELTA_STAGES = {"relevance", "summarize", "extract",
+                   "probe_light", "probe_degraded"}
+
+
+def set_delta_hook(fn) -> Any:
+    """注册思考增量回调，返回 token（用 reset 还原）。"""
+    return _DELTA_HOOK.set(fn)
+
+
+def reset_delta_hook(token) -> None:
+    _DELTA_HOOK.reset(token)
+
+
+def _fire_delta(stage: str, kind: str, chunk: str) -> None:
+    fn = _DELTA_HOOK.get()
+    if fn:
+        try:
+            fn(current_session(), stage, kind, chunk)
+        except Exception:
+            # 展示是锦上添花，绝不能因为展示失败拖垮研究
+            pass
+
+
+@contextmanager
+def delta_scope(fn):
+    """在作用域内启用思考增量回调。传 None 等于关掉。"""
+    token = _DELTA_HOOK.set(fn)
+    try:
+        yield
+    finally:
+        _DELTA_HOOK.reset(token)
 
 
 @contextmanager
@@ -387,13 +432,26 @@ class SSEAccum:
     前端要做「展示思考」时直接用。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, on_delta: Optional[Callable[[str, str], None]] = None,
+                 stage: str = "") -> None:
         self.text: list[str] = []
         self.reasoning: list[str] = []
         self.usage: dict = {}
         # index -> {"id", "name", "args": [片段…]}
         self._calls: dict[int, dict] = {}
         self.role: str | None = None
+        # 增量回调（2026-10-11 加，给前端展示思考过程用）。
+        # **默认 None = 完全保持原行为**——现有 7 个开流式的环节都没传。
+        self._on_delta = on_delta
+        self.stage = stage
+
+    def _fire(self, kind: str, chunk: str) -> None:
+        if self._on_delta:
+            try:
+                self._on_delta(kind, chunk)
+            except Exception:
+                # 展示是锦上添花，不能因为展示失败拖垮调用
+                pass
 
     def feed(self, obj: dict) -> None:
         if obj.get("usage"):
@@ -404,8 +462,10 @@ class SSEAccum:
                 self.role = d["role"]
             if d.get("content"):
                 self.text.append(d["content"])
+                self._fire("text", d["content"])
             if d.get("reasoning_content"):
                 self.reasoning.append(d["reasoning_content"])
+                self._fire("reasoning", d["reasoning_content"])
             for tc in (d.get("tool_calls") or []):
                 # index 缺省时退化成 0——单工具调用很常见
                 i = tc.get("index")
@@ -440,6 +500,22 @@ class SSEAccum:
 
     def text_only(self) -> str:
         return "".join(self.text)
+
+
+def _hook_for(stage: str) -> Optional[Callable[[str, str], None]]:
+    """当前阶段要不要开增量推送。
+
+    **只给值得看的环节开**：关思考的环节（relevance / summarize / extract）
+    没有 reasoning，增量全是正文碎片，推给前端只是噪音。
+    开思考的（assess / outline / write_* / probe_outline）才有东西可看。
+    """
+    if _DELTA_HOOK.get() is None:
+        return None
+    if stage in _NO_DELTA_STAGES:
+        return None
+    def _cb(kind: str, chunk: str) -> None:
+        _fire_delta(stage, kind, chunk)
+    return _cb
 
 
 def _sse_lines(resp) -> Iterator[dict]:
@@ -662,7 +738,7 @@ class LLMClient:
                             body = resp.read().decode("utf-8", "replace")
                             raise RuntimeError(
                                 f"{cfg.provider} {resp.status_code}: {body[:300]}")
-                        acc = SSEAccum()
+                        acc = SSEAccum(_hook_for(cfg.stage), cfg.stage)
                         for obj in _sse_lines(resp):
                             acc.feed(obj)
                 except httpx.TransportError as e:
@@ -1001,7 +1077,7 @@ class LLMClient:
                     body = resp.read().decode("utf-8", "replace")
                     raise RuntimeError(
                         f"{cfg.provider} {resp.status_code}: {body[:300]}")
-                acc = SSEAccum()
+                acc = SSEAccum(_hook_for(cfg.stage), cfg.stage)
                 for obj in _sse_lines(resp):
                     acc.feed(obj)
             usage = dict(acc.usage or {})

@@ -84,8 +84,42 @@ def get_graph():
 
     checkpointer 让研究跑到一半能恢复，人工审批的 interrupt 状态也靠它保存。
     探针子图自己的换词重试状态不落盘——它是一次性的。
+
+    ⚠️ 这是**同步**实例，`invoke()` 用它。异步 `astream()` 用不了它：
+    `SqliteSaver` 会抛 `NotImplementedError: does not support async methods`
+    （2026-10-11 实测），要配 `get_agraph()` 那个。
+    5 个测试调用点依赖本函数，所以它保持原样。
     """
     CKPT_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(CKPT_DB), check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     return build_graph(SqliteSaver(conn))
+
+
+_AGRAPH = None
+_AGRAPH_CM = None
+
+
+async def get_agraph():
+    """**异步**主图，供 `astream()` 用（server 的进度推送走这条）。
+
+    为什么需要单独的实例：`SqliteSaver` 只支持同步方法，
+    `astream()` 会直接抛 `NotImplementedError`。同一个 thread_id 的
+    checkpoint 落的是同一个 `checkpoints.db`，所以两条路径能接力——
+    前半程 sync invoke 跑到审批点，后半程 astream 续跑，反之亦然。
+
+    ⚠️ `AsyncSqliteSaver.from_conn_string()` 返回的是**异步上下文管理器**，
+    不是实例（2026-10-11 实测：直接传给 compile 会报
+    `Invalid checkpointer provided ... Received _AsyncGeneratorContextManager`）。
+    所以这里手动 `__aenter__` 拿到 saver 再编译，并把连接持有住——
+    出了这个作用域连接就关了。
+    """
+    global _AGRAPH, _AGRAPH_CM
+    if _AGRAPH is None:
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        CKPT_DB.parent.mkdir(parents=True, exist_ok=True)
+        cm = AsyncSqliteSaver.from_conn_string(str(CKPT_DB))
+        saver = await cm.__aenter__()
+        _AGRAPH_CM = cm          # 持有引用，别被 GC 掉把连接关了
+        _AGRAPH = build_graph(saver)
+    return _AGRAPH
