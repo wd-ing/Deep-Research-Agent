@@ -34,8 +34,11 @@ export function StageBar({ current }: { current: string | null }) {
   )
 }
 
-/** 一条事件渲染成什么。**字段全部按实测取值，没取到就整条不显示该字段，
- *  不用假数据补位。 */
+/** 一条事件渲染成什么。
+ *
+ * ⚠️ 字段名全部照**真实 fixture**（`tests/fixtures/run_to_approval.json`）写，
+ * 不是我猜的——第一版按 `hits` 写，结果 `probe_deep` 显示成「? 条命中」。
+ * 读不到就整段不显示，不要用假数据补位。 */
 function describe(e: ProgressEvent): { head: string; body?: string; tone?: 'warn' | 'error' } {
   const s = (k: string) => e[k] as string | undefined
   const n = (k: string) => e[k] as number | undefined
@@ -43,27 +46,37 @@ function describe(e: ProgressEvent): { head: string; body?: string; tone?: 'warn
     case 'probe_light':
       return { head: '轻扫检索', body: `${n('hits') ?? '?'} 条命中` }
     case 'probe_deep':
-      return { head: '深读', body: `${n('hits') ?? '?'} 条命中` }
-    case 'probe_quality':
+      return { head: '深读', body: `${n('read')} / ${n('tried')} 篇 · ${n('chars')} 字符` }
     case 'probe_judged':
-      return { head: '探针质量判定', body: s('quality') ?? undefined }
+      return { head: '探针判定',
+        body: `${s('quality') ?? ''}${e.ambiguous ? ' · 有歧义' : ''}` }
+    case 'probe_quality':
+      return { head: '探针质量', body: `${s('quality') ?? ''} · 深读 ${n('deep_urls')} 篇` }
     case 'probe_outline':
-      return { head: '归纳领域轮廓', body: n('subtopics') ? `${n('subtopics')} 个子话题` : undefined }
+      return { head: '归纳领域轮廓',
+        body: `${n('subtopics')} 子话题 / ${n('entities')} 实体 / ${n('controversies')} 争议`
+          + (e.degraded ? ' · 已降级' : '') }
     case 'assess': {
       const gaps = e.gaps_by_urgency as Record<string, number> | undefined
       const gapTxt = gaps
         ? Object.entries(gaps).map(([k, v]) => `${k} ${v}`).join(' / ')
         : n('gaps') ? `${n('gaps')} 个缺口` : ''
+      const thin = e.thin_sections as string[] | undefined
       const parts = [
         `第 ${n('round')} 轮`,
         `本轮新增 ${n('new_segments')} 段`,
         gapTxt,
+        thin?.length ? `偏薄 ${thin.join('、')}` : '',
       ].filter(Boolean).join(' · ')
-      return { head: '评估', body: parts, }
+      return { head: '评估', body: parts }
     }
     case 'extract':
-      return { head: '抽取',
-        body: `${n('sources')} 来源 / ${n('segments')} 段 / 概括成功 ${n('summarized')}` }
+      return { head: '抽取', body: [
+        `${n('sources')} 来源`,
+        `${n('segments')} 段`,
+        `概括成功 ${n('summarized')}`,
+        n('errors') ? `失败 ${n('errors')}` : '',
+      ].filter(Boolean).join(' / ') }
     case 'write_plan_tasks':
       return { head: '分派任务', body: `${n('kept') ?? n('tasks')} 个任务 / 可用 ${n('segments_available')} 段` }
     case 'write_dispatch':

@@ -197,14 +197,21 @@ def main() -> None:
 
     @srv.app.post("/api/replay/start")
     def _start() -> dict:
-        """建一个会话，让前端连它就能看到回放。"""
+        """建一个会话，让前端连它就能看到回放。
+
+        标题带序号 + 时间：回放会连着建好几条，全叫同一个名字的话
+        侧边栏里根本分不出哪条是哪条（实测踩过，攒到 9 条全一样）。
+        """
+        from research_agent.db.repo import get_repo
+        import datetime as _dt
         repo = get_repo()
-        sid = repo.create_session("【回放】固态电池的产业化进展",
+        n = len(state["sessions"]) + 1
+        stamp = _dt.datetime.now().strftime("%H:%M:%S")
+        sid = repo.create_session(f"【回放 {n}】{stamp} 固态电池的产业化进展",
                                   "固态电池的产业化进展")
         state["sessions"].append(sid)
         return {"ok": True, "session_id": sid,
-                "note": "前端选中这个会话后点「新建研究」即可回放，"
-                        "或直接 POST /api/sessions/{sid}/run"}
+                "note": "前端选中这个会话就能看到回放；或直接 POST /run"}
 
     @srv.app.get("/api/replay/state")
     def _st() -> dict:
