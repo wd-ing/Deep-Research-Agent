@@ -309,9 +309,16 @@ def node_await_approval(state: ResearchState) -> dict:
                           "这份框架只是尽力而为——请当作方向而非承诺"),
         },
         "当前材料": {
-            "来源数": state.get("url_count", 0),
-            "段落数": len(state.get("segments") or []),
-            "过闸门": len(state.get("on_topic") or []),
+            "来源数": len(state.get("sources") or []) or state.get("url_count", 0),
+            # ⚠️ 这里读的是 `segments` / `on_topic`，但它们是 **WriteState** 的字段
+            # （state.py:160-161），**主图 ResearchState 里根本没有**——
+            # 所以审批页一直显示「段落数 0、过闸门 0」，而实际有 50+ 段。
+            # 2026-10-11 修：主图里正确的字段是 `all_evidence`（累积证据），
+            # `last_round_segments` 是 assess 算过的可用段落数。
+            # 前端会照实显示这个数，显示 0 比不显示更糟。
+            "段落数": (len(state.get("all_evidence") or [])
+                       or state.get("last_round_segments", 0)),
+            "已抽取段数": state.get("last_round_segments", 0),
         },
         "queries": state.get("plan_queries", {}),
         "recalled": [

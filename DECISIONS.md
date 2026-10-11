@@ -2200,3 +2200,41 @@ probe → outline → retrieve → extract → assess → apply_revision → ret
 
 **离线回归**：write_struct 13 场景全过、align_offline 11 组全过
 （provider 改动没破坏既有行为——因为钩子默认 None，不传就完全不启用）。
+
+### 2026-10-11 前端设计方案 + 修一个审批页显示 bug
+
+**用户要求**：先设计前端方案，定好再开工（不直接做）。
+
+**技术选型**（刻意压到 6 个依赖以内）：
+Vite 7 + React 19 + TS，**不用路由**（三视图用 state 切）、
+**不用 Redux/Zustand**（一个 hook + Context）、**不用 react-query**（SSE 与 fetch 混用反而绕）、
+**不用 UI 组件库**。Tailwind + react-markdown。
+理由：个人自用工具，过度工程化是负资产。
+
+**设计方案成文**：`DESIGN_R9_FRONTEND_UI.md`
+（布局 / 三视图 / 状态模型 / 组件划分 / 二轮做哪些三轮做哪些）
+所有字段形状取自真实 SSE 流与表结构，不是想象的。
+
+**过程中查出两个真问题**：
+
+**① 审批页「当前材料」一直显示 0**（已修）
+`node_await_approval` 读 `state["segments"]` / `state["on_topic"]`，
+但这两个是 **`WriteState`** 的字段（`state.py:160-161`），
+主图 `ResearchState` 里根本没有 → `len()` 恒为 0。
+真实值是 **29 来源 / 63 段**。已改读主图正确的 `sources` / `all_evidence`。
+
+> 第一版我诊断成「字段不存在」，**诊断错了**——它是**读错了 state**。
+> 差别在于：改对字段才知道该读哪个。
+
+**② 驳回按钮在当前实现下是空的**（已查清，未改）
+顺着 `nodes.py:328` → `route_after_assess` → `route_after_revision` 读下来：
+`approved=false` → `plan_approved=False` → 回到 `revise` →
+`route_after_revision` 不看 approved 真假，只看 `_should_stop` →
+够了就又回 `await_approval`。而 `apply_revision` 用的还是**上一轮**的
+`pending_revision`，重跑结果相同。⇒ **驳回 = 原地再问一遍，理论上会无限循环。**
+
+二轮处理：**只做「通过」按钮，不渲染「驳回」**。
+真要支持「驳回 → 用户改框架 → 按新框架写」是一个真实功能缺口，
+**但那是产品决策，不是前端该顺手做的**，记下来等用户提。
+
+**离线回归**：align_offline 11 组、write_struct 13 场景全过。
