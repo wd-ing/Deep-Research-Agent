@@ -146,7 +146,22 @@ v5 那些轮用的是 `/tmp/ra_xj189_v5.db`，而 server 连 `data/research.db`�
 逐字显示正文）。关思考的环节（relevance/summarize/extract 等 5 个）
 在 `_NO_DELTA_STAGES` 里，不推。
 
-### 3.6 一轮的验证方式
+### 3.6 一轮的验证结果（2026-10-11 实测，全部通过）
+
+真跑了一轮 `s_557e7fdec792`（29 来源 / 13,045 字 / 50 个段级引用）：
+
+| 验什么 | 结果 |
+|---|---|
+| 节点进度外推 | ✅ `probe → outline → retrieve → extract → assess → apply_revision → retrieve` 全程实时，零错误 |
+| 审批 payload | ✅ 框架可信度 `satisfied`、逐节材料支撑、修订说明、材料统计齐全；**3/4 小节被校准**且理由具体 |
+| 引用跳转 | ✅ 抽 5 个真实引用，5/5 能取回原文 + 概括 |
+| 报告入库 | ✅ `report` 表 1 行 13,045 字，`GET /session` 取得到（**顺带验证了 3.1 的结论**）|
+| 章节编号 | ✅ `### 1.1` `### 1.2` `### 2.1` —— 今天上午做的重编号在真实流程里生效 |
+| checkpoint 接力 | ✅ **意外收获**：重启 server 后审批点状态完好，`approve` 正常续跑 |
+| 思考增量 | ✅ 合并后 `probe_outline` 一轮 2,336 块 → 7 块，内容一字不少 |
+| 离线回归 | ✅ write_struct 13 场景、align_offline 11 组 |
+
+### 3.7 验证方式
 
 ```bash
 # 报告入库
