@@ -134,6 +134,17 @@ export default function App() {
           </div>
         )}
 
+        {s.view === 'done' && !report && (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted">
+            <p className="text-sm">
+              这次研究没有产出报告正文（回放模式下尤其常见）。
+            </p>
+            <p className="text-xs">
+              左侧选一条已完成的会话，就能看到完整报告和引用。
+            </p>
+          </div>
+        )}
+
         {s.view === 'error' && (
           <div className="px-6 py-4 text-sm text-red-600">
             出错了：{s.error}

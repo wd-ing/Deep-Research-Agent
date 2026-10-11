@@ -138,6 +138,20 @@ cd "/Users/wd/Documents/Deep Research Agent"
 .venv/bin/python tests/lead_mark_probe.py
 ```
 
+**改前端时用回放，别真跑**（25 分钟 + 几十万 token → 几秒 + 零成本）：
+
+```bash
+cp /tmp/ra_fe2.db /tmp/ra_replay.db          # 任何跑过研究的库都行
+.venv/bin/python tests/replay_server.py --speed 1 --db /tmp/ra_replay.db
+# 前端照常连 http://127.0.0.1:5180，点「新建研究」看全过程
+```
+
+它**只把「跑图」换成回放录好的事件**，其余全走真代码
+（真 FastAPI / 真 SSE / 真 SQLite / 真 EvidenceTools），
+所以「mock 通过」基本等于「真跑也通过」。
+⚠️ 报告页与引用抽屉要用**左侧已有的真实会话**测——
+回放会话没有 chunk，段号取不到东西（见该文件顶部说明）。
+
 **跑 server（前端后端）**：
 
 ```bash

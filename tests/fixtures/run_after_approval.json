@@ -1,0 +1,172 @@
+{
+ "note": "真实运行录下的 SSE（审批后到写完）。2026-10-11 xj189，session s_557e7fdec792",
+ "events": [
+  {
+   "at": 1.2,
+   "event": {
+    "kind": "node",
+    "node": "await_approval"
+   }
+  },
+  {
+   "at": 2.4,
+   "event": {
+    "kind": "node",
+    "node": "assess"
+   }
+  },
+  {
+   "at": 3.2,
+   "event": {
+    "kind": "progress",
+    "node": "assess",
+    "event": {
+     "kind": "assess",
+     "round": 2,
+     "segments_total": 53,
+     "new_segments": 0,
+     "round_gain": 0.0,
+     "no_new_streak": 1,
+     "has_enough": false,
+     "thin_sections": [
+      "sec2",
+      "sec3",
+      "sec4"
+     ],
+     "gaps": 3,
+     "gaps_by_urgency": {
+      "medium": 2,
+      "low": 1
+     },
+     "queries_fresh": 8,
+     "queries_dropped_repeat": 0,
+     "queries_fallback": false,
+     "stop_would_be": "边际收益过低（本轮新增 0 段 = 0%，阈值 20%）",
+     "stop_layer": "mechanism",
+     "outline_actions": {},
+     "outline_given": false,
+     "gap_detail": [
+      "sec2[medium]:缺半固态与全固态电池产业化时间表的多方公开说法及分歧，现有材料仅有一条笼统时间表（半固态明年量产、全固态三年后小规模量产",
+      "sec4[medium]:缺硫化锂降本路径的系统性案例与机制梳理，现有材料仅有容百科技、Telescope/Standard Lithium等零星",
+      "sec3[low]:缺全固态电池界面接触突破方向的系统清单，现有材料仅一条阴离子调控技术，且无进展细节；多轮检索未获补充，判断为网上公开信息"
+     ]
+    }
+   }
+  },
+  {
+   "at": 4.4,
+   "event": {
+    "kind": "node",
+    "node": "write"
+   }
+  },
+  {
+   "at": 5.2,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_plan_tasks",
+     "tasks": 4,
+     "raw_tasks": 4,
+     "segments_available": 52
+    }
+   }
+  },
+  {
+   "at": 6.0,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_dispatch",
+     "ran": 4,
+     "first_serial_s": 77.2,
+     "drafts_total": 4,
+     "failed_total": 0
+    }
+   }
+  },
+  {
+   "at": 6.8,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_assemble",
+     "sections": 4,
+     "tasks": 4,
+     "failed": 0,
+     "warnings": 0,
+     "headings_demoted": 7,
+     "headings_renumbered": 19,
+     "lead_headings_dropped": 0
+    }
+   }
+  },
+  {
+   "at": 7.6,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_audit_error",
+     "error": "环节 write_audit 的重试额度用尽仍未拿到内容（模型 deepseek-v4-flash-0731，空返回 2 次、连接中断 0 次，最后原因 empty）。这正是 M3.1 Flash 那种 thinking 吃光预算的失效模式。"
+    }
+   }
+  },
+  {
+   "at": 8.4,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write",
+     "chars": 13045,
+     "tasks": 4,
+     "sections_written": 4,
+     "drafts": 4,
+     "failed": 0,
+     "violations": 0,
+     "rework_rounds": 0,
+     "rework_effective": true,
+     "assemble_warnings": 0,
+     "spec_uncertainty": "最没把握的是成本与时间表数字的口径：全固态电芯材料成本2.2元/Wh与系统成本400-800美元/kWh分别来自不同来源，可能不是同一统计口径，而证据摘要里没有给出换算细节；“宁德时代自评技术成熟度4分”的评分标准也未说明，这会影响sec2和sec4。其次，“半固态”液体含量定义（<5% vs 5-10%）存在分歧，我已把“液体含量低于5%或5-10%”并列写进术语表，但报告在不同节中可能遇到来源"
+    }
+   }
+  },
+  {
+   "at": 9.2,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write",
+     "round": 2,
+     "chars": 13045,
+     "sources": 29,
+     "segments_total": 63,
+     "segments_kept": 52,
+     "segments_without_summary": 10,
+     "gate": {
+      "segments": 63,
+      "on_topic": 52,
+      "off_topic": 11,
+      "by_method": {
+       "llm": 52,
+       "rule": 11
+      }
+     },
+     "degraded": false
+    }
+   }
+  },
+  {
+   "at": 10.4,
+   "event": {
+    "kind": "node",
+    "node": "finalize"
+   }
+  }
+ ]
+}
