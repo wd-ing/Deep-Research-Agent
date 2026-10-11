@@ -2321,3 +2321,36 @@ React 报 `Rendered more hooks than during the previous render` 直接崩。
 > 和之前那几次一样：**字段/命名不能猜，要从真实数据读。**
 > 今天的四次：引用编号（显示编号 vs source.id）、事件字段名（probe_deep 的
 > read/tried/chars）、审批页读错 state（WriteState 的字段）、这次的两套命名。
+
+### 2026-10-11 前端三轮（续）：正文流式打字
+
+**思考与正文分成两条独立流**（后端 `thinking` / `draft`）。
+原先 `text` 被直接丢弃（`if kind != "reasoning": return`）。
+分开的理由是**语义不同**：思考是「AI 在想什么」，正文是「这节要交付的东西」。
+混在一个流里，前端分不清哪块是给读者看的成品。
+
+**⚠️ 正文不分小节**（用户拍板，实测约束）：
+`write_section` 是 4 并发（`CONCURRENCY=4`），子 agent 走 `run_tool_loop`——
+而它的签名 `(llm, stage, system, messages, provider, max_rounds)` 里
+**没有 task_id**，所以正文增量无法归属到具体小节。
+要做「按小节分别打字」得先改后端透传 task_id（牵动多处签名），是另一件事。
+
+**JSON 类环节不推正文**：`outline` / `write_plan` / `write_audit` 输出的是 JSON，
+边流边推只会让用户看到一坨没闭合的括号。它们的 thinking 照常推——
+`assess` 那 7,009 字思考就是靠这条流出来的。
+正文只推 `write_section` / `write_revise`（`write_section` 单独调用不打工具
+时才走，另一条路 `run_tool_loop` 的 text 也照样收）。
+
+**合并阈值按 kind 分开**：思考 40 字、正文 120 字。
+理由：思考要「跟得上」（读它的目的是知道系统在干什么），
+正文要「读得顺」（读它的目的就是读内容本身，太碎会看不清句子）。
+
+**fixture 补录**：原录的 SSE 只有 thinking（当时后端只推那一种）。
+按 v5 真实报告正文 + 真实 write_section 输出形态（合并后 90~150 字一帧）
+合成了 11 条 draft / 1,100 字，用来验收打字效果。
+
+回放验收：阶段条走到「写作」，「正在写 ● 实时」1100 字，
+正文逐字流出 + 蓝色脉冲光标，引用 `[S2·2]` 原样保留，
+下方时间线同步（装配 4 节 · 重编号 19 → 报告完成 13045 字）。
+
+离线回归：write_struct 13 场景、align_offline 11 组全过。

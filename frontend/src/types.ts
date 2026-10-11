@@ -35,6 +35,9 @@ export type SseEvent =
   | { kind: 'node'; node: string }
   | { kind: 'progress'; node: string; event: ProgressEvent }
   | { kind: 'thinking'; stage: string; delta: string; final?: boolean }
+  /** 正文增量。与 thinking 分开：thinking 是「AI 在想什么」，
+   *  draft 是「这节要交付的东西」——语义不同，混在一起前端就分不清。 */
+  | { kind: 'draft'; stage: string; delta: string; final?: boolean }
   | { kind: 'done'; state: DoneState }
   | { kind: 'error'; error: string }
 

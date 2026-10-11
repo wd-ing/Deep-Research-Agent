@@ -89,6 +89,11 @@ _DELTA_HOOK: ContextVar[Optional[Callable[[str | None, str, str, str], None]]] =
 _NO_DELTA_STAGES = {"relevance", "summarize", "extract",
                    "probe_light", "probe_degraded"}
 
+# 这些环节的输出是 **JSON**（框架 / 任务分派 / 审查结论），
+# 边流边推给用户只会看到一坨没闭合的括号。它们的 thinking 照常推（有用），
+# text 不推。真正给读者看的正文是 write_section / write_revise。
+_NO_TEXT_DELTA_STAGES = {"outline", "write_plan", "write_audit"}
+
 
 def set_delta_hook(fn) -> Any:
     """注册思考增量回调，返回 token（用 reset 还原）。"""
@@ -514,6 +519,8 @@ def _hook_for(stage: str) -> Optional[Callable[[str, str], None]]:
     if stage in _NO_DELTA_STAGES:
         return None
     def _cb(kind: str, chunk: str) -> None:
+        if kind == "text" and stage in _NO_TEXT_DELTA_STAGES:
+            return          # JSON 环节的正文不给用户看
         _fire_delta(stage, kind, chunk)
     return _cb
 

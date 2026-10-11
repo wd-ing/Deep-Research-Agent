@@ -30,6 +30,9 @@ export function useSession(sid: string | null) {
   const [approval, setApproval] = useState<ApprovalPayload | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [thinking, setThinking] = useState<Record<string, string>>({})
+  // 正文增量不分小节（write_section 是 4 并发、run_tool_loop 拿不到 task_id，
+  // 增量无法归属到具体小节——这是实测确认的约束，不是偷懒）。
+  const [draft, setDraft] = useState('')
   const [seg, setSeg] = useState<SegmentRow | null>(null)
 
   const esRef = useRef<EventSource | null>(null)
@@ -59,7 +62,8 @@ export function useSession(sid: string | null) {
   useEffect(() => {
     if (!sid) {
       setView('idle'); setDetail(null); setProgress([])
-      setNode(null); setApproval(null); setError(null); setThinking({})
+      setNode(null); setApproval(null); setError(null)
+      setThinking({}); setDraft('')
       return
     }
     let alive = true
@@ -101,6 +105,9 @@ export function useSession(sid: string | null) {
               return { ...prev, [ev.stage]: cur + ev.delta }
             })
             break
+          case 'draft':
+            setDraft((d) => d + ev.delta)
+            break
           case 'done':
             void (async () => {
               await loadDetail(sid).catch(() => {})
@@ -136,7 +143,7 @@ export function useSession(sid: string | null) {
 
   const start = useCallback(async (id: string) => {
     setView('running'); setProgress([]); setError(null)
-    setApproval(null); setThinking({})
+    setApproval(null); setThinking({}); setDraft('')
     await jpost(`/api/sessions/${id}/run`)
   }, [])
 
@@ -167,7 +174,7 @@ export function useSession(sid: string | null) {
   }, [])
 
   return {
-    view, detail, progress, node, approval, error, thinking, seg,
+    view, detail, progress, node, approval, error, thinking, draft, seg,
     start, approve, create, archive, openSeg,
     setSeg, setView, setProgress, setNode, setApproval, setError, loadDetail,
   }

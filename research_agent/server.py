@@ -318,9 +318,12 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
             # 增量很碎：**实测平均 7.2 字符/块**（probe_outline 一口气 2,336 块
             # 才 16,892 字）。一块一帧会把 SSE 队列冲爆（maxsize=2000），
             # 前端也被刷屏。所以后端先攒，攒够再推。
-            if kind != "reasoning":
-                return
-            buf.setdefault((session_id or sid, stage), []).append(chunk)
+            #
+            # 思考与正文**分开攒、分开推**（2026-10-11）：
+            # 思考是「AI 在想什么」，正文是「这节要交付的东西」——
+            # 语义不同，混在一个流里前端就分不清哪块是给用户看的成品。
+            # key 多带一段 kind，两条流各自独立计时。
+            buf.setdefault((session_id or sid, stage, kind), []).append(chunk)
 
         async def _with_delta(coro):
             with delta_scope(_on_delta):
@@ -331,18 +334,22 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
         buf: dict[tuple, list[str]] = {}
         last_push = time.time()
 
+        # 正文攒够的字数比思考多：思考要「跟得上」，正文要「读得顺」。
+        THRESH = {"reasoning": 40, "text": 120}
+
         async def _flush_loop() -> None:
             nonlocal last_push
             while True:
                 await asyncio.sleep(0.25)
                 now = time.time()
-                for key, parts in list(buf.items()):
+                for (s_id, stage, kind), parts in list(buf.items()):
                     text = "".join(parts)
                     # 攒够了或超时了就推；推完清空
-                    if len(text) >= 40 or now - last_push >= 0.25:
+                    if len(text) >= THRESH.get(kind, 40) or now - last_push >= 0.25:
                         if text:
-                            _emit(key[0], {"kind": "thinking", "stage": key[1],
-                                           "delta": text})
+                            _emit(s_id, {"kind": "thinking" if kind == "reasoning"
+                                          else "draft",
+                                          "stage": stage, "delta": text})
                         parts.clear()
                 last_push = now
 
@@ -353,11 +360,12 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
                 await _with_delta(_task_stream())
             finally:
                 # 收尾前把没推出去的残余推掉，别让最后几句话丢了
-                for (s_id, stage), parts in buf.items():
+                for (s_id, stage, kind), parts in buf.items():
                     text = "".join(parts)
                     if text:
-                        _emit(s_id, {"kind": "thinking", "stage": stage,
-                                     "delta": text, "final": True})
+                        _emit(s_id, {"kind": "thinking" if kind == "reasoning"
+                                      else "draft", "stage": stage,
+                                      "delta": text, "final": True})
                 buf.clear()
 
         asyncio.create_task(_task_stream_delta())
