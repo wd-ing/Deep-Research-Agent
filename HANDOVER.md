@@ -104,6 +104,7 @@ xj189 的思考旋钮是 `reasoning_effort`，**省略该字段才是关思考**
 | `research_agent/llm/toolloop.py` | 工具循环 |
 | `research_agent/tools/evidence.py` | 三个证据工具 + 段号索引 |
 | `research_agent/db/repo.py` | 裸 SQL 薄封装，5 个迁移 |
+| `frontend/src/` | **前端（Vite+React+TS）**：`useSession.ts` 是全部状态与 SSE 接入 |
 | `config/models.yaml` | **平台与模型配置的唯一真相源** |
 
 代码约 7,000 行，测试约 7,000 行。

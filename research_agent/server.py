@@ -186,6 +186,18 @@ def read_segment(sid: str, ref: str) -> dict:
     # 查无此段时字典仍然非空——所以要判「段落」空不空，不能判 data 空不空。
     if not data.get("段落"):
         raise HTTPException(404, f"段号 {ref} 不存在")
+    # ⚠️ 段落里的 `来源号` 是**显示编号**（S2），不是 `source.id`（src_xxx）。
+    # 让前端拿它去比 `source.id` 必然匹配不上——编号方案只有一处是对的
+    # （见 `EvidenceTools`）。所以来源元数据在这里拼好再给前端。
+    sid_ref = data["段落"][0].get("来源号") or ""
+    if sid_ref:
+        real = tools._source_id(sid_ref)
+        if real:
+            row = repo.q1(
+                "SELECT id,title,domain,url,source_date,source_nature "
+                "FROM source WHERE id=?", (real,))
+            if row:
+                data["段落"][0]["来源"] = dict(row)
     return data
 
 
