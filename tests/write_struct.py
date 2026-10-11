@@ -560,11 +560,59 @@ outline_titles = [s["title"] for s in OUTLINE]
 assert set(head12) == set(outline_titles) | {"存疑与未完成"}, \
     f"二级标题只该有大纲小节 + 存疑，实际 {head12}"
 assert "子 agent 又写了标题" not in head12, "子 agent 的 `##` 没被降下去"
-assert "### 子 agent 又写了标题" in md12, "降级后的标题应该还在"
+# 降级之后标题会被统一重编号（`### 1.1 xxx`），所以这里只查文字还在，
+# 不能整串比对——编号是装配层加的，见 `_renumber_headings`。
+assert any("子 agent 又写了标题" in h for h in heads(md12, 3)), \
+    f"降级后的标题应该还在，实际三级标题 {heads(md12, 3)}"
 ev12 = [e for e in out12["events"] if e.get("kind") == "write_assemble"]
 print(f"  装配事件记录降级数：{ev12[0].get('headings_demoted')}")
 assert ev12[0].get("headings_demoted") == 1
 print("  ✓ 降级数量进了事件，改了什么看得见")
+
+# ---------- 场景 12b：编号统一 + 引言标记（2026-10-11） ----------
+print(f"\n{'='*70}\n场景 12b：标题编号重算与引言标记\n{'='*70}")
+RN = W._renumber_stats
+cases = [
+    ("四种自造编号全被剥", 1,
+     "### 一、甲\n### 4. 乙\n### 1.1 丙\n### sec3 丁\n正文。",
+     ["1.1 甲", "1.2 乙", "1.3 丙", "1.4 丁"]),
+    ("中文数字不跟空格也剥", 2, "### 一、甲\n正文。", ["2.1 甲"]),
+    ("3D打印 / 500强 不被误剥", 3,
+     "### 3D打印进展\n### 500强企业排名\n正文。", ["3.1 3D打印进展", "3.2 500强企业排名"]),
+    ("深层连续编号", 4, "### 甲\n#### 甲一\n##### 甲一之一\n#### 甲二\n### 乙",
+     ["4.1 甲", "4.1.1 甲一", "4.1.1.1 甲一之一", "4.1.2 甲二", "4.2 乙"]),
+]
+for name, no, src, want in cases:
+    RN.update({"stripped": 0, "leads": 0})
+    got = W._renumber_headings(src, no)
+    hs = [h.split(" ", 1)[1] for h in heads(got, 3)] if name.startswith("3D") else None
+    for w in want:
+        assert w in got, f"{name}：期望有 `{w}`，实际 {got!r}"
+    print(f"  ✓ {name}")
+
+RN.update({"stripped": 0, "leads": 0})
+W._renumber_headings("### 一、甲\n正文。", 1)
+assert RN["stripped"] == 1, f"剥掉几个编号应该上报，实际 {RN['stripped']}"
+print(f"  ✓ 剥编号的数量进统计：{RN['stripped']}")
+
+for name, src in [("独占一行", "<!-- lead -->\n### 甲\n正文。"),
+                  ("标记+文本", "<!-- lead --> 甲\n正文。"),
+                  ("标记在###后", "### <!-- lead --> 甲\n正文。"),
+                  ("标记+###前缀", "<!-- lead --> ### 甲\n正文。")]:
+    RN.update({"stripped": 0, "leads": 0})
+    got = W._renumber_headings(src, 1)
+    assert "<!-- lead -->" not in got, f"{name}：标记没被消掉，{got!r}"
+    assert "###" not in got, f"{name}：引言不该留标题符号，{got!r}"
+    assert "甲" in got, f"{name}：文字被丢了，{got!r}"
+    assert RN["leads"] == 1, f"{name}：leads 应为 1，实际 {RN['leads']}"
+    print(f"  ✓ 引言标记·{name}")
+
+got = W._renumber_headings("```\n### 代码块里不动\n```\n### 真标题", 1)
+assert "代码块里不动" in got and "### 1.1 真标题" in got, got
+print("  ✓ 代码块里的 # 不当标题处理")
+assert W._renumber_headings("直接正文。", 1) == "直接正文。"
+assert W._renumber_headings("", 1) == ""
+print("  ✓ 无标题 / 空正文不受影响")
 
 # ---------- 场景 13：规划失败时必须说人话 ----------
 print(f"\n{'='*70}\n场景 13：规划失败的降级横幅\n{'='*70}")

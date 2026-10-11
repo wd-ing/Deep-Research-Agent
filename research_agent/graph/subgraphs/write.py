@@ -35,9 +35,26 @@ MAX_TOOL_INDICES = 30       # 单次工具调用最多取几条（超出的会�
 TASK_MARK_RE = re.compile(r"<!--\s*task:(\S+)\s+section:(\S+)\s*-->")
 # 子 agent 分节输出用的标记。`covers` 多于一节时必须逐节标注，否则无法归位。
 SECTION_MARK_RE = re.compile(r"<!--\s*section:(\S+)\s*-->")
+# 子 agent 给「引言标题」加的标记。带它的标题被降成正文段落、不进目录也不编号
+# ——它和节标题讲的是同一件事，再给一个子标题身份，目录里就会冒出两条近似条目。
+LEAD_MARK_RE = re.compile(r"<!--\s*lead\s*-->")
 SEG_REF_RE = re.compile(r"\[S(\d+)·(\d+)\]")          # 段级引用 S3·5
 SEG_REF_LOOSE_RE = re.compile(r"\[S\d+[^\]]*?\]")     # 自创写法
 SRC_REF_RE = re.compile(r"\[S(\d+)\]")               # 旧的来源级写法，不允许
+
+# 行首标题：只认 2~6 级，后面必须跟空格。`#######` 与 `#标题` 都不算。
+HEADING_RE = re.compile(r"^(#{2,6})\s+(.*)$")
+# 子 agent 自造的编号前缀。v5 实测四种形态全出现过：
+#   「一、」「五、」中文数字 / 「4.」「2 」阿拉伯数字 / 「1.1」「2.3.1」多级 / 「sec3」
+# 数字后必须有空白（中文数字则须跟顿号/点）。这一条是防误伤的关键：
+# 没有它，`### 500强企业排名` 会被剥成「强企业排名」、`### 3D打印` 被剥成「D打印」
+# ——而这两种根本不是编号。第一版就栽在这里，靠真实数据回放才看出来。
+_NUM_PREFIX_RE = re.compile(
+    r"^(?:"
+    r"[一二三四五六七八九十百]+[、.．][ \t]*"       # 一、/ 五、 中文数字后通常不留空格
+    r"|\d+(?:\.\d+)*[、.．]?[ \t]+"                # 1 / 4. / 1.1 / 2.3.1（可无标点但必须有空白）
+    r"|sec\d+[ \t]+"                               # sec3
+    r")", re.IGNORECASE)
 
 LLM = LLMClient()
 
@@ -539,11 +556,13 @@ def node_assemble(state: WriteState) -> dict:
     bodies: dict[str, str] = {}
     written = 0
     demoted = 0
-    for sec in state.get("outline") or []:
+    _renumber_stats["stripped"] = 0
+    _renumber_stats["leads"] = 0
+    for sec_no, sec in enumerate(state.get("outline") or [], 1):
         sid = sec.get("id")
         chunks = []
         for tid in task_of_section.get(sid, []):
-            body = _section_body(drafts.get(tid), sid)
+            body = _section_body(drafts.get(tid), sid, sec_no)
             if body:
                 demoted += _count_demoted(_raw_body(drafts.get(tid), sid))
                 mark = f"<!-- task:{tid} section:{sid} -->"
@@ -563,7 +582,9 @@ def node_assemble(state: WriteState) -> dict:
     used: set[str] = set()
     for t in by_task.values():
         for sec in t.get("covers") or []:
-            if _section_body(drafts.get(t["id"]), sec):
+            # 这里只判断「有没有正文」，用 _raw_body 就够——
+            # 走 _section_body 会再跑一遍编号逻辑，把计数重复累加。
+            if _raw_body(drafts.get(t["id"]), sec):
                 used.add(t["id"])
     missing = [t["id"] for t in by_task.values()
                if drafts.get(t["id"]) and t["id"] not in used]
@@ -573,9 +594,13 @@ def node_assemble(state: WriteState) -> dict:
         "uncovered_tasks": missing,
         "assemble_warnings": warnings,
         "headings_demoted": demoted,
+        "headings_renumbered": _renumber_stats["stripped"],
+        "lead_headings_dropped": _renumber_stats["leads"],
         "events": [{"kind": "write_assemble", "sections": written,
                     "tasks": len(drafts), "failed": len(failed),
-                    "warnings": len(warnings), "headings_demoted": demoted}],
+                    "warnings": len(warnings), "headings_demoted": demoted,
+                    "headings_renumbered": _renumber_stats["stripped"],
+                    "lead_headings_dropped": _renumber_stats["leads"]}],
     }
 
 
@@ -600,9 +625,13 @@ def _raw_body(draft: Any, sid: str) -> str:
     return (draft or "").strip()
 
 
-def _section_body(draft: Any, sid: str) -> str:
-    """取某个任务在某一节的正文（标题已降级）。旧格式（裸字符串）兜底兼容。"""
-    return _demote_headings(_raw_body(draft, sid))
+def _section_body(draft: Any, sid: str, sec_no: int = 1) -> str:
+    """取某个任务在某一节的正文（标题已降级并重编号）。旧格式（裸字符串）兜底兼容。
+
+    `sec_no` 是本节在大纲里的序号，从 1 起。`node_assemble` 按大纲顺序遍历，
+    序号现成；给不出它就没法编「节.节内」这种号，只能退回 1。
+    """
+    return _renumber_headings(_demote_headings(_raw_body(draft, sid)), sec_no)
 
 
 def _demote_headings(body: str) -> str:
@@ -627,6 +656,133 @@ def _demote_headings(body: str) -> str:
             line = "###" + m.group(2) + line[m.end():]
         out.append(line)
     return "\n".join(out)
+
+
+def _renumber_headings(body: str, sec_no: int) -> str:
+    """剥掉子 agent 自造的编号，按「节.节内」重编；带 `lead` 标记的降成正文段落。
+
+    **为什么用程序而不是提示词。** 两重原因，第二重是决定性的：
+      1. 子 agent 看不到自己是大纲的第几节——`_spec_for_task` 把别人的节压成
+         `{id, role}` 连标题都不留，它手上没有排编号需要的任何信息。
+      2. 「不要自己编号」这种约束**需要信息才能执行**。同一条提示词实测
+         遵守率 3/3（见 tests/lead_mark_probe.py），说明不是能力问题。
+
+    v5 实测的四种自造编号全被剥掉：`一、` / `4.` / `1.1` / `sec3`。
+    剥完再重编，所以模型不写、写成什么样都不影响最终编号。
+
+    **`lead` 标记**：引言标题和节标题讲同一件事，编了号会在目录里留下两条
+    近似条目。判据只用标记、不碰语义——v5 试过相似度启发式，7 个里只删对 3 个，
+    而「界面问题的物理本质」这类真子标题会被误删（它和节标题共享关键词）。
+    要求程序判断「重复」还是「相关」，它就得理解语义，那是它做不到的。
+    """
+    if not body:
+        return body
+    counters: list[int] = [sec_no]   # 第 0 位就是节序号
+    in_fence = False
+    out: list[str] = []
+    stripped = 0
+    leads = 0
+    # 上一行是不是一个独占整行的 lead 标记。
+    # 用它来覆盖「标记单独一行、标题在下一行」这种写法——
+    # 标记行本身要丢掉，但它把紧随其后的那个标题变成了引言。
+    pending_lead = False
+    for line in body.splitlines():
+        s = line.strip()
+        # 代码块里的 `#` 不是标题，整块跳过。v5 恰好没有代码块，但不能假设。
+        if s.startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            pending_lead = False
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+
+        # ── 第一步：摘掉 lead 标记，判定这一行是不是引言标题 ──
+        # 标记有三种落法，全都在这里收口：
+        #   独占一行 / `<!-- lead --> xxx` / `### <!-- lead --> xxx`
+        # 分三条分支处理曾经互相抢行（每补一条又漏一种），所以合并成「摘完再判标题」。
+        # ── 第一步：摘掉 lead 标记，判定这一行是不是引言标题 ──
+        # 标记有四种落法，全在这里收口：
+        #   独占一行 / `<!-- lead --> xxx` / `<!-- lead --> ### xxx` / `### <!-- lead --> xxx`
+        # 分支式处理会互相抢行（每补一条又漏一种），所以统一走「摘标记 → 判标题」。
+
+        # (a) 标记独占整行：这一行丢掉，作用留给下一行
+        if LEAD_MARK_RE.fullmatch(s):
+            pending_lead = True
+            continue
+        # (b) 标记排在 `###` 之后（`### <!-- lead --> xxx`）：
+        #     得先摘标题符号才匹配得到，所以这里就地处理、不再往下走
+        hm = HEADING_RE.match(s)
+        if hm and LEAD_MARK_RE.match(hm.group(2).strip()):
+            if t := _lead_text(hm.group(2)):
+                out.append(t)
+            leads += 1
+            continue
+        # (c) 标记在行首，后面接纯文本或 `###`
+        if LEAD_MARK_RE.match(s):
+            s = LEAD_MARK_RE.sub("", s, count=1).strip()
+            hm = HEADING_RE.match(s)
+            if t := _lead_text(hm.group(2) if hm else s):
+                out.append(t)
+            leads += 1
+            continue
+        # (d) 标记在上一行独占整行
+        if pending_lead:
+            pending_lead = False
+            hm = HEADING_RE.match(s)
+            if t := _lead_text(hm.group(2) if hm else s):
+                out.append(t)
+            leads += 1
+            continue
+
+        m = HEADING_RE.match(s)
+        if not m:
+            out.append(line)
+            continue
+        # 只有标题符号没有文字（模型畸形输出）——丢掉，别留光秃秃的 `###`
+        if not m.group(2).strip():
+            continue
+
+        # ── 第二步：真子标题，剥编号后按层级重编 ──
+        marks, title = m.group(1), m.group(2)
+        new_title = _NUM_PREFIX_RE.sub("", title, count=1)
+        if new_title != title:
+            stripped += 1
+        title = new_title or title   # 全被剥空（只有编号）就还原，不留空标题
+        # `##` 在正文里是节级，和节标题平级。正常路径上 `_demote_headings`
+        # 已经把它降成 `###` 了；真漏到这里（降级失效）也不能参与编号——
+        # 它的层级是 2，算出来的 idx=0 会直接覆盖节序号，编出 `## 2 xxx`。
+        # 这里再兜一次底：统一按最深的合法子标题层级处理。
+        marks = "###" if len(marks) < 3 else marks
+        # `###` 是「节下面的第一个子标题」，计数器索引是 level-2 = 1，不是 level-1。
+        # 用 level-1 会整体偏移一位，把未初始化的 0 编进号码里，产出 `1.0.1`。
+        idx = len(marks) - 2
+        if idx >= len(counters):
+            counters += [0] * (idx - len(counters) + 1)
+        counters[idx] += 1
+        for k in range(idx + 1, len(counters)):
+            counters[k] = 0
+        out.append(f"{marks} {'.'.join(str(c) for c in counters[:idx + 1])} {title}")
+
+    _renumber_stats["stripped"] += stripped
+    _renumber_stats["leads"] += leads
+    return "\n".join(out)
+
+
+def _lead_text(raw: str) -> str:
+    """引言标题 → 一行正文文字。
+
+    去掉标记和自造编号（`<!-- lead --> 一、成本困局` → `成本困局`）。
+    可能返回空串——模型只写标记没写内容的情形，调用方据此跳过，
+    不往正文里插空行。
+    """
+    return _NUM_PREFIX_RE.sub("", LEAD_MARK_RE.sub("", raw, count=1).strip(), count=1)
+
+
+# 程序动过正文的量，要让人看得见——否则「模型写错格式、程序替它擦屁股」
+# 这件事会静悄悄地消失（同 `_count_demoted` 的理由）。
+_renumber_stats: dict[str, int] = {"stripped": 0, "leads": 0}
 
 
 def _assemble_warnings(bodies: dict, drafts: dict, by_task: dict) -> list[str]:
@@ -1088,6 +1244,9 @@ def node_final(state: WriteState) -> dict:
     # 定位标记是给审查看的，不能留在最终报告里
     md = TASK_MARK_RE.sub("", md)
     md = SECTION_MARK_RE.sub("", md)
+    # 引言标记同理。正常情况下它在装配时就被吃掉了，
+    # 这里兜底：标记单独占一行、正文里没有标题那种形态会漏过装配层。
+    md = re.sub(r"[ \t]*<!--\s*lead\s*-->[ \t]*\n?", "", md)
     md += "\n---\n\n### 来源\n" + "\n".join(state.get("src_lines") or []) + "\n"
     return {
         "report_markdown": md,
