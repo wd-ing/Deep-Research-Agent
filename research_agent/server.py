@@ -203,6 +203,148 @@ def list_folders() -> list[dict]:
     return get_repo().folders_with_counts()
 
 
+@app.get("/api/sources/{src_id}")
+def get_source(src_id: str) -> dict:
+    """单个来源 + 它的段落。点来源库里的某一条看它到底说了什么。
+
+    段号（`S3·5`）**必须由 `EvidenceTools` 生成**，不能自己按 rowid 数——
+    与报告正文里的编号不一致的话，点开看到的段就是另一段。
+    """
+    from .tools.evidence import EvidenceTools
+
+    repo = get_repo()
+    row = repo.q1(
+        "SELECT s.*, COALESCE(NULLIF(se.title,''), se.question) AS session_title "
+        "FROM source s JOIN session se ON se.id = s.session_id WHERE s.id=?",
+        (src_id,),
+    )
+    if not row:
+        raise HTTPException(404, "来源不存在")
+    out = dict(row)
+    out["nature"] = out.get("source_nature") or "unknown"
+    out["nature_label"] = NATURE_LABELS.get(out["nature"], out["nature"])
+
+    try:
+        tools = EvidenceTools(repo, out["session_id"])
+    except Exception as e:
+        raise HTTPException(500, f"段号索引构建失败：{e}")
+
+    chunks = repo.q(
+        "SELECT id, heading_path, summary, content, token_count, on_topic "
+        "FROM chunk WHERE source_id=? ORDER BY rowid", (src_id,),
+    )
+    segs = []
+    for c in chunks:
+        d = dict(c)
+        d["ref"] = tools._ref(d["id"])      # chunk_id → 报告里用的段号
+        # 正文可能很长，详情页只给前 1200 字，完整原文用 /seg 端点按段取
+        d["content"] = (d["content"] or "")[:1200]
+        segs.append(d)
+    out["segments"] = segs
+    return out
+
+
+# 来源性质的规范取值。**写在服务端**而不是让前端各写一份中英文对照——
+# 词表是提示词（prompts.SOURCE_NATURE）定的，只有这一处该知道它。
+NATURE_LABELS = {
+    "first_party": "一手",
+    "research": "研究",
+    "media": "媒体",
+    "community": "社区",
+    "aggregator": "聚合",
+    "unknown": "未判",
+}
+NATURE_ORDER = ["first_party", "research", "media", "community", "aggregator", "unknown"]
+
+
+@app.get("/api/sources")
+def list_sources(q: str = "", session_id: str = "") -> dict:
+    """来源库：全部场次收集到的来源 + 每场的引用数。
+
+    **引用数必须复用 `EvidenceTools` 的段号方案**——
+    报告里的 `[S2·1]` 里那个 `S2` 是**显示编号**（按 session 内 rowid 排），
+    不是 `source.id`。自己另算一套必然与点开抽屉看到的对不上
+    （这个错 HANDOVER 的坑 8 记过一次）。所以这里直接问 `EvidenceTools`。
+
+    没有 `source.cited_count` 这类字段可读——引用关系只存在于**报告正文**
+    的标记里，库里没存，所以只能从 markdown 数。
+
+    过滤条件与别处保持一致：`superseded_by IS NULL`（同源被采纳的那条）、
+    所属会话不在回收站。
+    """
+    import re
+    from collections import Counter
+
+    from .tools.evidence import EvidenceTools
+
+    repo = get_repo()
+    params: list = []
+    where = ["s.superseded_by IS NULL", "se.deleted_at IS NULL"]
+    if session_id:
+        where.append("s.session_id=?")
+        params.append(session_id)
+    if q:
+        where.append("(s.title LIKE ? OR s.domain LIKE ? OR s.url LIKE ?)")
+        params += [f"%{q}%"] * 3
+
+    rows = repo.q(
+        "SELECT s.id, s.session_id, s.title, s.url, s.domain, s.source_date,"
+        "       s.fetched_at, s.source_type, s.source_nature, s.nature_reason,"
+        "       s.char_count, s.http_status, s.on_topic,"
+        "       (SELECT COUNT(*) FROM chunk c WHERE c.source_id=s.id) AS segments,"
+        "       (SELECT COALESCE(SUM(c.token_count),0) FROM chunk c"
+        "         WHERE c.source_id=s.id) AS tokens,"
+        "       (SELECT COUNT(*) FROM ignored_source ig WHERE ig.source_id=s.id)"
+        "         AS ignored,"
+        "       COALESCE(NULLIF(se.title,''), se.question) AS session_title,"
+        "       se.created_at AS session_created_at "
+        "FROM source s JOIN session se ON se.id = s.session_id "
+        f"WHERE {' AND '.join(where)} ORDER BY se.created_at DESC, s.rowid",
+        tuple(params),
+    )
+    out = [dict(r) for r in rows]
+
+    # ---- 引用数：从报告正文数 ----
+    cites: dict[str, int] = {}
+    per_session: dict[str, list[dict]] = {}
+    for r in out:
+        per_session.setdefault(r["session_id"], []).append(r)
+
+    for sid, group in per_session.items():
+        rep = repo.q1("SELECT markdown FROM report WHERE session_id=?", (sid,))
+        if not rep or not (rep["markdown"] or ""):
+            continue
+        try:
+            tools = EvidenceTools(repo, sid)
+        except Exception:
+            continue          # 索引建不起来就当没引用，不要整页 500
+        counts = Counter(re.findall(r"\[(S\d+)·", rep["markdown"]))
+        for ref, n in counts.items():
+            real = tools._source_id(ref)
+            if real:
+                cites[real] = cites.get(real, 0) + n
+
+    for r in out:
+        # 未判 = NULL 与 unknown 归一组：前者是没判，后者是判不出来，
+        # 对用户是同一件事——「这条的出处性质还不知道」
+        nature = r["source_nature"] or "unknown"
+        r["nature"] = nature
+        r["nature_label"] = NATURE_LABELS.get(nature, nature)
+        r["citations"] = cites.get(r["id"], 0)
+        r["ignored"] = bool(r.pop("ignored"))
+
+    total_cites = sum(r["citations"] for r in out)
+    return {
+        "sources": out,
+        "total": len(out),
+        "segments": sum(r["segments"] for r in out),
+        "citations": total_cites,
+        "by_nature": {k: sum(1 for r in out if r["nature"] == k) for k in NATURE_ORDER},
+        "nature_order": NATURE_ORDER,
+        "nature_labels": NATURE_LABELS,
+    }
+
+
 class FolderIn(BaseModel):
     name: str = Field(min_length=1)
     parent_id: str | None = None

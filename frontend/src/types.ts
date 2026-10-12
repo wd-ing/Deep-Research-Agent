@@ -117,6 +117,69 @@ export interface SessionDetail extends SessionSummary {
   open_contradictions: unknown[]
 }
 
+/** 来源库的一条（产品化阶段 4）。字段取自 `GET /api/sources` 的真实返回。 */
+export interface SourceLibItem {
+  id: string
+  session_id: string
+  session_title: string
+  title: string | null
+  url: string
+  domain: string | null
+  source_date: string | null
+  fetched_at: string
+  source_type: string
+  source_nature: string | null
+  /** 服务端把 NULL 与 unknown 归一成了同一个 key */
+  nature: string
+  nature_label: string
+  nature_reason: string | null
+  char_count: number | null
+  http_status: number | null
+  /** 相关性闸门判定。0 = 留库但不参与报告 */
+  on_topic: number
+  segments: number
+  tokens: number
+  citations: number
+  /** 阶段 5 用；本阶段只读不写 */
+  ignored: boolean
+}
+
+export interface SourceLibrary {
+  sources: SourceLibItem[]
+  total: number
+  segments: number
+  citations: number
+  by_nature: Record<string, number>
+  nature_order: string[]
+  nature_labels: Record<string, string>
+}
+
+/** `GET /api/sources/{id}`。段号由后端 EvidenceTools 生成，与报告正文一致。 */
+export interface SourceDetailRow {
+  id: string
+  session_id: string
+  session_title: string
+  title: string | null
+  url: string
+  domain: string | null
+  source_date: string | null
+  source_nature: string | null
+  nature: string
+  nature_label: string
+  nature_reason: string | null
+  char_count: number | null
+  on_topic: number
+  segments: {
+    id: string
+    ref: string
+    heading_path: string | null
+    summary: string | null
+    content: string
+    token_count: number | null
+    on_topic: number
+  }[]
+}
+
 /** 主图的 7 个节点，顺序取自 runner.py。
  *  ⚠️ 真实轨迹会走两遍检索（assess → apply_revision → retrieve），
  *  所以阶段条不能是单向进度。 */

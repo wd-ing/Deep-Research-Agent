@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../useSession'
-import type { Folder, SessionSummary } from '../types'
+import type { Folder, SessionSummary, SourceLibrary } from '../types'
 import { FolderTree, buildTree, findNodeById, subtreeIds, folderChoices } from './FolderTree'
 import { Menu, MenuItem } from './Menu'
 import { ConfirmDialog } from './ConfirmDialog'
+import { SourceList } from './SourceList'
 
 type Filter = 'all' | 'running' | 'archived' | 'trash'
+export type Pane = 'session' | 'source'
 
 /** 相对时间。列表里比绝对时间好用（「2 小时前」比「2026-10-11T05:39」）。 */
 function ago(iso: string): string {
@@ -183,7 +185,8 @@ function SessionRow({
 }
 
 export function Sidebar({
-  list, trash, cur, folders, onPick, onChanged, onNew,
+  list, trash, cur, folders, onPick, onChanged, onNew, pane, onPane,
+  lib, srcQuery, onSrcQuery, srcCur, onPickSource,
 }: {
   list: SessionSummary[]
   /** 回收站内容。来自 `/api/trash`——不在 `list` 里（那边硬过滤 deleted_at）。 */
@@ -193,6 +196,14 @@ export function Sidebar({
   onPick: (id: string) => void
   onChanged: () => void
   onNew: () => void
+  /** 侧栏当前是会话列表还是来源库 */
+  pane: Pane
+  onPane: (p: Pane) => void
+  lib: SourceLibrary | null
+  srcQuery: string
+  onSrcQuery: (v: string) => void
+  srcCur: string | null
+  onPickSource: (id: string) => void
 }) {
   const [filter, setFilter] = useState<Filter>('all')
   const [q, setQ] = useState('')
@@ -236,6 +247,29 @@ export function Sidebar({
 
   return (
     <nav className="flex w-72 shrink-0 flex-col border-r border-line bg-gray-50">
+      {/* 会话 / 来源 两个视图。同一批数据两种组织方式：
+          会话按时间流找「上周那场」，来源按性质找「哪些材料值得信」。 */}
+      <div className="flex gap-1 border-b border-line p-2">
+        {([['session', '对话'], ['source', '来源库']] as const).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => onPane(k)}
+            className={[
+              'flex-1 rounded px-2 py-1 text-xs transition-colors',
+              pane === k ? 'bg-white font-medium text-ink shadow-sm'
+                         : 'text-muted hover:bg-white',
+            ].join(' ')}
+          >{label}</button>
+        ))}
+      </div>
+
+      {pane === 'source' ? (
+        <SourceList
+          lib={lib} q={srcQuery} onQuery={onSrcQuery}
+          cur={srcCur} onPick={onPickSource}
+        />
+      ) : (
+        <>
       <div className="space-y-2 p-3">
         <button
           onClick={onNew}
@@ -271,7 +305,10 @@ export function Sidebar({
           onChanged={onChanged}
         />
       </div>
+        </>
+      )}
 
+      {pane === 'session' && (
       <div className="flex-1 overflow-auto px-2 pb-4">
         {filter === 'trash' ? (
           <>
@@ -330,8 +367,9 @@ export function Sidebar({
           </>
         )}
       </div>
+      )}
 
-      {confirm && (
+      {pane === 'session' && confirm && (
         <ConfirmDialog
           title={confirm.purge ? '彻底删除这场研究？' : '移到回收站？'}
           lines={confirm.purge
