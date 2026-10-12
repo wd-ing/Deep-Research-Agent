@@ -11,6 +11,19 @@ export interface SessionSummary {
   cost_tokens: number
   created_at: string
   archived_at: string | null
+  /** 软删除：有值表示在回收站里（2026-10-12） */
+  deleted_at?: string | null
+  folder_id?: string | null
+  /** 报告写完时生成的结构化摘要（阶段 3 才有值） */
+  summary?: { summary: string; key_points?: string[]; gaps?: string[] } | null
+}
+
+export interface Folder {
+  id: string | null          // null = 「未分类」
+  name: string
+  parent_id: string | null
+  sort_order: number
+  sessions: number
 }
 
 export interface SourceRow {

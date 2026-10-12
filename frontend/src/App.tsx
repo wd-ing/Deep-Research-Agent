@@ -1,60 +1,27 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useSession, api } from './useSession'
-import type { SessionSummary } from './types'
+import type { Folder, SessionSummary } from './types'
 import { ApprovalView } from './views/ApprovalView'
 import { ReportView } from './views/ReportView'
 import { WorkflowView } from './views/WorkflowView'
 import { buildPhases } from './views/workflow'
 import { SegDrawer, NatureBadge } from './components/SegDrawer'
-
-function Sidebar({
-  list, cur, onPick, onNew,
-}: {
-  list: SessionSummary[]
-  cur: string | null
-  onPick: (id: string) => void
-  onNew: () => void
-}) {
-  return (
-    <nav className="flex w-60 shrink-0 flex-col border-r border-line bg-gray-50">
-      <div className="p-4">
-        <button
-          onClick={onNew}
-          className="w-full rounded-md bg-accent px-3 py-2 text-sm text-white shadow-sm transition-all hover:bg-blue-700 hover:shadow active:scale-[.98]"
-        >
-          新建研究
-        </button>
-      </div>
-      <div className="flex-1 overflow-auto px-2 pb-4">
-        {list.map((s) => (
-          <button
-            key={s.id}
-            onClick={() => onPick(s.id)}
-            className={[
-              'mb-1 block w-full rounded px-3 py-2 text-left text-sm',
-              s.id === cur ? 'bg-white shadow-sm ring-1 ring-line' : 'hover:bg-white',
-            ].join(' ')}
-          >
-            <div className="truncate font-medium text-ink">{s.title || s.question}</div>
-            <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted">
-              <span>{s.status}</span>
-              {s.archived_at && <span className="rounded bg-gray-200 px-1">已归档</span>}
-              {s.cost_tokens > 0 && <span>{Math.round(s.cost_tokens / 1000)}k token</span>}
-            </div>
-          </button>
-        ))}
-      </div>
-    </nav>
-  )
-}
+import { Sidebar } from './components/Sidebar'
 
 export default function App() {
   const [sid, setSid] = useState<string | null>(null)
   const [list, setList] = useState<SessionSummary[]>([])
+  const [trash, setTrash] = useState<SessionSummary[]>([])
+  const [folders, setFolders] = useState<Folder[]>([])
   const s = useSession(sid)
 
+  // ⚠️ `/api/sessions` 里的 `deleted_at IS NULL` 是**硬过滤**（server.py:114），
+  // 回收站的会话根本不在这一份里。必须单独打 `/api/trash`，
+  // 否则侧栏「回收站」档永远只能拿到空数组。
   const refresh = useCallback(async () => {
     try { setList(await api.jget<SessionSummary[]>('/api/sessions')) } catch { /* 忽略 */ }
+    try { setTrash(await api.jget<SessionSummary[]>('/api/trash')) } catch { /* 忽略 */ }
+    try { setFolders(await api.jget<Folder[]>('/api/folders')) } catch { /* 忽略 */ }
   }, [])
 
   useEffect(() => { void refresh() }, [refresh, s.view])
@@ -73,8 +40,11 @@ export default function App() {
     <div className="flex h-screen text-ink">
       <Sidebar
         list={list}
+        trash={trash}
         cur={sid}
+        folders={folders}
         onPick={setSid}
+        onChanged={refresh}
         onNew={() => {
           const q = prompt('要研究什么问题？')
           if (q) void start(q)
@@ -106,7 +76,7 @@ export default function App() {
               onClick={() => void s.archive(d.id).then(refresh)}
               className="rounded border border-line px-3 py-1 text-xs text-muted hover:bg-gray-50"
             >
-              归档（进入历史召回）
+              归档（不出现在默认列表）
             </button>
           )}
         </header>

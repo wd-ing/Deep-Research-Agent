@@ -182,4 +182,20 @@ export function useSession(sid: string | null) {
 
 export type SessionApi = ReturnType<typeof useSession>
 
-export const api = { jget, jpost }
+async function jpatch<T>(url: string, body: unknown): Promise<T> {
+  const r = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) throw new Error(`${r.status} ${url}`)
+  return r.json() as Promise<T>
+}
+
+async function jdel<T>(url: string): Promise<T> {
+  const r = await fetch(url, { method: 'DELETE' })
+  if (!r.ok) throw new Error(`${r.status} ${url}`)
+  return r.json() as Promise<T>
+}
+
+export const api = { jget, jpost, jpatch, jdel }
