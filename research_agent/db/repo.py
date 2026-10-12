@@ -243,11 +243,18 @@ class Repo:
         ⚠️ 子文件夹也要一并删掉（`ON DELETE SET NULL` 只会把它们挂成孤儿，
         parent_id 指向已删除的行，**树就断了**）——2026-10-12 实测发现。
         所以这里先递归收集整棵子树再删。
+
         返回被移出（会话）的数量，给接口层报给用户听。
+        ⚠️ **必须统计整棵子树**（2026-10-12 修）：`session.folder_id` 的外键是
+        `ON DELETE SET NULL`，所以删子文件夹时**它的会话也会落回未分类**——
+        但那些会话不由这一行 `UPDATE` 负责，只数直接子会话会**少报**。
+        用户看到「移出 0 场」却发现列表里多了一堆未分类会话，会以为出 bug。
         """
-        n = self.q1("SELECT COUNT(*) AS c FROM session WHERE folder_id=?",
-                    (folder_id,))
-        for fid in self._subtree(folder_id):
+        sub = self._subtree(folder_id)
+        qs = ','.join('?' * len(sub))
+        n = self.q1(f"SELECT COUNT(*) AS c FROM session WHERE folder_id IN ({qs})",
+                    tuple(sub))
+        for fid in sub:
             self.x("DELETE FROM folder WHERE id=?", (fid,))
         return int(n["c"] if n else 0)
 

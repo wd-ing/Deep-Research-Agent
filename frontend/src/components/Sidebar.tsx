@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../useSession'
 import type { Folder, SessionSummary } from '../types'
+import { FolderTree, buildTree, findNodeById, subtreeIds, folderChoices } from './FolderTree'
+import { Menu, MenuItem } from './Menu'
+import { ConfirmDialog } from './ConfirmDialog'
 
 type Filter = 'all' | 'running' | 'archived' | 'trash'
 
@@ -21,57 +24,23 @@ function tokens(n: number): string {
   return n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`
 }
 
-/** 确认对话框。不是 `window.confirm`——
- *  删一场研究连带删报告/来源/段，得说清楚，而且要能恢复。 */
-function ConfirmDialog({
-  title, lines, confirmText, onCancel, onConfirm,
-}: {
-  title: string
-  lines: string[]
-  confirmText: string
-  onCancel: () => void
-  onConfirm: () => void
-}) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onCancel])
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-      <div className="w-full max-w-sm rounded-lg bg-white p-5 shadow-xl">
-        <h3 className="text-sm font-medium text-ink">{title}</h3>
-        <ul className="mt-3 space-y-1 text-xs text-muted">
-          {lines.map((l, i) => <li key={i}>· {l}</li>)}
-        </ul>
-        <div className="mt-5 flex justify-end gap-2">
-          <button
-            onClick={onCancel}
-            className="rounded border border-line px-3 py-1.5 text-xs text-muted hover:bg-gray-50"
-          >取消</button>
-          <button
-            onClick={onConfirm}
-            className="rounded bg-red-600 px-3 py-1.5 text-xs text-white hover:bg-red-700"
-          >{confirmText}</button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 /** 一条会话。**hover 才出操作按钮**，平时干净。 */
 function SessionRow({
-  s, active, onOpen, onRename, onArchive, onDelete,
+  s, active, choices, onOpen, onRename, onArchive, onDelete, onMove,
 }: {
   s: SessionSummary
   active: boolean
+  /** 「移到文件夹」菜单的候选项（带缩进）。没建过文件夹就为空数组。 */
+  choices: { id: string | null; label: string; depth: number }[]
   onOpen: () => void
   onRename: (title: string) => void
   onArchive: (v: boolean) => void
   onDelete: () => void
+  onMove: (folderId: string | null) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(s.title ?? '')
+  const [moveAt, setMoveAt] = useState<HTMLElement | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -133,6 +102,11 @@ function SessionRow({
             className="rounded px-1 text-xs text-muted hover:bg-gray-100 hover:text-ink"
           >✏️</button>
           <button
+            title="移到文件夹"
+            onClick={(e) => setMoveAt(moveAt ? null : e.currentTarget)}
+            className="rounded px-1 text-xs text-muted hover:bg-gray-100 hover:text-ink"
+          >📁</button>
+          <button
             title={s.archived_at ? '取消归档' : '归档（值得留，不出现在默认列表）'}
             onClick={() => onArchive(!s.archived_at)}
             className="rounded px-1 text-xs text-muted hover:bg-gray-100 hover:text-ink"
@@ -143,6 +117,24 @@ function SessionRow({
             className="rounded px-1 text-xs text-muted hover:bg-red-50 hover:text-red-600"
           >🗑</button>
         </div>
+      )}
+
+      {moveAt && (
+        <Menu anchor={moveAt} align="right" onClose={() => setMoveAt(null)}>
+          {choices.map((c) => (
+            <MenuItem key={c.id ?? 'none'} active={c.id === (s.folder_id ?? null)}
+              onClick={() => { onMove(c.id); setMoveAt(null) }}>
+              <span style={{ paddingLeft: c.depth * 10 }}>
+                {c.depth > 0 ? '└ ' : ''}{c.label}
+              </span>
+            </MenuItem>
+          ))}
+          {!choices.length && (
+            <div className="px-2.5 py-1.5 text-[11px] text-muted">
+              还没有文件夹，在左下角「+ 新建」建一个。
+            </div>
+          )}
+        </Menu>
       )}
     </div>
   )
@@ -169,12 +161,24 @@ export function Sidebar({
     { s: SessionSummary; purge: boolean } | null
  >(null)
 
+  const tree = useMemo(() => buildTree(folders), [folders])
+  const choices = useMemo(() => folderChoices(tree), [tree])
+  const selNode = folderId !== undefined ? findNodeById(tree, folderId) : null
+  // 选中父文件夹时，**子文件夹里的会话也要能看到**——
+  // 选了「固态电池」却看不到它下面「2026」里的研究，说不通。
+  const selIds = selNode ? subtreeIds(selNode) : null
+
+  // 选中的文件夹被删掉之后，别留一个永远筛不出东西的死条件
+  useEffect(() => {
+    if (folderId !== undefined && !selNode) setFolderId(undefined)
+  }, [folderId, selNode])
+
   // 回收站的数据不在 `list` 里，必须换源
   const src = filter === 'trash' ? trash : list
   const shown = src.filter((s) => {
     if (q && !(`${s.title ?? ''}${s.question}`).toLowerCase().includes(q.toLowerCase()))
       return false
-    if (folderId !== undefined && s.folder_id !== folderId) return false
+    if (selIds && !selIds.has(s.folder_id ?? null)) return false
     if (filter === 'running') return s.status === 'running'
     if (filter === 'archived') return !!s.archived_at
     return true
@@ -216,31 +220,15 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* 文件夹筛选（阶段 2 会换成真正的树） */}
-      {folders.length > 0 && (
-        <div className="border-b border-line px-3 pb-2">
-          <div className="mb-1 text-[11px] text-muted">文件夹</div>
-          <div className="flex flex-wrap gap-1">
-            <button
-              onClick={() => setFolderId(undefined)}
-              className={[
-                'rounded px-1.5 py-0.5 text-[11px]',
-                folderId === undefined ? 'bg-white text-ink shadow-sm' : 'text-muted hover:bg-white',
-              ].join(' ')}
-            >全部</button>
-            {folders.map((f) => (
-              <button
-                key={f.id ?? 'none'}
-                onClick={() => setFolderId(f.id)}
-                className={[
-                  'rounded px-1.5 py-0.5 text-[11px]',
-                  folderId === f.id ? 'bg-white text-ink shadow-sm' : 'text-muted hover:bg-white',
-                ].join(' ')}
-              >{f.name} <span className="opacity-60">{f.sessions}</span></button>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* 文件夹树：选中即筛选（含整棵子树的会话） */}
+      <div className="border-b border-line pb-1">
+        <FolderTree
+          folders={folders}
+          selected={folderId}
+          onSelect={(id) => setFolderId(id)}
+          onChanged={onChanged}
+        />
+      </div>
 
       <div className="flex-1 overflow-auto px-2 pb-4">
         {filter === 'trash' ? (
@@ -273,24 +261,28 @@ export function Sidebar({
               <>
                 <div className="px-1 py-1 text-[11px] text-muted">已归档</div>
                 {archived.map((s) => (
-                  <SessionRow key={s.id} s={s} active={s.id === cur}
+                  <SessionRow key={s.id} s={s} active={s.id === cur} choices={choices}
                     onOpen={() => onPick(s.id)}
                     onRename={(t) => act(() => api.jpatch(`/api/sessions/${s.id}`, { title: t }))}
                     onArchive={(v) => act(() => api.jpatch(`/api/sessions/${s.id}`, { archived: v }))}
-                    onDelete={() => setConfirm({ s, purge: false })} />
+                    onDelete={() => setConfirm({ s, purge: false })}
+                    onMove={(fid) => act(() => api.jpatch(`/api/sessions/${s.id}`, { folder_id: fid }))} />
                 ))}
               </>
             )}
             {rest.map((s) => (
-              <SessionRow key={s.id} s={s} active={s.id === cur}
+              <SessionRow key={s.id} s={s} active={s.id === cur} choices={choices}
                 onOpen={() => onPick(s.id)}
                 onRename={(t) => act(() => api.jpatch(`/api/sessions/${s.id}`, { title: t }))}
                 onArchive={(v) => act(() => api.jpatch(`/api/sessions/${s.id}`, { archived: v }))}
-                onDelete={() => setConfirm({ s, purge: false })} />
+                onDelete={() => setConfirm({ s, purge: false })}
+                onMove={(fid) => act(() => api.jpatch(`/api/sessions/${s.id}`, { folder_id: fid }))} />
             ))}
             {!shown.length && (
               <div className="px-1 py-3 text-xs text-muted">
-                {q ? `没有匹配「${q}」的会话` : '还没有会话'}
+                {selNode
+                  ? `「${selNode.name}」里还没有会话`
+                  : q ? `没有匹配「${q}」的会话` : '还没有会话'}
               </div>
             )}
           </>
