@@ -1,5 +1,5 @@
 {
- "note": "真实运行录下的 SSE（跑到审批点）。2026-10-11 xj189，session s_557e7fdec792",
+ "note": "真实运行录下的 SSE（跑到审批点）。2026-10-11 xj189，session s_557e7fdec792；补了 retrieve 两轮与 outline_revision（真实 run_trace / 审批 payload 里的数据，此前没推到 SSE）",
  "events": [
   {
    "at": 0.5,
@@ -112,7 +112,97 @@
    }
   },
   {
-   "at": 7.2,
+   "at": 3.0,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "retrieve",
+     "round": 1,
+     "queries": {
+      "zh": [
+       "固态电池技术路线对比 硫化物 氧化物 聚合物",
+       "半固态电池 全固态电池 产业化进度 2025",
+       "全固态电池 技术瓶颈 固固界面 锂金属负极",
+       "固态电池 成本 硫化锂 降本",
+       "固态电池 企业梯队 竞争格局 宁德时代 丰田"
+      ],
+      "en": [
+       "solid-state battery technology roadmap comparison sulfide oxide polymer",
+       "semi-solid-state vs all-solid-state battery commercialization progress 2025",
+       "all-solid-state battery technical challenges solid-solid interface lithium metal anode",
+       "solid-state battery cost reduction lithium sulfide",
+       "solid-state battery competitive landscape CATL Toyota"
+      ]
+     },
+     "hits": 50,
+     "accepted": 24,
+     "new_sources": 24,
+     "repeat_queries": 0
+    }
+   }
+  },
+  {
+   "at": 4.6,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "retrieve",
+     "round": 2,
+     "queries": {
+      "zh": [
+       "2025年 半固态电池 装车量 渗透率 数据",
+       "全固态电池 技术瓶颈 界面阻抗 锂枝晶 清单",
+       "固态电池 成本 每kWh 2025 现状",
+       "硫化锂 降本 固态电池 成本 路径",
+       "固态电池 企业 梯队 领先 竞争格局"
+      ],
+      "en": [
+       "semi-solid state battery 2025 installation volume penetration rate",
+       "all-solid-state battery technical challenges interface impedance lithium dendrite",
+       "solid-state battery cost per kWh 2025",
+       "lithium sulfide cost reduction solid-state battery",
+       "solid-state battery company ranking competitive landscape"
+      ]
+     },
+     "hits": 26,
+     "accepted": 5,
+     "new_sources": 5,
+     "repeat_queries": 0
+    }
+   }
+  },
+  {
+   "at": 6.2,
+   "event": {
+    "kind": "progress",
+    "node": "apply_revision",
+    "event": {
+     "kind": "outline_revision",
+     "round": 1,
+     "reason": "材料撑不住的部分题面",
+     "narrowed": [
+      {
+       "id": "sec2",
+       "to": "材料仅5段，去掉数字要求"
+      },
+      {
+       "id": "sec3",
+       "to": "材料仅2段，收窄为突破方向"
+      },
+      {
+       "id": "sec4",
+       "to": "材料仅5段，去掉成本数字要求"
+      }
+     ],
+     "added": [],
+     "removed": []
+    }
+   }
+  },
+  {
+   "at": 13.4,
    "event": {
     "kind": "thinking",
     "stage": "outline",
@@ -120,7 +210,7 @@
    }
   },
   {
-   "at": 7.7,
+   "at": 13.9,
    "event": {
     "kind": "thinking",
     "stage": "outline",
@@ -128,7 +218,7 @@
    }
   },
   {
-   "at": 8.2,
+   "at": 14.4,
    "event": {
     "kind": "thinking",
     "stage": "outline",
@@ -136,14 +226,14 @@
    }
   },
   {
-   "at": 9.4,
+   "at": 15.6,
    "event": {
     "kind": "node",
     "node": "outline"
    }
   },
   {
-   "at": 9.9,
+   "at": 16.1,
    "event": {
     "kind": "thinking",
     "stage": "outline",
@@ -151,21 +241,21 @@
    }
   },
   {
-   "at": 11.1,
+   "at": 17.3,
    "event": {
     "kind": "node",
     "node": "retrieve"
    }
   },
   {
-   "at": 12.3,
+   "at": 18.5,
    "event": {
     "kind": "node",
     "node": "extract"
    }
   },
   {
-   "at": 13.1,
+   "at": 19.3,
    "event": {
     "kind": "progress",
     "node": "extract",
@@ -190,7 +280,7 @@
    }
   },
   {
-   "at": 13.6,
+   "at": 19.8,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -198,7 +288,7 @@
    }
   },
   {
-   "at": 14.1,
+   "at": 20.3,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -206,7 +296,7 @@
    }
   },
   {
-   "at": 14.6,
+   "at": 20.8,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -214,7 +304,7 @@
    }
   },
   {
-   "at": 15.1,
+   "at": 21.3,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -222,7 +312,7 @@
    }
   },
   {
-   "at": 15.6,
+   "at": 21.8,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -230,7 +320,7 @@
    }
   },
   {
-   "at": 16.1,
+   "at": 22.3,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -238,7 +328,7 @@
    }
   },
   {
-   "at": 16.6,
+   "at": 22.8,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -246,35 +336,35 @@
    }
   },
   {
-   "at": 17.8,
+   "at": 24.0,
    "event": {
     "kind": "node",
     "node": "assess"
    }
   },
   {
-   "at": 19.0,
+   "at": 25.2,
    "event": {
     "kind": "node",
     "node": "apply_revision"
    }
   },
   {
-   "at": 20.2,
+   "at": 26.4,
    "event": {
     "kind": "node",
     "node": "retrieve"
    }
   },
   {
-   "at": 21.4,
+   "at": 27.6,
    "event": {
     "kind": "node",
     "node": "extract"
    }
   },
   {
-   "at": 22.2,
+   "at": 28.4,
    "event": {
     "kind": "progress",
     "node": "extract",
@@ -299,7 +389,7 @@
    }
   },
   {
-   "at": 22.7,
+   "at": 28.9,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -307,7 +397,7 @@
    }
   },
   {
-   "at": 23.2,
+   "at": 29.4,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -315,7 +405,7 @@
    }
   },
   {
-   "at": 23.7,
+   "at": 29.9,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -323,7 +413,7 @@
    }
   },
   {
-   "at": 24.2,
+   "at": 30.4,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -331,7 +421,7 @@
    }
   },
   {
-   "at": 24.7,
+   "at": 30.9,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -339,7 +429,7 @@
    }
   },
   {
-   "at": 25.2,
+   "at": 31.4,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -347,7 +437,7 @@
    }
   },
   {
-   "at": 25.7,
+   "at": 31.9,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -355,7 +445,7 @@
    }
   },
   {
-   "at": 26.2,
+   "at": 32.4,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -363,7 +453,7 @@
    }
   },
   {
-   "at": 26.7,
+   "at": 32.9,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -371,7 +461,7 @@
    }
   },
   {
-   "at": 27.2,
+   "at": 33.4,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -379,14 +469,14 @@
    }
   },
   {
-   "at": 28.4,
+   "at": 34.6,
    "event": {
     "kind": "node",
     "node": "assess"
    }
   },
   {
-   "at": 29.6,
+   "at": 35.8,
    "event": {
     "kind": "node",
     "node": "apply_revision"

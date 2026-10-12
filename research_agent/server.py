@@ -47,10 +47,19 @@ async def agraph():
 # 订阅者：thread_id -> 队列
 _subs: dict[str: set[queue.Queue]] = {}
 
-# 每个 session 的 events 已经推到第几条了。
-# `events` 在 state 里是累加器，run 与 approve 是两段独立的推流，
-# 不记这个数就会在审批后把第一轮的旧事件重发一遍。
-_last_seen: dict[str, int] = {}
+# 每个 session 已经推过的事件指纹集合。
+# `events` 在 state 里是累加器，run 与 approve 是两段独立推流，
+# 不记就会在审批后重发旧事件；用**内容指纹**而不是索引游标——
+# 游标会被跨节点的累计长度带偏，把后续增量整段吞掉（2026-10-12 修）。
+_last_seen: dict[str, set] = {}
+
+
+def _event_key(ev: dict) -> str:
+    """事件指纹：同一个事件重复推时能被认出来。"""
+    try:
+        return json.dumps(ev, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        return repr(ev)
 
 
 def _emit(thread_id: str, event: dict) -> None:
@@ -266,29 +275,31 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
             "cost_tokens": out.get("cost_tokens"),
         }})
 
-    seen = 0
-
     async def _task_stream() -> None:
         """astream 路径：每个节点更新到达就推事件。
 
         **`events` 是累加器**（`state.py` 里 `Annotated[list, operator.add]`），
-        所以每次拿到的都是**迄今全部**事件——必须自己算增量，
+        所以每次拿到的都是**迄今全部**事件——要去重，
         否则同一个事件会被反复推，前端看到一堆重复。
         """
-        nonlocal seen
-        seen = 0
+        seen_keys: set[str] = set()
         try:
             async for update in (await agraph()).astream(inp, config=cfg, stream_mode="updates"):
                 for node, delta in (update or {}).items():
                     if not isinstance(delta, dict):
                         continue
                     _emit(sid, {"kind": "node", "node": node})
-                    evs = delta.get("events") or []
-                    # 一个节点更新里可能有多个 events；按 seen 偏移切出新增部分
-                    if len(evs) > seen:
-                        for e in evs[seen:]:
-                            _emit(sid, {"kind": "progress", "node": node, "event": e})
-                    seen = len(evs)
+                    # ⚠️ 用**内容指纹**去重，不用索引游标（2026-10-12 修）。
+                    # `events` 是累加器，每个 delta 都是「迄今全部」；
+                    # 多节点轮流推时游标会被推到比某节点实际长度更靠后，
+                    # 那之后的增量被整段吞掉——症状是「node 有 retrieve，
+                    # 但它的事件一条都没推」。
+                    for e in delta.get("events") or []:
+                        k = _event_key(e)
+                        if k in seen_keys:
+                            continue
+                        seen_keys.add(k)
+                        _emit(sid, {"kind": "progress", "node": node, "event": e})
             # 收尾：astream 迭代完拿不到最终 state，用 checkpointer 读
             st = graph().get_state(cfg)
             _finish(dict(st.values or {}))
@@ -296,7 +307,7 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
             _emit(sid, {"kind": "error", "error": f"{type(e).__name__}: {e}"})
         finally:
             _subs.get(sid, set()).discard(q)
-            _last_seen[sid] = seen
+            _last_seen[sid] = seen_keys
 
     def _task_plain() -> None:
         """原来的 invoke 路径，保留作回退。"""
@@ -391,21 +402,22 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
     cmd = Command(resume={"approved": body.approved,
                           "approved_recalled_ids": body.approved_recalled_ids})
     # 上一次 run 推到哪了——续跑要接着往后推，否则会把旧事件重发一遍
-    seen = _last_seen.get(sid, 0)
+    seen_keys = _last_seen.get(sid) or set()
 
     async def _go_stream() -> None:
-        nonlocal seen
+        nonlocal seen_keys
         try:
             async for update in (await agraph()).astream(cmd, config=cfg, stream_mode="updates"):
                 for node, delta in (update or {}).items():
                     if not isinstance(delta, dict):
                         continue
                     _emit(sid, {"kind": "node", "node": node})
-                    evs = delta.get("events") or []
-                    if len(evs) > seen:
-                        for e in evs[seen:]:
-                            _emit(sid, {"kind": "progress", "node": node, "event": e})
-                    seen = len(evs)
+                    for e in delta.get("events") or []:
+                        k = _event_key(e)
+                        if k in seen_keys:
+                            continue
+                        seen_keys.add(k)
+                        _emit(sid, {"kind": "progress", "node": node, "event": e})
             st = graph().get_state(cfg)
             out = dict(st.values or {})
             _emit(sid, {"kind": "done", "state": {
@@ -417,7 +429,7 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
         except Exception as e:
             _emit(sid, {"kind": "error", "error": f"{type(e).__name__}: {e}"})
         finally:
-            _last_seen[sid] = seen
+            _last_seen[sid] = seen_keys
 
     def _go_plain() -> None:
         try:
