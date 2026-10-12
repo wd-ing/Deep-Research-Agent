@@ -35,6 +35,7 @@ from langgraph.graph import END, START, StateGraph
 from .nodes import (
     node_apply_revision, node_assess, node_await_approval, node_extract,
     node_finalize, node_outline, node_probe, node_retrieve, node_write,
+    node_summary,
     route_after_assess, route_after_revision,
 )
 from .state import ResearchState
@@ -55,6 +56,7 @@ def build_graph(checkpointer):
     g.add_node("apply_revision", node_apply_revision)
     g.add_node("write", node_write)
     g.add_node("finalize", node_finalize)
+    g.add_node("summary", node_summary)
 
     g.add_edge(START, "probe")
     g.add_edge("probe", "outline")
@@ -74,7 +76,11 @@ def build_graph(checkpointer):
     )
     g.add_edge("await_approval", "assess")      # 审批完立刻回裁判，不白跑一轮
     g.add_edge("write", "finalize")
-    g.add_edge("finalize", END)
+    # 摘要放在 finalize **之后**：报告要先落库，摘要才有东西可读。
+    # 它是独立的节点而不是 finalize 内部的一步——失败只发事件不上抛，
+    # 绝不能因为一次限流把已经写完的研究判成失败。
+    g.add_edge("finalize", "summary")
+    g.add_edge("summary", END)
 
     return g.compile(checkpointer=checkpointer)
 

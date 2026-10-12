@@ -41,6 +41,8 @@ function SessionRow({
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(s.title ?? '')
   const [moveAt, setMoveAt] = useState<HTMLElement | null>(null)
+  /** 摘要的要点/缺口是否展开。默认收起——列表要能扫。 */
+  const [showSum, setShowSum] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -91,6 +93,46 @@ function SessionRow({
             <span>{ago(s.created_at)}</span>
           </div>
         </button>
+      )}
+
+      {/* 摘要：这一条就是「不用点进报告就知道讲了什么」的兑现处。
+          ⚠️ 展开按钮是外层按钮的**兄弟**而不是子节点——
+          塞进去就成了 <button> 套 <button>，非法 HTML，点击行为不可靠。
+          只显示 `summary` 一行；要点和缺口点了才展开——列表要能扫。 */}
+      {!editing && s.summary?.summary && (
+        <div className="pl-3">
+          <button
+            onClick={() => setShowSum((v) => !v)}
+            className="block w-full text-left text-[11px] leading-snug text-muted hover:text-ink"
+            title={s.summary.summary}
+          >
+            <span className="mr-1 inline-block w-2 align-middle text-gray-400">
+              {showSum ? '▾' : '▸'}
+            </span>
+            {s.summary.summary}
+          </button>
+          {showSum && (
+            <div className="mt-1 space-y-1 border-l border-line pl-2 text-[11px] leading-snug">
+              {(s.summary.key_points ?? []).map((p, i) => (
+                <div key={i} className="flex gap-1 text-muted">
+                  <span className="shrink-0 text-gray-400">·</span>
+                  <span className="min-w-0">{p}</span>
+                </div>
+              ))}
+              {(s.summary.gaps ?? []).length > 0 && (
+                <div className="mt-1.5 border-t border-line pt-1">
+                  <div className="mb-0.5 text-[10px] text-gray-400">没答上的</div>
+                  {(s.summary.gaps ?? []).map((g, i) => (
+                    <div key={i} className="flex gap-1 text-amber-700">
+                      <span className="shrink-0">?</span>
+                      <span className="min-w-0">{g}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       )}
 
       {/* 操作按钮：hover / 聚焦时才出现，键盘用户用 focus-within 也能拿到 */}

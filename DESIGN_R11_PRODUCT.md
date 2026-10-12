@@ -237,14 +237,30 @@ ALTER TABLE session ADD COLUMN folder_id TEXT REFERENCES folder(id);
 ### 5.5 新增 LLM stage
 
 ```yaml
-# config/models.yaml
+# config/models.yaml（2026-10-12 实测落地）
 session_summary:
-  max_output_tokens: 512
-  reasoning_effort: null      # 省略 = 关思考（同 xj189 的约定）
+  provider: xj189
+  temperature: 0.0
+  max_output_tokens: 4096      # 不是 512：guard 翻倍要有余地
+  guard: { max_reasoning_ratio: 0.5, retry_on_empty: 1, max_output_tokens: 8192 }
+                              # ⚠️ 这里**不写** reasoning_effort，省略才是关思考
 ```
 
 ⚠️ **必须关思考**：这是纯改写任务，思考只会吃预算——
-这正是 `optmization_log` 里记的「thinking 吃光输出预算」失效模式。
+这正是 `OPTIMIZATION_LOG` 里记的「thinking 吃光输出预算」失效模式。
+
+**实测（v5 真实报告 23,130 字）**：3.5 秒、prompt 13,120 token、
+输出 214 token。相对 v5 的 466k 占 **2.8%**（本文原先估 1.7%，
+低估了——中文约 1.8 字/token，8k 的估算偏乐观）。
+
+**验证「思考真的关了」不能用自己的 delta 钩子**：钩子只在流式路径触发，
+而这个 stage 没开 `stream`，量出来永远是 0（假阴性）。
+正确做法是直连平台读原始响应 + 拿 `write_plan`（high）做反向对照。
+详见 `HANDOVER.md` 坑 16。
+
+**实现要点**：做成独立图节点 `finalize → summary → END`；
+**摘要失败只发事件、不上抛**——报告已落库，不能因一次限流把整场研究判失败；
+已有摘要则跳过（图可能被重入）。
 
 ---
 
@@ -345,7 +361,7 @@ CREATE TABLE ignored_source (
 |---|---|---|---|
 | **1. 会话管理** | 软删除 + 回收站、改名、移动、搜索 | 加 `deleted_at` 列 + PATCH 端点 | ✅ 2026-10-12 完成 |
 | **2. 文件夹** | 建表 + 管理 UI + 会话归类 | 加 `folder_id` 列 | ✅ 2026-10-12 完成 |
-| **3. 会话摘要** | 新 stage + 写完时生成 + 列表显示 | 新 LLM stage 配置 | ⬜ |
+| **3. 会话摘要** | 新 stage + 写完时生成 + 列表显示 | 新 LLM stage 配置 | ✅ 2026-10-12 完成 |
 | **4. 来源库** | 全库视图 + 按性质分组 + 引用数 | 加查询端点 | ⬜ |
 | **5. 排除来源** | 标记 + 三处显示 | 加 `ignored_source` 表 | ⬜ |
 

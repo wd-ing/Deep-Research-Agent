@@ -1338,3 +1338,89 @@ def node_finalize(state: ResearchState) -> dict:
             "cost_tokens": cost,
         }],
     }
+
+
+# ---- 会话摘要（产品化阶段 3）----
+
+
+def node_summary(state: ResearchState) -> dict:
+    """报告写完后生成一份结构化摘要，存进 `session.summary_json`。
+
+    **为什么是独立的图节点，而不是塞进 `node_finalize`**：
+    finalize 是「向量化 + 回写成本」，职责是确定性的数据库操作；
+    摘要是一次外部 LLM 调用，性质完全不同，混在一起会让 finalize
+    既可能因 LLM 失败而整体失败，又没法单独给摘要配 stage。
+
+    **摘要失败绝不能让整场研究失败**（`except` 兜住后只发一条事件）：
+    到这一步报告已经落库、状态已经是 done，成果全在。
+    因为一次限流或超时把整场 40 分钟的研究判失败，是不可接受的。
+
+    **已经有摘要就跳过**：图可能被重入（approve 后续跑、状态重放），
+    重跑一次要多花一次 8k 输入 token，而结果不会有变化。
+
+    引用标记 `[S2·1]` **故意保留**：它让摘要里的数字可溯源，
+    几百个标记对上下文长度的影响可以忽略。
+    """
+    repo = get_repo()
+    sid = state["session_id"]
+
+    # 从库里读而不是从 state 读：report_markdown 由 write 子图写入，
+    # 这里直接读已落库的那份，和前端看到的完全一致。
+    rep = repo.q1("SELECT markdown FROM report WHERE session_id=?", (sid,))
+    if not rep or not (rep["markdown"] or "").strip():
+        return {"events": [{"kind": "summary", "skipped": "no report"}]}
+
+    done = repo.q1("SELECT summary_json FROM session WHERE id=?", (sid,))
+    if done and done["summary_json"]:
+        return {"events": [{"kind": "summary", "skipped": "already has summary"}]}
+
+    question = state.get("question") or repo.q1(
+        "SELECT question FROM session WHERE id=?", (sid,))["question"]
+    body = rep["markdown"]
+
+    t0 = time.time()
+    try:
+        data = LLM.complete_json(
+            "session_summary",
+            f"研究问题：{question}\n\n报告正文：\n{body}",
+            system=prompts.SESSION_SUMMARY,
+        )
+    except Exception as e:
+        # 见上面的说明：这里**不重试也不上抛**。摘要只是锦上添花。
+        print(f"⚠️  [session_summary] 失败（不影响研究结果）: {str(e)[:160]}", flush=True)
+        return {"events": [{"kind": "summary", "ok": False,
+                            "error": f"{type(e).__name__}: {str(e)[:200]}"}]}
+
+    out = _clean_summary(data)
+    if not out["summary"]:
+        return {"events": [{"kind": "summary", "ok": False, "error": "空摘要"}]}
+
+    repo.set_summary(sid, out)
+    ev = {"kind": "summary", "ok": True, "chars": len(out["summary"]),
+          "points": len(out["key_points"]), "gaps": len(out["gaps"]),
+          "elapsed_s": round(time.time() - t0, 1)}
+    return {"events": [ev]}
+
+
+def _clean_summary(data: Any) -> dict:
+    """把模型返回整成固定形状。**字段不可信，逐个收窄。**
+
+    模型可能少给字段、给成字符串、给成嵌套对象，或者 `key_points`
+    里塞进一整段话。列表是直接渲染到 UI 上的，不收窄就会炸版面。
+    """
+    if not isinstance(data, dict):
+        return {"summary": "", "key_points": [], "gaps": []}
+
+    def _one_line(v: Any, limit: int) -> str:
+        return re.sub(r"\s+", " ", str(v)).strip()[:limit]
+
+    def _list(v: Any, limit: int, each: int) -> list[str]:
+        if not isinstance(v, list):
+            return []
+        return [_one_line(x, each) for x in v[:limit] if isinstance(x, (str, int, float))]
+
+    return {
+        "summary": _one_line(data.get("summary") or "", 120),
+        "key_points": _list(data.get("key_points"), 6, 160),
+        "gaps": _list(data.get("gaps"), 5, 160),
+    }

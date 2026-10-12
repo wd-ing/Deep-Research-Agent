@@ -61,7 +61,10 @@ function s(e: ProgressEvent, k: string): string | undefined {
 /** 当前节点属于哪个大环节。`assess`/`apply_revision` 都算规划。 */
 function phaseOf(node: string | null, view: string): PhaseName {
   if (view === 'awaiting') return '审批'
-  if (node === 'write' || node === 'finalize') return node === 'finalize' ? '收尾' : '写作'
+  // ⚠️ `summary` 必须跟 `finalize` 同属「收尾」——
+  // 漏了它会 fall through 到「规划」，收尾时环节高亮闪回规划。
+  if (node === 'write' || node === 'finalize' || node === 'summary')
+    return node === 'write' ? '写作' : '收尾'
   return '规划'
 }
 
@@ -154,6 +157,18 @@ function toStep(e: ProgressEvent, seq: number): Step | null {
         detail: [
           ...(s(e, 'spec_uncertainty') ? [`规约存疑：${s(e, 'spec_uncertainty')}`] : []),
         ],
+      }
+    case 'summary':
+      // 摘要成功不占版面（4 秒的活儿，用户不需要盯着）；
+      // `skipped`（没报告 / 已有摘要）也是正常的。
+      // 但**失败要报**——否则用户回列表发现没有摘要，不知道出了什么事。
+      // 这与 write_audit_error 是同一个约定：只显示出问题的那次。
+      if (e.ok !== false) return null
+      return {
+        id, label: '生成会话摘要',
+        summary: '环节失败，列表里不会有摘要',
+        warn: true,
+        detail: [s(e, 'error') ?? ''].filter(Boolean),
       }
     default:
       return null
