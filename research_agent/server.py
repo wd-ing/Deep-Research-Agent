@@ -91,19 +91,157 @@ def create_session(body: CreateIn) -> dict:
 
 
 @app.get("/api/sessions")
-def list_sessions(archived: str | None = None) -> list[dict]:
+def list_sessions(
+    archived: str | None = None,
+    deleted: str | None = None,
+    folder_id: str | None = None,
+    q: str | None = None,
+) -> list[dict]:
+    """列会话。
+
+    ⚠️ **`deleted_at IS NULL` 是硬过滤**（2026-10-12 加）——
+    软删除的会话默认不出现，回收站视图才看得见。
+    漏了这一句会出现「删了还在列表里」。
+
+    `folder_id` 支持传空串表示「未分类」（folder_id IS NULL）。
+    """
+    import json as _json
     repo = get_repo()
-    if archived == "1":
-        rows = repo.q(
-            "SELECT id,title,question,status,cost_tokens,created_at,archived_at "
-            "FROM session WHERE archived_at IS NOT NULL ORDER BY archived_at DESC"
-        )
+    where, params = ["1=1"], []
+    if deleted == "1":
+        where.append("deleted_at IS NOT NULL")
     else:
-        rows = repo.q(
-            "SELECT id,title,question,status,cost_tokens,created_at,archived_at "
-            "FROM session ORDER BY created_at DESC"
-        )
-    return [dict(r) for r in rows]
+        where.append("deleted_at IS NULL")
+    if archived == "1":
+        where.append("archived_at IS NOT NULL")
+    elif archived == "0":
+        where.append("archived_at IS NULL")
+    if folder_id == "":
+        where.append("folder_id IS NULL")
+    elif folder_id:
+        where.append("folder_id=?")
+        params.append(folder_id)
+    if q:
+        where.append("(title LIKE ? OR question LIKE ?)")
+        params += [f"%{q}%", f"%{q}%"]
+    order = "archived_at DESC, created_at DESC" if archived == "1" else "created_at DESC"
+    rows = repo.q(
+        "SELECT id,title,question,status,cost_tokens,created_at,archived_at,"
+        "       deleted_at,folder_id,summary_json FROM session "
+        f"WHERE {' AND '.join(where)} ORDER BY {order}", tuple(params))
+    out = []
+    for r in rows:
+        d = dict(r)
+        raw = d.pop("summary_json", None)
+        try:
+            d["summary"] = _json.loads(raw) if raw else None
+        except Exception:
+            d["summary"] = None
+        out.append(d)
+    return out
+
+
+@app.patch("/api/sessions/{sid}")
+def patch_session(sid: str, body: dict) -> dict:
+    """改名 / 移文件夹 / 归档或取消归档。字段任选，都可省略。"""
+    repo = get_repo()
+    if not repo.q1("SELECT 1 FROM session WHERE id=?", (sid,)):
+        raise HTTPException(404, "会话不存在")
+    fields = {k: body[k] for k in ("title", "folder_id", "archived") if k in body}
+    if not fields:
+        raise HTTPException(400, "没有可改的字段")
+    repo.update_session(sid, **fields)
+    return {"ok": True, "changed": sorted(fields)}
+
+
+@app.delete("/api/sessions/{sid}")
+def delete_session(sid: str) -> dict:
+    """移到回收站（软删除）。报告 / 来源 / 段**一律留着**。"""
+    repo = get_repo()
+    s = repo.q1("SELECT deleted_at FROM session WHERE id=?", (sid,))
+    if not s:
+        raise HTTPException(404, "会话不存在")
+    if s["deleted_at"]:
+        return {"ok": True, "already": "in_trash"}
+    n_src = repo.q1("SELECT COUNT(*) AS c FROM source WHERE session_id=?", (sid,))["c"]
+    n_seg = repo.q1("SELECT COUNT(*) AS c FROM chunk WHERE session_id=?", (sid,))["c"]
+    has_rep = bool(repo.q1("SELECT 1 FROM report WHERE session_id=?", (sid,)))
+    repo.soft_delete_session(sid)
+    return {"ok": True, "moved_to": "trash",
+            "will_remove": {"report": has_rep, "sources": n_src, "segments": n_seg},
+            "note": "可在回收站恢复"}
+
+
+@app.post("/api/sessions/{sid}/restore")
+def restore_session(sid: str) -> dict:
+    repo = get_repo()
+    if not repo.q1("SELECT 1 FROM session WHERE id=?", (sid,)):
+        raise HTTPException(404, "会话不存在")
+    repo.restore_session(sid)
+    return {"ok": True}
+
+
+@app.delete("/api/sessions/{sid}/purge")
+def purge_session(sid: str) -> dict:
+    """真删，不可恢复。回收站「清空」用。"""
+    repo = get_repo()
+    if not repo.q1("SELECT 1 FROM session WHERE id=?", (sid,)):
+        raise HTTPException(404, "会话不存在")
+    repo.purge_session(sid)
+    return {"ok": True, "purged": True,
+            "note": "报告、来源、段落已随外键级联删除，不可恢复"}
+
+
+@app.get("/api/trash")
+def list_trash() -> list[dict]:
+    return list_sessions(deleted="1")
+
+
+@app.get("/api/folders")
+def list_folders() -> list[dict]:
+    """文件夹树 + 每层会话数，末尾附「未分类」。"""
+    return get_repo().folders_with_counts()
+
+
+class FolderIn(BaseModel):
+    name: str = Field(min_length=1)
+    parent_id: str | None = None
+
+
+@app.post("/api/folders")
+def create_folder(body: FolderIn) -> dict:
+    return {"folder_id": get_repo().create_folder(body.name, body.parent_id)}
+
+
+class FolderPatch(BaseModel):
+    name: str | None = None
+    parent_id: str | None = None
+
+
+@app.patch("/api/folders/{fid}")
+def patch_folder(fid: str, body: FolderPatch) -> dict:
+    repo = get_repo()
+    if not repo.q1("SELECT 1 FROM folder WHERE id=?", (fid,)):
+        raise HTTPException(404, "文件夹不存在")
+    try:
+        if body.name is not None:
+            repo.rename_folder(fid, body.name)
+        if body.parent_id is not None or "parent_id" in body.model_fields_set:
+            repo.move_folder(fid, body.parent_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.delete("/api/folders/{fid}")
+def delete_folder(fid: str) -> dict:
+    """删文件夹（连同子文件夹）。里面的会话移到「未分类」，不删。"""
+    repo = get_repo()
+    if not repo.q1("SELECT 1 FROM folder WHERE id=?", (fid,)):
+        raise HTTPException(404, "文件夹不存在")
+    moved = repo.delete_folder(fid)
+    return {"ok": True, "sessions_moved": moved,
+            "note": "文件夹内的会话已移到「未分类」" if moved else ""}
 
 
 @app.get("/api/sessions/{sid}")

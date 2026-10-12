@@ -147,7 +147,13 @@ class Repo:
                (status, now(), session_id))
 
     def archive_session(self, session_id: str) -> None:
-        """显式归档。只有归档后的会话才进入历史检索。"""
+        """归档：标记为「值得留」，从默认列表里收起来。
+
+        ⚠️ 语义在 2026-10-12 变过。原来注释写的是「只有归档后的会话才
+        进入历史检索」——但跨会话召回已经砍掉了（用户决定聚焦检索写作），
+        归档现在**纯粹是整理动作**：不删除、不影响任何下游逻辑。
+        别再给它加功能了。
+        """
         t = now()
         self.x(
             "UPDATE session SET archived_at=?, status='archived', updated_at=? WHERE id=?",
@@ -157,6 +163,132 @@ class Repo:
     def add_cost(self, session_id: str, tokens: int) -> None:
         self.x("UPDATE session SET cost_tokens = cost_tokens + ?, updated_at=? WHERE id=?",
                (tokens, now(), session_id))
+
+    # ---------- 会话管理（2026-10-12 产品化） ----------
+
+    def update_session(self, session_id: str, **fields) -> None:
+        """改会话的展示属性。**白名单字段**，不接受任意列名。
+
+        只开放 title / folder_id / archived 三样：它们是纯展示属性，
+        误传 status 或 cost_tokens 之类会直接写坏数据。
+        """
+        allowed = {"title": "title", "folder_id": "folder_id",
+                   "archived": None}          # None = 走专用分支
+        sets, params = [], []
+        for k, v in fields.items():
+            if k == "archived":
+                # 归档是可逆的：给了 bool 就设/清 archived_at 与 status
+                t = now()
+                if v:
+                    sets += ["archived_at=?", "status='archived'"]
+                    params.append(t)
+                else:
+                    sets += ["archived_at=NULL",
+                             "status=CASE WHEN status='archived' THEN 'done' "
+                             "ELSE status END"]
+                continue
+            col = allowed.get(k)
+            if not col:
+                continue
+            sets.append(f"{col}=?")
+            params.append(v)
+        if not sets:
+            return
+        sets.append("updated_at=?")
+        params.append(now())
+        params.append(session_id)
+        self.x(f"UPDATE session SET {', '.join(sets)} WHERE id=?", tuple(params))
+
+    def soft_delete_session(self, session_id: str) -> None:
+        """移到回收站。**报告 / 来源 / 段一律不动**（用户 2026-10-12 定）。
+
+        真删会级联掉报告、来源、段落，而误删是最容易发生的损失。
+        软删除只是一列，恢复后完整回来。
+        """
+        self.x("UPDATE session SET deleted_at=?, updated_at=? WHERE id=?",
+               (now(), now(), session_id))
+
+    def restore_session(self, session_id: str) -> None:
+        self.x("UPDATE session SET deleted_at=NULL, updated_at=? WHERE id=?",
+               (now(), session_id))
+
+    def purge_session(self, session_id: str) -> None:
+        """真删（清空回收站用）。级联删掉报告/来源/段，靠的是外键 ON DELETE CASCADE。"""
+        self.x("DELETE FROM session WHERE id=?", (session_id,))
+
+    def set_summary(self, session_id: str, summary: dict) -> None:
+        import json
+        self.x("UPDATE session SET summary_json=?, updated_at=? WHERE id=?",
+               (json.dumps(summary, ensure_ascii=False), now(), session_id))
+
+    # ---------- 文件夹 ----------
+
+    def create_folder(self, name: str, parent_id: str | None = None) -> str:
+        fid = new_id("f_")
+        t = now()
+        mx = self.q1(
+            "SELECT COALESCE(MAX(sort_order), 0) AS m FROM folder "
+            "WHERE parent_id IS ?", (parent_id,))
+        nxt = (mx["m"] if mx else 0) + 1
+        self.x("INSERT INTO folder (id,name,parent_id,sort_order,created_at) "
+               "VALUES (?,?,?,?,?)", (fid, name, parent_id, nxt, t))
+        return fid
+
+    def rename_folder(self, folder_id: str, name: str) -> None:
+        self.x("UPDATE folder SET name=? WHERE id=?", (name, folder_id))
+
+    def delete_folder(self, folder_id: str) -> int:
+        """删文件夹，里面的会话**移到未分类**（folder_id=NULL），不连带删。
+
+        ⚠️ 子文件夹也要一并删掉（`ON DELETE SET NULL` 只会把它们挂成孤儿，
+        parent_id 指向已删除的行，**树就断了**）——2026-10-12 实测发现。
+        所以这里先递归收集整棵子树再删。
+        返回被移出（会话）的数量，给接口层报给用户听。
+        """
+        n = self.q1("SELECT COUNT(*) AS c FROM session WHERE folder_id=?",
+                    (folder_id,))
+        for fid in self._subtree(folder_id):
+            self.x("DELETE FROM folder WHERE id=?", (fid,))
+        return int(n["c"] if n else 0)
+
+    def _subtree(self, root: str) -> list[str]:
+        """root 及其全部子孙的 id。逐层展开而不是递归 SQL（SQLite 不支持）。"""
+        out, frontier = [root], [root]
+        while frontier:
+            rows = self.q(
+                f"SELECT id FROM folder WHERE parent_id IN "
+                f"({','.join('?' * len(frontier))})", tuple(frontier))
+            frontier = [r["id"] for r in rows if r["id"] not in out]
+            out.extend(frontier)
+        return out
+
+    def move_folder(self, folder_id: str, parent_id: str | None) -> None:
+        """移动文件夹。**防自环**：把文件夹拖进自己的子孙里会让树断掉。"""
+        if parent_id:
+            seen = {folder_id}
+            cur = parent_id
+            while cur:
+                if cur in seen:
+                    raise ValueError("不能把文件夹移进它自己的子文件夹")
+                seen.add(cur)
+                row = self.q1("SELECT parent_id FROM folder WHERE id=?", (cur,))
+                cur = (row["parent_id"] if row else None)
+        self.x("UPDATE folder SET parent_id=? WHERE id=?", (parent_id, folder_id))
+
+    def folders_with_counts(self) -> list[dict]:
+        """文件夹树 + 每个文件夹里有多少场会话（含未分类）。"""
+        rows = self.q(
+            "SELECT f.id, f.name, f.parent_id, f.sort_order, "
+            "  (SELECT COUNT(*) FROM session s "
+            "   WHERE s.folder_id=f.id AND s.deleted_at IS NULL) AS sessions "
+            "FROM folder f ORDER BY f.sort_order, f.created_at"
+        )
+        out = [dict(r) for r in rows]
+        loose = self.q1("SELECT COUNT(*) AS c FROM session "
+                        "WHERE folder_id IS NULL AND deleted_at IS NULL")
+        out.append({"id": None, "name": "未分类", "parent_id": None,
+                    "sort_order": 9999, "sessions": int(loose["c"] if loose else 0)})
+        return out
 
     # ---------- 报告 ----------
 
@@ -302,6 +434,24 @@ class Repo:
                         (session_id, row["id"], now()),
                     )
             self.conn.commit()
+
+    # ---------- 无用来源排除 ----------
+
+    def ignore_source(self, source_id: str, reason: str = "") -> None:
+        """标记来源为无用。
+
+        为什么需要它：实测库里混进了一条 VRPorn.com（与固态电池毫无关系）
+        却通过了 relevance 闸门。闸门是 prompt 层判断，调它风险大；
+        这里做**产品层兜底**——用户自己判断，报告里提示被引用的已排除来源。
+        """
+        self.x("INSERT OR IGNORE INTO ignored_source (source_id, reason, ignored_at) "
+               "VALUES (?,?,?)", (source_id, reason or "", now()))
+
+    def unignore_source(self, source_id: str) -> None:
+        self.x("DELETE FROM ignored_source WHERE source_id=?", (source_id,))
+
+    def ignored_source_ids(self) -> set[str]:
+        return {r["source_id"] for r in self.q("SELECT source_id FROM ignored_source")}
 
     def topics_of(self, session_id: str) -> list[str]:
         rows = self.q(
