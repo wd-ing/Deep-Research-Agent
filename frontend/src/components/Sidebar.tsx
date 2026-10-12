@@ -186,7 +186,7 @@ function SessionRow({
 
 export function Sidebar({
   list, trash, cur, folders, onPick, onChanged, onNew, pane, onPane,
-  lib, srcQuery, onSrcQuery, srcCur, onPickSource,
+  lib, srcQuery, onSrcQuery, srcCur, onPickSource, onIgnoreSource,
 }: {
   list: SessionSummary[]
   /** 回收站内容。来自 `/api/trash`——不在 `list` 里（那边硬过滤 deleted_at）。 */
@@ -204,6 +204,7 @@ export function Sidebar({
   onSrcQuery: (v: string) => void
   srcCur: string | null
   onPickSource: (id: string) => void
+  onIgnoreSource: (id: string, ignore: boolean, reason: string) => void
 }) {
   const [filter, setFilter] = useState<Filter>('all')
   const [q, setQ] = useState('')
@@ -267,6 +268,8 @@ export function Sidebar({
         <SourceList
           lib={lib} q={srcQuery} onQuery={onSrcQuery}
           cur={srcCur} onPick={onPickSource}
+          onIgnore={(id, reason) => onIgnoreSource(id, true, reason)}
+          onUnignore={(id) => onIgnoreSource(id, false, '')}
         />
       ) : (
         <>

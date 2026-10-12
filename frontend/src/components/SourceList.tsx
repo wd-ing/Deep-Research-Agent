@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
-import type { SourceLibrary as Lib } from '../types'
+import type { SourceLibrary as Lib, SourceLibItem } from '../types'
 import { NatureBadge } from './SegDrawer'
+import { ConfirmDialog } from './ConfirmDialog'
 
 /** 来源库列表（侧栏）。
  *
@@ -10,15 +11,19 @@ import { NatureBadge } from './SegDrawer'
  *  「先看一手再看社区」这个顺序不该变。
  */
 export function SourceList({
-  lib, q, onQuery, cur, onPick,
+  lib, q, onQuery, cur, onPick, onIgnore, onUnignore,
 }: {
   lib: Lib | null
   q: string
   onQuery: (v: string) => void
   cur: string | null
   onPick: (id: string) => void
+  onIgnore: (id: string, reason: string) => void
+  onUnignore: (id: string) => void
 }) {
   const [closed, setClosed] = useState<Set<string>>(new Set())
+  const [marking, setMarking] = useState<SourceLibItem | null>(null)
+  const [reason, setReason] = useState('')
 
   const groups = useMemo(() => {
     if (!lib) return []
@@ -44,6 +49,7 @@ export function SourceList({
   }
 
   const shown = groups.filter((g) => g.items.length > 0)
+  const nIgnored = lib.sources.filter((s) => s.ignored).length
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -58,6 +64,8 @@ export function SourceList({
           <span>{lib.total} 个来源</span>
           <span>{lib.segments} 段</span>
           <span>{lib.citations} 处引用</span>
+          {/* 没有就完全不出现——`⚠ 只在需要用户判断时出现` */}
+          {nIgnored > 0 && <span className="text-amber-600">{nIgnored} 个已排除</span>}
         </div>
       </div>
 
@@ -83,34 +91,60 @@ export function SourceList({
               </button>
 
               {!isClosed && g.items.map((s) => (
-                <button
+                // ⚠️ 行容器不能是 <button>：里面还要放「标记排除 / 恢复」按钮，
+                // <button> 套 <button> 是非法 HTML，浏览器会把内层拆出来导致布局错乱。
+                <div
                   key={s.id}
-                  onClick={() => onPick(s.id)}
                   className={[
-                    'group/src mb-0.5 block w-full rounded-md px-2 py-1.5 text-left transition-colors',
+                    'group/src relative mb-0.5 rounded-md transition-colors',
+                    s.ignored ? 'bg-gray-50 opacity-60' : '',
                     s.id === cur ? 'bg-white shadow-sm ring-1 ring-line'
                                   : 'hover:bg-white',
                   ].join(' ')}
                 >
-                  <div className="line-clamp-2 text-[12px] leading-snug text-ink">
-                    {s.title || '(无标题)'}
-                  </div>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[10px] text-muted">
-                    <span className="max-w-[9rem] truncate">{s.domain}</span>
-                    {s.source_date && <span>{s.source_date.slice(0, 10)}</span>}
-                    <span>{s.segments} 段</span>
-                    {s.citations > 0
-                      ? <span className="text-accent">{s.citations} 处引用</span>
-                      : <span className="text-gray-400">未被引用</span>}
-                  </div>
-                  {/* 不在题的来源要标出来——它留了库但没进报告，
-                      「为什么列表里有它却没被引用」这个疑问得有个答案 */}
-                  {!s.on_topic && (
-                    <div className="mt-0.5 text-[10px] text-amber-600">
-                      ⚠ 相关性判定为不在题，未参与报告
+                  <button
+                    onClick={() => onPick(s.id)}
+                    className="block w-full px-2 py-1.5 pr-7 text-left"
+                  >
+                    <div className="line-clamp-2 text-[12px] leading-snug text-ink">
+                      {s.title || '(无标题)'}
                     </div>
-                  )}
-                </button>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[10px] text-muted">
+                      <span className="max-w-[9rem] truncate">{s.domain}</span>
+                      {s.source_date && <span>{s.source_date.slice(0, 10)}</span>}
+                      <span>{s.segments} 段</span>
+                      {s.citations > 0
+                        ? <span className="text-accent">{s.citations} 处引用</span>
+                        : <span className="text-gray-400">未被引用</span>}
+                    </div>
+                    {/* 已排除要说清**为什么**，以及排除到底意味着什么——
+                        否则用户以为「标记一下报告里的它就没了」 */}
+                    {s.ignored && (
+                      <div className="mt-0.5 text-[10px] text-amber-700">
+                        ⊘ 已排除{s.ignore_reason ? `：${s.ignore_reason}` : ''}
+                        {s.citations > 0 && '（报告已引用，不会被改写）'}
+                      </div>
+                    )}
+                    {/* 不在题的来源要标出来——它留了库但没进报告，
+                        「为什么列表里有它却没被引用」这个疑问得有个答案 */}
+                    {!s.on_topic && !s.ignored && (
+                      <div className="mt-0.5 text-[10px] text-amber-600">
+                        ⚠ 相关性判定为不在题，未参与报告
+                      </div>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (s.ignored) onUnignore(s.id)
+                      else { setReason(''); setMarking(s) }
+                    }}
+                    title={s.ignored ? '取消排除' : '标记为无用来源'}
+                    aria-label={s.ignored ? `取消排除 ${s.domain}` : `标记 ${s.domain} 为无用来源`}
+                    className="absolute right-1 top-1.5 hidden rounded px-1 text-[11px] text-muted hover:bg-gray-200 hover:text-ink group-hover/src:block"
+                  >
+                    {s.ignored ? '↺' : '⊘'}
+                  </button>
+                </div>
               ))}
             </div>
           )
@@ -122,6 +156,29 @@ export function SourceList({
           </div>
         )}
       </div>
+
+      {marking && (
+        <ConfirmDialog
+          title="标记为无用来源"
+          lines={[
+            `来源：${marking.domain}`,
+            // 只在真的会影响已完成报告时才提——这才是需要用户知道的
+            marking.citations > 0
+              ? `⚠ 报告已经引用了它 ${marking.citations} 处。排除不会改写报告，报告顶部会出现提示条。`
+              : '它没有被任何报告引用，排除不影响已完成的研究。',
+            '来源和段落都会保留，随时可以恢复。',
+          ]}
+          input={{
+            placeholder: '排除原因（可选）',
+            value: reason,
+            onChange: setReason,
+          }}
+          confirmText="标记排除"
+          danger={marking.citations > 0}
+          onCancel={() => setMarking(null)}
+          onConfirm={() => { onIgnore(marking.id, reason.trim()); setMarking(null) }}
+        />
+      )}
     </div>
   )
 }

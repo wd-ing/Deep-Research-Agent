@@ -7,10 +7,11 @@ import { NatureBadge } from './SegDrawer'
  *  所以这里显示的段号可以直接拿去报告里搜，能定位到同一段。
  */
 export function SourceDetail({
-  src, onOpenSession,
+  src, onOpenSession, onToggleIgnore,
 }: {
   src: SourceDetailRow | null
   onOpenSession: (id: string) => void
+  onToggleIgnore: (id: string, ignored: boolean) => void
 }) {
   if (!src) {
     return (
@@ -36,6 +37,11 @@ export function SourceDetail({
               ⚠ 判定为不在题，未参与报告
             </span>
           )}
+          {src.ignored && (
+            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-800">
+              ⊘ 已标记为无用{src.ignore_reason ? `：${src.ignore_reason}` : ''}
+            </span>
+          )}
         </div>
         {src.nature_reason && (
           <p className="mt-2 text-xs leading-relaxed text-muted">
@@ -53,6 +59,13 @@ export function SourceDetail({
           className="mt-2 text-xs text-muted underline decoration-dotted hover:text-ink"
         >
           ← 回到这场研究：{src.session_title.slice(0, 30)}
+        </button>
+        {/* 在详情页也能改判——用户常常是点进来看了正文才决定「这条确实是垃圾」 */}
+        <button
+          onClick={() => onToggleIgnore(src.id, src.ignored)}
+          className="mt-2 ml-3 text-xs text-muted underline decoration-dotted hover:text-ink"
+        >
+          {src.ignored ? '↺ 取消排除' : '⊘ 标记为无用来源'}
         </button>
       </header>
 

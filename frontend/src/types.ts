@@ -98,6 +98,9 @@ export interface SourceMeta {
   url: string
   source_date: string | null
   source_nature: string | null
+  /** 产品化阶段 5：用户把这个来源标记为无用了 */
+  ignored: boolean
+  ignore_reason: string
 }
 
 export interface SegmentRow {
@@ -110,11 +113,22 @@ export interface SegmentRow {
   来源?: SourceMeta
 }
 
+/** 报告里被引用、但已被标记排除的来源（`GET /api/sessions/{id}`）。
+ *  报告写完之后才排除，报告不会被改写——靠这条提示兜底。 */
+export interface IgnoredCitation {
+  id: string
+  domain: string | null
+  title: string | null
+  citations: number
+  reason: string
+}
+
 export interface SessionDetail extends SessionSummary {
   report: string | null
   sources: SourceRow[]
   topics: string[]
   open_contradictions: unknown[]
+  ignored_citations: IgnoredCitation[]
 }
 
 /** 来源库的一条（产品化阶段 4）。字段取自 `GET /api/sources` 的真实返回。 */
@@ -140,8 +154,10 @@ export interface SourceLibItem {
   segments: number
   tokens: number
   citations: number
-  /** 阶段 5 用；本阶段只读不写 */
+  /** 产品化阶段 5：被用户标记为无用 */
   ignored: boolean
+  ignore_reason: string | null
+  ignored_at: string | null
 }
 
 export interface SourceLibrary {
@@ -169,6 +185,9 @@ export interface SourceDetailRow {
   nature_reason: string | null
   char_count: number | null
   on_topic: number
+  ignored: boolean
+  ignore_reason: string | null
+  ignored_at: string | null
   segments: {
     id: string
     ref: string

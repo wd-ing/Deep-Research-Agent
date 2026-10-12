@@ -28,6 +28,17 @@ export function SegDrawer({
               <NatureBadge nature={src.source_nature} />
               <span className="text-muted">{seg.token} token</span>
             </div>
+            {/* 报告已经写完了，排除来源不会回头改写它。
+                用户点开这一段时，是最后一次提醒「这段材料你后来标为不可信」的时机 */}
+            {src.ignored && (
+              <div className="rounded bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800">
+                ⚠ 你已把这个来源标记为无用
+                {src.ignore_reason && `：${src.ignore_reason}`}
+                <div className="mt-0.5 text-amber-700">
+                  报告已写完，不会因此改写——用到这一段的结论请自行复核。
+                </div>
+              </div>
+            )}
             <a href={src.url} target="_blank" rel="noreferrer"
                className="block truncate text-accent underline decoration-dotted">
               {src.url}

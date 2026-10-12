@@ -1,6 +1,7 @@
 import { useMemo, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import type { IgnoredCitation } from '../types'
 
 const REF_RE = /\[(S\d+·\d+)\]/g
 
@@ -38,11 +39,63 @@ function withRefs(children: ReactNode, onRef: (ref: string) => void): ReactNode 
   return children
 }
 
+/** 报告顶部提示条：这份报告引用了已被你标记排除的来源。
+ *
+ *  **这是整个「标记排除」功能最要紧的一处。** 排除发生在报告写完之后，
+ *  报告不会被改写——所以用户必须知道，报告里有一部分材料的来源
+ *  他后来标成了不可信。不提示就是让不可信结论悄悄留在那里。
+ *
+ *  报告有 2 万字，提示条若只挂在正文最上方，用户滚到中段读到那些
+ *  段落时就看不见了，所以 `sticky` 常驻在滚动容器顶部。
+ */
+function IgnoredBanner({
+  items, onOpenSource,
+}: {
+  items: IgnoredCitation[]
+  onOpenSource: (id: string) => void
+}) {
+  if (!items.length) return null
+  const total = items.reduce((a, x) => a + x.citations, 0)
+  return (
+    <div className="sticky top-0 z-10 mb-5 rounded-md border border-amber-300 bg-amber-50 px-3.5 py-2.5">
+      <div className="text-[13px] font-medium leading-relaxed text-amber-900">
+        ⚠ 本报告引用了 {items.length} 个已排除的来源
+        <span className="font-normal">（共 {total} 处引用）：</span>
+        {items.map((it, i) => (
+          <span key={it.id}>
+            {i > 0 && '、'}
+            <button
+              onClick={() => onOpenSource(it.id)}
+              title={it.reason ? `排除原因：${it.reason}` : '在来源库中查看'}
+              className="underline decoration-dotted underline-offset-2 hover:text-amber-700"
+            >
+              {it.domain || '(无域名)'}
+            </button>
+          </span>
+        ))}
+      </div>
+      <p className="mt-1 text-[11px] leading-relaxed text-amber-800">
+        排除发生在报告写完之后，<b>报告不会被改写</b>。这些材料你后来标为不可信，
+        引用处的结论请自行复核；点来源名可直接查看。
+      </p>
+      {items.some((x) => x.reason) && (
+        <ul className="mt-1 space-y-0.5 text-[11px] text-amber-700">
+          {items.filter((x) => x.reason).map((x) => (
+            <li key={x.id}>· {x.domain}：{x.reason}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 export function ReportView({
-  markdown, onRef,
+  markdown, onRef, ignoredCitations = [], onOpenSource,
 }: {
   markdown: string
   onRef: (ref: string) => void
+  ignoredCitations?: IgnoredCitation[]
+  onOpenSource?: (id: string) => void
 }) {
   const parts = useMemo(() => {
     // 「存疑与未完成」是系统主动声明的弱点，要和正文视觉区分开
@@ -53,6 +106,7 @@ export function ReportView({
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
+      <IgnoredBanner items={ignoredCitations} onOpenSource={onOpenSource ?? (() => {})} />
       <article className="prose-sm leading-7 text-ink">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}

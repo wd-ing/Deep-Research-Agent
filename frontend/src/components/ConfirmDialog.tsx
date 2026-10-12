@@ -3,7 +3,7 @@ import { useEffect } from 'react'
 /** 确认对话框。不是 `window.confirm`——
  *  删一场研究连带删报告/来源/段，得说清楚，而且要能恢复。 */
 export function ConfirmDialog({
-  title, lines, confirmText, onCancel, onConfirm, danger = true,
+  title, lines, confirmText, onCancel, onConfirm, danger = true, input,
 }: {
   title: string
   lines: string[]
@@ -12,6 +12,12 @@ export function ConfirmDialog({
   onConfirm: () => void
   /** 破坏性操作才用红底。整理类操作（移动/改名）不该吓用户。 */
   danger?: boolean
+  /** 有这个字段就渲染一个输入框，值由调用方持有。 */
+  input?: {
+    placeholder: string
+    value: string
+    onChange: (v: string) => void
+  }
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
@@ -28,13 +34,23 @@ export function ConfirmDialog({
             {lines.map((l, i) => <li key={i}>· {l}</li>)}
           </ul>
         )}
+        {input && (
+          <input
+            autoFocus
+            value={input.value}
+            onChange={(e) => input.onChange(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') onConfirm() }}
+            placeholder={input.placeholder}
+            className="mt-3 w-full rounded-md border border-line bg-white px-2.5 py-1.5 text-sm outline-none focus:border-accent"
+          />
+        )}
         <div className="mt-5 flex justify-end gap-2">
           <button
             onClick={onCancel}
             className="rounded border border-line px-3 py-1.5 text-xs text-muted hover:bg-gray-50"
           >取消</button>
           <button
-            autoFocus
+            autoFocus={!input}
             onClick={onConfirm}
             className={[
               'rounded px-3 py-1.5 text-xs text-white',

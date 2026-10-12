@@ -203,6 +203,36 @@ def list_folders() -> list[dict]:
     return get_repo().folders_with_counts()
 
 
+def _cited_counts(repo, sid: str) -> dict[str, int]:
+    """某场报告里，每个来源被引了多少处 → {source_id: 处数}。
+
+    **引用关系只存在于报告正文的 `[S3·5]` 标记里，库里没存**
+    （全库 14 张表没有 citation / ref 之类的关系表），只能数 markdown。
+
+    段号 → source_id 的映射**必须问 `EvidenceTools`**：报告里的 `S3` 是
+    按 rowid 排的显示编号，不是 `source.id`。自己另算一套必然对不上
+    （HANDOVER 坑 8）。来源库引用数和报告提示条都走这里，两边口径一致。
+    """
+    import re
+    from collections import Counter
+
+    from .tools.evidence import EvidenceTools
+
+    rep = repo.q1("SELECT markdown FROM report WHERE session_id=?", (sid,))
+    if not rep or not (rep["markdown"] or ""):
+        return {}
+    try:
+        tools = EvidenceTools(repo, sid)
+    except Exception:
+        return {}          # 索引建不起来就当没引用，不要整页 500
+    out: dict[str, int] = {}
+    for ref, n in Counter(re.findall(r"\[(S\d+)·", rep["markdown"])).items():
+        real = tools._source_id(ref)
+        if real:
+            out[real] = out.get(real, 0) + n
+    return out
+
+
 @app.get("/api/sources/{src_id}")
 def get_source(src_id: str) -> dict:
     """单个来源 + 它的段落。点来源库里的某一条看它到底说了什么。
@@ -214,7 +244,12 @@ def get_source(src_id: str) -> dict:
 
     repo = get_repo()
     row = repo.q1(
-        "SELECT s.*, COALESCE(NULLIF(se.title,''), se.question) AS session_title "
+        "SELECT s.*, COALESCE(NULLIF(se.title,''), se.question) AS session_title, "
+        "       (SELECT COUNT(*) FROM ignored_source ig WHERE ig.source_id=s.id) AS ignored, "
+        "       (SELECT ig.reason FROM ignored_source ig WHERE ig.source_id=s.id) "
+        "         AS ignore_reason, "
+        "       (SELECT ig.ignored_at FROM ignored_source ig WHERE ig.source_id=s.id) "
+        "         AS ignored_at "
         "FROM source s JOIN session se ON se.id = s.session_id WHERE s.id=?",
         (src_id,),
     )
@@ -223,6 +258,7 @@ def get_source(src_id: str) -> dict:
     out = dict(row)
     out["nature"] = out.get("source_nature") or "unknown"
     out["nature_label"] = NATURE_LABELS.get(out["nature"], out["nature"])
+    out["ignored"] = bool(out.pop("ignored"))
 
     try:
         tools = EvidenceTools(repo, out["session_id"])
@@ -267,16 +303,11 @@ def list_sources(q: str = "", session_id: str = "") -> dict:
     （这个错 HANDOVER 的坑 8 记过一次）。所以这里直接问 `EvidenceTools`。
 
     没有 `source.cited_count` 这类字段可读——引用关系只存在于**报告正文**
-    的标记里，库里没存，所以只能从 markdown 数。
+    的标记里，库里没存，所以只能从 markdown 数（见 `_cited_counts`）。
 
     过滤条件与别处保持一致：`superseded_by IS NULL`（同源被采纳的那条）、
     所属会话不在回收站。
     """
-    import re
-    from collections import Counter
-
-    from .tools.evidence import EvidenceTools
-
     repo = get_repo()
     params: list = []
     where = ["s.superseded_by IS NULL", "se.deleted_at IS NULL"]
@@ -296,6 +327,10 @@ def list_sources(q: str = "", session_id: str = "") -> dict:
         "         WHERE c.source_id=s.id) AS tokens,"
         "       (SELECT COUNT(*) FROM ignored_source ig WHERE ig.source_id=s.id)"
         "         AS ignored,"
+        "       (SELECT ig.reason FROM ignored_source ig WHERE ig.source_id=s.id)"
+        "         AS ignore_reason,"
+        "       (SELECT ig.ignored_at FROM ignored_source ig WHERE ig.source_id=s.id)"
+        "         AS ignored_at,"
         "       COALESCE(NULLIF(se.title,''), se.question) AS session_title,"
         "       se.created_at AS session_created_at "
         "FROM source s JOIN session se ON se.id = s.session_id "
@@ -306,23 +341,9 @@ def list_sources(q: str = "", session_id: str = "") -> dict:
 
     # ---- 引用数：从报告正文数 ----
     cites: dict[str, int] = {}
-    per_session: dict[str, list[dict]] = {}
-    for r in out:
-        per_session.setdefault(r["session_id"], []).append(r)
-
-    for sid, group in per_session.items():
-        rep = repo.q1("SELECT markdown FROM report WHERE session_id=?", (sid,))
-        if not rep or not (rep["markdown"] or ""):
-            continue
-        try:
-            tools = EvidenceTools(repo, sid)
-        except Exception:
-            continue          # 索引建不起来就当没引用，不要整页 500
-        counts = Counter(re.findall(r"\[(S\d+)·", rep["markdown"]))
-        for ref, n in counts.items():
-            real = tools._source_id(ref)
-            if real:
-                cites[real] = cites.get(real, 0) + n
+    for sid in {r["session_id"] for r in out}:
+        for real, n in _cited_counts(repo, sid).items():
+            cites[real] = cites.get(real, 0) + n
 
     for r in out:
         # 未判 = NULL 与 unknown 归一组：前者是没判，后者是判不出来，
@@ -343,6 +364,44 @@ def list_sources(q: str = "", session_id: str = "") -> dict:
         "nature_order": NATURE_ORDER,
         "nature_labels": NATURE_LABELS,
     }
+
+
+class IgnoreIn(BaseModel):
+    reason: str = ""
+
+
+@app.post("/api/sources/{src_id}/ignore")
+def ignore_source(src_id: str, body: IgnoreIn) -> dict:
+    """标记来源为无用。**幂等**——`source_id` 是主键，重复标记不报错也不覆盖原因。
+
+    为什么不改数据：报告已经写完了，排除一个来源**不会回头改写报告**。
+    这条接口只负责记录「用户认为它不可信」，真正要紧的是让这个判断
+    出现在用户还会再看的地方（来源库 / 引用抽屉 / 报告顶部）。
+    """
+    repo = get_repo()
+    if not repo.q1("SELECT 1 FROM source WHERE id=?", (src_id,)):
+        raise HTTPException(404, "来源不存在")
+    repo.ignore_source(src_id, body.reason)
+    cited = _cited_counts(repo, repo.q1("SELECT session_id FROM source WHERE id=?",
+                                        (src_id,))["session_id"]).get(src_id, 0)
+    return {
+        "ok": True,
+        "ignored": True,
+        "reason": body.reason,
+        "citations": cited,
+        # 这条来源已经进了写完的报告——前端据此告诉用户「报告会挂提示条」，
+        # 别让他以为标记完就等于报告里没有它了。
+        "note": ("这场研究的报告已经引用了它，报告顶部会出现提示条。"
+                 if cited else "已标记，不影响任何已完成的报告。"),
+    }
+
+
+@app.post("/api/sources/{src_id}/unignore")
+def unignore_source(src_id: str) -> dict:
+    """取消排除。**恢复是非破坏性的**，不加确认框。"""
+    repo = get_repo()
+    repo.unignore_source(src_id)
+    return {"ok": True, "ignored": False}
 
 
 class FolderIn(BaseModel):
@@ -386,6 +445,38 @@ def delete_folder(fid: str) -> dict:
             "note": "文件夹内的会话已移到「未分类」" if moved else ""}
 
 
+def _ignored_citations(repo, sid: str) -> list[dict]:
+    """本场报告里**被引用过、但已被用户标记排除**的来源。
+
+    报告顶部那条提示条的唯一数据源，也是整个阶段 5 存在的理由：
+    排除发生在报告写完之后，**不会回头改写它**，所以用户必须知道
+    报告里有一部分材料的来源后来被他标成了不可信。这是给不可逆信息兜底。
+
+    引用数仍走 `_cited_counts`（数 markdown + EvidenceTools 映射），
+    与来源库的引用数同源，两边不会打架。
+    """
+    cites = _cited_counts(repo, sid)
+    if not cites:
+        return []
+    hit = [cid for cid in cites if repo.q1(
+        "SELECT 1 FROM ignored_source WHERE source_id=?", (cid,))]
+    if not hit:
+        return []
+    rows = repo.q(
+        f"SELECT id, domain, title FROM source WHERE id IN ({','.join('?' * len(hit))})",
+        hit,
+    )
+    # 按被引次数从多到少——提示条只显示前几个时，先显示最该看的
+    return sorted(
+        [{"id": r["id"], "domain": r["domain"], "title": r["title"],
+          "citations": cites[r["id"]],
+          "reason": repo.q1("SELECT reason FROM ignored_source WHERE source_id=?",
+                            (r["id"],))["reason"] or ""}
+         for r in rows],
+        key=lambda x: -x["citations"],
+    )
+
+
 @app.get("/api/sessions/{sid}")
 def get_session(sid: str) -> dict:
     repo = get_repo()
@@ -399,6 +490,7 @@ def get_session(sid: str) -> dict:
     out["sources"] = [dict(r) for r in srcs]
     out["topics"] = repo.topics_of(sid)
     out["open_contradictions"] = [dict(r) for r in repo.open_contradictions(sid)]
+    out["ignored_citations"] = _ignored_citations(repo, sid)
     return out
 
 
@@ -486,7 +578,14 @@ def read_segment(sid: str, ref: str) -> dict:
                 "SELECT id,title,domain,url,source_date,source_nature "
                 "FROM source WHERE id=?", (real,))
             if row:
-                data["段落"][0]["来源"] = dict(row)
+                meta = dict(row)
+                ig = repo.q1("SELECT reason FROM ignored_source WHERE source_id=?",
+                             (real,))
+                # 引用抽屉要标出「这条来自已被排除的来源」——
+                # 用户点开某段引用时，是最后一次能提醒他这段材料不可信的时机
+                meta["ignored"] = bool(ig)
+                meta["ignore_reason"] = (ig["reason"] or "") if ig else ""
+                data["段落"][0]["来源"] = meta
     return data
 
 

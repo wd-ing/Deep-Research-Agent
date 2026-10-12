@@ -56,6 +56,33 @@ export default function App() {
     catch { setSrcDetail(null) }
   }, [])
 
+  /** 标记 / 取消排除。三处视图都读这个状态，必须一起刷新：
+   *  来源库列表、当前打开的来源详情、以及**当前会话的报告提示条**
+   *  —— 少刷一个就会出现「标记成功了但报告顶部还是老样子」。 */
+  const ignoreSource = useCallback(
+    async (id: string, ignore: boolean, reason: string) => {
+      try {
+        await api.jpost(`/api/sources/${id}/${ignore ? 'ignore' : 'unignore'}`, { reason })
+      } catch { /* 忽略：列表下次刷新会露出真值 */ }
+      await refreshLib(srcQ)
+      // 按**刚改的那条**判断要不要刷详情，不是按「当前选中的那条」。
+      // 两者可以不是一回事：在列表里标记 A，右边打开的却是 B。
+      // 早前写成 `if (srcCur) pickSource(srcCur)`，结果是「切到对话页再回来」
+      // 时 srcCur 已清空，刷新被整段跳过，详情页留着改之前的旧数据。
+      if (srcDetail?.id === id) await pickSource(id)
+      if (sid) await s.loadDetail(sid)
+    },
+    [refreshLib, srcQ, srcDetail, pickSource, sid, s.loadDetail],
+  )
+
+  /** 报告提示条上的来源名 → 跳来源库并选中它（兑现「可在来源库中查看」） */
+  const openSourceFromReport = useCallback((id: string) => {
+    setPane('source')
+    setSrcQ('')
+    void refreshLib('')
+    void pickSource(id)
+  }, [refreshLib, pickSource])
+
   async function start(question: string) {
     const id = await s.create(question)
     setSid(id)
@@ -80,12 +107,19 @@ export default function App() {
           if (q) void start(q)
         }}
         pane={pane}
-        onPane={(p) => { setPane(p); if (p === 'session') setSrcCur(null) }}
+        // 离开来源库时 `srcCur` 和 `srcDetail` 要**一起**清。
+        // 只清前者会让详情页残留上一条来源——列表里没有任何行是选中态，
+        // 右边却显示着一条「看起来选中了」的来源，两边对不上。
+        onPane={(p) => {
+          setPane(p)
+          if (p === 'session') { setSrcCur(null); setSrcDetail(null) }
+        }}
         lib={lib}
         srcQuery={srcQ}
         onSrcQuery={setSrcQ}
         srcCur={srcCur}
         onPickSource={(id) => void pickSource(id)}
+        onIgnoreSource={(id, ignore, reason) => void ignoreSource(id, ignore, reason)}
       />
 
       {/* 来源视图占满整个主区域：报告有 2 万字，来源详情是主内容，
@@ -95,6 +129,7 @@ export default function App() {
           <SourceDetail
             src={srcDetail}
             onOpenSession={(id) => { setPane('session'); setSid(id) }}
+            onToggleIgnore={(id, ignored) => void ignoreSource(id, !ignored, '')}
           />
         </main>
       ) : (
@@ -154,10 +189,15 @@ export default function App() {
 
         {s.view === 'done' && report && (
           <div className="flex-1 overflow-auto">
-            <ReportView markdown={report} onRef={(r) => {
-              console.log('[ref-click]', r, sid)
-              void s.openSeg(sid ?? '', r)
-            }} />
+            <ReportView
+              markdown={report}
+              ignoredCitations={d?.ignored_citations ?? []}
+              onOpenSource={openSourceFromReport}
+              onRef={(r) => {
+                console.log('[ref-click]', r, sid)
+                void s.openSeg(sid ?? '', r)
+              }}
+            />
           </div>
         )}
 
