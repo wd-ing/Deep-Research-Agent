@@ -5,7 +5,57 @@
 html, body, #root { height: 100%; margin: 0; }
 body { @apply bg-gray-50 text-ink antialiased; }
 
-/* 滚动条收窄一点，长报告里不影响阅读 */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { @apply rounded bg-gray-300; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ============================================================
+   工作流视图的视觉系统
+   设计目标：**滚动时眼睛能落到某个点上**，而不是读一片文字。
+   三条手段：① 左侧时间轴给出纵向节奏 ② 状态点用形状区分
+   ③ 新条目淡入上移，给「正在推进」一个物理暗示
+   ============================================================ */
+
+@keyframes wf-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes wf-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: .35; transform: scale(.82); }
+}
+/* 展开时的高度过渡：grid-template-rows 0fr→1fr，不需要测高度 */
+@keyframes wf-detail-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.wf-step {
+  animation: wf-in .28s cubic-bezier(.2,.7,.3,1) both;
+  position: relative;
+}
+/* 同批到达的条目不要各自错开太远，否则末尾会拖出一串 */
+.wf-step:nth-child(n) { }
+
+.wf-running-dot {
+  animation: wf-pulse 1.5s ease-in-out infinite;
+}
+
+.wf-detail {
+  animation: wf-detail-in .2s ease-out both;
+}
+
+/* 尊重系统「减弱动效」设置——这是无障碍底线，不是可选项 */
+@media (prefers-reduced-motion: reduce) {
+  .wf-step, .wf-detail { animation: none !important; }
+  .wf-running-dot { animation: none !important; }
+  * { transition-duration: .01ms !important; }
+}
+
+/* 大环节标题吸顶，滚过长规划时仍知道自己在哪 */
+.wf-phase-head {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: saturate(180%) blur(8px);
+}

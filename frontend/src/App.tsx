@@ -20,7 +20,7 @@ function Sidebar({
       <div className="p-4">
         <button
           onClick={onNew}
-          className="w-full rounded bg-accent px-3 py-2 text-sm text-white hover:bg-blue-700"
+          className="w-full rounded-md bg-accent px-3 py-2 text-sm text-white shadow-sm transition-all hover:bg-blue-700 hover:shadow active:scale-[.98]"
         >
           新建研究
         </button>
@@ -82,14 +82,20 @@ export default function App() {
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-line bg-white px-6 py-3">
+        <header className="flex items-center justify-between border-b border-line bg-white px-6 py-3 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
           <div className="min-w-0">
             <div className="truncate text-sm font-medium">
               {d?.title || d?.question || '深度研究'}
             </div>
             {d && (
               <div className="mt-0.5 text-xs text-muted">
+                <span className="inline-flex items-center gap-1.5">
+                <span className={[
+                  'inline-block h-1.5 w-1.5 rounded-full',
+                  d.status === 'running' ? 'wf-running-dot bg-accent' : 'bg-gray-300',
+                ].join(' ')} />
                 {d.status}
+              </span>
                 {d.cost_tokens > 0 && ` · ${d.cost_tokens.toLocaleString()} token`}
                 {d.sources.length > 0 && ` · ${d.sources.length} 来源`}
               </div>
@@ -111,7 +117,9 @@ export default function App() {
           </div>
         )}
 
-        {(s.view === 'running' || s.view === 'awaiting'
+        {/* 待审批时**只显示审批视图**——规划环节已经跑完，
+            审批页本身就是结论，不需要再叠一层工作流 */}
+        {(s.view === 'running'
           || (s.view === 'idle' && sid && !report)) && (
           <div className="flex-1 overflow-auto">
             <WorkflowView

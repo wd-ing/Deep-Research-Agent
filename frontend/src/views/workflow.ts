@@ -186,20 +186,20 @@ export function buildPhases(
     phases[phase].steps.push(st)
   })
 
-  // 审批环节：由 view 决定有没有这一步
-  if (view === 'awaiting') {
-    phases['审批'].steps.push({
-      id: 'await', label: '等待你批准框架', summary: '研究已暂停',
-      state: 'running',
-    })
-  }
 
-  // 当前正在跑的大环节
-  const cur = phaseOf(currentNode, view)
-  phases[cur].steps.push({
-    id: `run-${cur}`, label: phaseRunningLabel(cur), summary: '进行中…',
-    state: 'running',
-  })
+  // 当前正在跑的大环节：**只在确实有后续事件时才加**。
+  // 审批时不要塞「审批环节 / 进行中」——那时规划已经跑完，
+  // 审批页本身就是结论，再叠一层反而让人以为还有东西在跑。
+  if (view === 'running' && currentNode) {
+    const cur = phaseOf(currentNode, view)
+    const last = phases[cur].steps[phases[cur].steps.length - 1]
+    if (!last || last.state === 'running') {
+      phases[cur].steps.push({
+        id: `run-${cur}`, label: phaseRunningLabel(cur), summary: '进行中…',
+        state: 'running',
+      })
+    }
+  }
 
   for (const p of PHASE_ORDER) phases[p].summary = summarize(p, phases[p].steps)
   return PHASE_ORDER.map((p) => phases[p]).filter((p) => p.steps.length > 0)
