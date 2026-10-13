@@ -151,6 +151,10 @@ export function FolderTree({
   const [confirmDel, setConfirmDel] = useState<FolderNode | null>(null)
   const [err, setErr] = useState('')
 
+  // 拖拽排序的两个状态：正在拖哪个、当前落在哪一行哪一侧
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dropAt, setDropAt] = useState<{ id: string; pos: 'before' | 'after' } | null>(null)
+
   // 报错了就把提示清掉——否则一条红字会一直挂在那儿
   useEffect(() => { if (err) { const t = setTimeout(() => setErr(''), 5000); return () => clearTimeout(t) } },
     [err])
@@ -173,6 +177,106 @@ export function FolderTree({
       n.has(id) ? n.delete(id) : n.add(id)
       return n
     })
+
+  // ---- 拖拽排序 ----
+  //
+  // 只做**同级**重排，跟后端 `PATCH /api/folders/order` 的能力一一对应。
+  // 跨层级移动留给菜单里的「移到…」——两件事分开，行为才可预期。
+  // （把子文件夹拖到别层是最容易点的操作，但也是最容易出错的：
+  //  拖到一半发现目标不对，松手时它已经被移动了。）
+
+  /** 找出 `id` 所在的那一层。`buildTree` 保住了同级顺序，直接返回原数组。 */
+  const siblingListOf = (id: string): FolderNode[] | null => {
+    const walk = (nodes: FolderNode[]): FolderNode[] | null => {
+      if (nodes.some((n) => n.id === id)) return nodes
+      for (const n of nodes) {
+        const r = walk(n.children)
+        if (r) return r
+      }
+      return null
+    }
+    return walk(tree)
+  }
+
+  const canDrop = (srcId: string, tgtId: string) => {
+    const a = findNodeById(tree, srcId)
+    const b = findNodeById(tree, tgtId)
+    return !!a && !!b && a.id !== b.id && a.parent_id === b.parent_id
+  }
+
+  const commitReorder = async (
+    srcId: string, tgtId: string, pos: 'before' | 'after',
+  ) => {
+    const src = findNodeById(tree, srcId)
+    const sibs = siblingListOf(srcId)
+    if (!src || !sibs) return
+    // ⚠️ 「未分类」的 parent_id 也是 null（跟顶层文件夹一样），但它是虚拟节点、
+    // 没有 id。后端按 id 改序，混进去会直接 400，所以这里按 `id` 剔掉。
+    const real = sibs.filter((x): x is FolderNode & { id: string } => x.id !== null)
+    const from = real.findIndex((x) => x.id === srcId)
+    if (from < 0) return
+
+    const next = real.filter((x) => x.id !== srcId)
+    const at = next.findIndex((x) => x.id === tgtId)
+    if (at < 0) return
+    next.splice(pos === 'before' ? at : at + 1, 0, real[from])
+
+    // 落回原位就别发请求——省一次无谓的写库 + 整棵树重渲染
+    if (next.every((x, i) => x.id === real[i].id)) return
+
+    await run(() => api.jpatch('/api/folders/order', {
+      parent_id: src.parent_id,
+      ids: next.map((x) => x.id),
+    }))
+  }
+
+  /** 一行的拖拽 props。「未分类」返回空对象——虚拟节点没有 id 交给后端改序。
+   *
+   *  ⚠️ 收窄放在这个工厂里而不是每个 handler 判空：`id` 的类型是
+   *  `string | null`（未分类为 null），提前 return 一次之后，
+   *  下面五个处理器就都能当 `string` 用。
+   *  （写在 JSX 里靠 `!isLoose` 收窄是**不成立**的——
+   *  那个布尔量是 `n.id === null` 的别名，TS 不会把别名条件带进属性访问。）
+   */
+  const dragProps = (
+    fid: string | null, dropHere: 'before' | 'after' | null,
+  ): React.HTMLAttributes<HTMLDivElement> => {
+    if (fid === null) return {}
+    return {
+      draggable: true,
+      onDragStart: (e: React.DragEvent) => {
+        e.dataTransfer.effectAllowed = 'move'
+        // 不 setData 的话 Chrome 不发 dragover/drop，整条链路断掉
+        e.dataTransfer.setData('text/plain', fid)
+        setDragId(fid)
+      },
+      onDragEnd: () => { setDragId(null); setDropAt(null) },
+      onDragOver: (e: React.DragEvent) => {
+        // 不能落的地方**不给 preventDefault**——drop 事件就不会触发，
+        // 也就不会出现「拖到一半发现不行、松手却已经改了」的尴尬
+        if (!dragId || !canDrop(dragId, fid)) { setDropAt(null); return }
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'move'
+        // 落在上半 = 插到它前面，下半 = 插到它后面
+        const r = e.currentTarget.getBoundingClientRect()
+        const pos = e.clientY - r.top < r.height / 2 ? 'before' : 'after'
+        setDropAt((p) => (p?.id === fid && p.pos === pos ? p : { id: fid, pos }))
+      },
+      onDragLeave: (e: React.DragEvent) => {
+        // 移到行内的子元素上也会触发 dragleave，别急着清指示线
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+        setDropAt((p) => (p?.id === fid ? null : p))
+      },
+      onDrop: (e: React.DragEvent) => {
+        e.preventDefault()
+        e.stopPropagation()
+        const srcId = e.dataTransfer.getData('text/plain') || dragId
+        setDragId(null)
+        setDropAt(null)
+        if (dropHere && srcId) void commitReorder(srcId, fid, dropHere)
+      },
+    }
+  }
 
   const rows = (nodes: FolderNode[], depth: number): React.ReactNode[] =>
     nodes.flatMap((n) => {
@@ -216,12 +320,25 @@ export function FolderTree({
           />,
         )
       } else {
+        const dropHere = dropAt?.id === n.id ? dropAt.pos : null
+        // ⚠️ `dragId === n.id` 不能直接用：没有拖拽时两边都是 null，
+        // `null === null` 恒真——「未分类」会**常驻半透明**。
+        // 所以必须先排除 dragId 为空。
+        const isDragSource = dragId !== null && dragId === n.id
         out.push(
           <div
             key={n.id ?? 'none'}
+            {...dragProps(n.id, dropHere)}
+            // 用 inset 阴影画指示线而不是 border：border 会让行高多 2px，
+            // 拖拽过程中整棵树抖一下。
+            style={dropHere ? {
+              boxShadow: `inset 0 ${dropHere === 'before' ? '2px' : '-2px'} 0 0 #2563eb`,
+            } : undefined}
             className={[
               'group/row flex items-center rounded pr-1 transition-colors',
               isSel ? 'bg-white text-ink shadow-sm' : 'text-muted hover:bg-white',
+              !isLoose ? 'cursor-grab active:cursor-grabbing' : '',
+              isDragSource ? 'opacity-40' : '',
             ].join(' ')}
           >
             {/* 折叠箭头是**独立按钮**。第一版把整行做成折叠开关，

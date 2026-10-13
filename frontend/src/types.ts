@@ -3,6 +3,36 @@
 
 export type View = 'idle' | 'running' | 'awaiting' | 'done' | 'error'
 
+/** `/api/sessions/{sid}/trace` 的一轮。
+ *
+ *  字段**大部分可选**：一轮可能只有 retrieve 没有 assess（跑一半停了），
+ *  反之亦然。缺就是缺，不要拿 0 顶替——「本轮新增 0 段」和「没有这个数」
+ *  在图上是两件完全不同的事。 */
+export interface TraceRound {
+  round: number
+  /** 检索命中数 */
+  hits?: number
+  /** 通过筛选、真正收进来的来源数 */
+  accepted?: number
+  new_sources?: number
+  /** 累计抓取到的来源数 */
+  fetched_total?: number
+  /** 累计段落数 */
+  segments_total?: number
+  new_segments?: number
+  round_gain?: number
+  has_enough?: boolean
+  gaps?: number
+  gaps_by_urgency?: Record<string, number>
+  /** 停止判据——只在真正触发停止的那一轮有值 */
+  stop_would_be?: string
+  stop_layer?: string
+}
+
+export interface SessionTrace {
+  rounds: TraceRound[]
+}
+
 export interface SessionSummary {
   id: string
   title: string | null

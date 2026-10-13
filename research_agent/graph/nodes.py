@@ -492,6 +492,10 @@ def _fetched_count(state: ResearchState) -> int:
 def node_retrieve(state: ResearchState) -> dict:
     repo = get_repo()
     sid = state["session_id"]
+    # 「本次是第几轮」——`state["round"]` 是**已完成**轮数，所以 +1。
+    # ⚠️ 这和 `@_timed_node` 记进 run_trace 的那个 round 差 1（那里记的是
+    # 「进入时已完成几轮」，本节点是唯一执行中就推进 round 的）。
+    # 两个口径都对、都不能改，详见 `repo.save_node_timing` 的 docstring。
     rnd = state.get("round", 0) + 1
     queries = _collect_queries(state)
 

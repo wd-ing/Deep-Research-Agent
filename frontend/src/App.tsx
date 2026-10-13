@@ -6,6 +6,7 @@ import { ReportView } from './views/ReportView'
 import { WorkflowView } from './views/WorkflowView'
 import { buildPhases } from './views/workflow'
 import { SegDrawer, NatureBadge } from './components/SegDrawer'
+import { RoundChart } from './components/RoundChart'
 import { Sidebar, type Pane } from './components/Sidebar'
 import { SourceDetail } from './components/SourceDetail'
 
@@ -162,6 +163,13 @@ export default function App() {
             </button>
           )}
         </header>
+
+        {/* 检索轮次图。**运行中不显示**——那时候工作流列表正在逐轮叙述
+            （「检索（第 N 轮）· 累计 X 段」），图上是重复信息；
+            要看的是停下来之后回头看：为什么停在这、这几轮各捞到什么。 */}
+        {sid && s.view !== 'running' && (
+          <RoundChart sid={sid} refreshKey={s.progress.length} />
+        )}
 
         {s.view === 'idle' && !sid && (
           <div className="flex flex-1 flex-col items-center justify-center text-muted">

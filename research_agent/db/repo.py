@@ -282,6 +282,31 @@ class Repo:
                 cur = (row["parent_id"] if row else None)
         self.x("UPDATE folder SET parent_id=? WHERE id=?", (parent_id, folder_id))
 
+    def reorder_folders(self, parent_id: str | None, ids: Sequence[str]) -> int:
+        """把同一父节点下的文件夹按 `ids` 的顺序重排 `sort_order`，返回改了几行。
+
+        **只改顺序，不动父子关系**——跨层级移动走 `move_folder`（菜单里的
+        「移到…」），拖拽只负责同级排序。两件事分开，行为才可预期。
+
+        ⚠️ `parent_id IS ?` 而不是 `parent_id = ?`：SQLite 里 `=` 跟 NULL
+        比较恒为假，顶层文件夹（parent_id IS NULL）会一条都改不到。
+        这个坑在 `create_folder` 里已经踩过一次。
+
+        不在 `ids` 里的同级文件夹**不动**——它们的 sort_order 原样保留。
+        所以调用方应当传完整的同级列表（前端手里就有），传子集也能工作，
+        只是可能出现并列号（并列时按 created_at 兜底，见 `folders_with_counts`）。
+        """
+        n = 0
+        with self._write_lock:
+            for i, fid in enumerate(ids, 1):
+                cur = self.conn.execute(
+                    "UPDATE folder SET sort_order=? WHERE id=? AND parent_id IS ?",
+                    (i, fid, parent_id),
+                )
+                n += cur.rowcount or 0
+            self.conn.commit()
+        return n
+
     def folders_with_counts(self) -> list[dict]:
         """文件夹树 + 每个文件夹里有多少场会话（含未分类）。"""
         rows = self.q(
@@ -450,7 +475,8 @@ class Repo:
 
     def log_llm_call(self, session_id, stage, model, input_tokens, output_tokens,
                      latency_ms=None, cache_read_tokens=0,
-                     cache_creation_tokens=0, est_input_tokens=None) -> None:
+                     cache_creation_tokens=0, est_input_tokens=None,
+                     status="ok", error=None) -> None:
         """记一次调用。
 
         input_tokens / output_tokens 必须是 API 报上来的真实值。
@@ -466,14 +492,21 @@ class Repo:
         偏差来源是 `_rough_tokens` 用 tiktoken cl100k_base（OpenAI 的分词器）
         去估 MiniMax 的计费，中文系统性偏高约 1.5 倍。
         保留它只为留个偏差基线，不要拿它做判据。
+
+        **status / error（2026-10-13 加）**：原来失败调用根本不会被记
+        （`_record` 只在成功路径上调用），504/429 在表里查无实据。
+        失败时照常记一行，`status='error'`、`error='类型: 消息'`，
+        token 全 0、只有 `est_input_tokens` 留下这次尝试的规模。
         """
         self.x(
             "INSERT INTO llm_call (id,session_id,stage,model,input_tokens,"
             "output_tokens,latency_ms,cache_read_tokens,cache_creation_tokens,"
-            "est_input_tokens,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "est_input_tokens,status,error,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (new_id("l_"), session_id, stage, model, input_tokens,
              output_tokens, latency_ms, cache_read_tokens or 0,
-             cache_creation_tokens or 0, est_input_tokens, now()),
+             cache_creation_tokens or 0, est_input_tokens,
+             status or "ok", (error or None), now()),
         )
 
     def cache_stats(self, session_id: str) -> dict:
@@ -567,6 +600,23 @@ class Repo:
 
         节点名编进 kind 而不是塞进 detail：run_trace 的主键是
         (session_id, round, kind)，同一轮的多个节点用 detail 会互相覆盖。
+
+        ⚠️ **`rnd` 的语义是「进入这个节点时，已经完成了几轮」**
+        （`_timed_node` 直接取 `state["round"]`）。而 `retrieve` 事件的
+        `round` 是「本次是第几轮」（`node_retrieve` 里 `state["round"] + 1`）。
+        **两个都对，但口径不同**，别当成同一个东西：
+
+            node:extract  round=1,2,3   ← 第 1/2/3 轮检索**之后**执行
+            node:write    round=3       ← 完成 3 轮之后收尾
+            node:retrieve round=0,1,2   ← 第 1 次检索**执行时**已完成 0 轮
+            retrieve 事件 round=1,2,3   ← 同一批检索，标记为第 1/2/3 轮
+
+        `retrieve` 看起来「差 1」，是因为它是唯一**执行中就推进 round** 的节点。
+        **别去统一它们**：给 `node:*` 整体 +1 会把 `node:extract` 从 1,2,3
+        改成 2,3,4——把本来对的改错了。
+
+        画「第 N 轮」图表时**一律用事件口径**（`assess` / `retrieve`），
+        节点耗时只用来对齐耗时，不单独当轮次用。
         """
         self.save_run_trace(session_id, rnd, f"node:{node}",
                             {"node": node, "ms": round(ms), **extra})

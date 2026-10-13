@@ -421,6 +421,36 @@ class FolderPatch(BaseModel):
     parent_id: str | None = None
 
 
+class FolderOrderIn(BaseModel):
+    parent_id: str | None = None
+    ids: list[str] = Field(min_length=1)
+
+
+# ⚠️ **必须定义在 `/api/folders/{fid}` 之前**。两者路径段数相同，
+# FastAPI 按定义顺序匹配——`{fid}` 在前的话，`order` 会被当成 folder id，
+# 结果是 404「文件夹不存在」，而不是走到这个端点。
+@app.patch("/api/folders/order")
+def reorder_folders(body: FolderOrderIn) -> dict:
+    """同级重排。`ids` 是该父节点下的完整顺序（顶层传 parent_id=null）。
+
+    跨层级移动不走这里，走 `PATCH /api/folders/{fid}` 的 `parent_id`——
+    两件事分开，拖拽的行为才可预期。
+    """
+    repo = get_repo()
+    if body.parent_id and not repo.q1(
+            "SELECT 1 FROM folder WHERE id=?", (body.parent_id,)):
+        raise HTTPException(404, "父文件夹不存在")
+    dup = {x for x in body.ids if body.ids.count(x) > 1}
+    if dup:
+        raise HTTPException(400, f"顺序里有重复：{'、'.join(sorted(dup))}")
+    missing = [i for i in body.ids
+               if not repo.q1("SELECT 1 FROM folder WHERE id=?", (i,))]
+    if missing:
+        raise HTTPException(400, f"不存在的文件夹：{'、'.join(missing)}")
+    n = repo.reorder_folders(body.parent_id, body.ids)
+    return {"ok": True, "reordered": n}
+
+
 @app.patch("/api/folders/{fid}")
 def patch_folder(fid: str, body: FolderPatch) -> dict:
     repo = get_repo()
@@ -513,6 +543,75 @@ def list_chunks(sid: str, limit: int = 200) -> list[dict]:
         (sid, limit),
     )
     return [dict(r) for r in rows]
+
+
+@app.get("/api/sessions/{sid}/trace")
+def session_trace(sid: str) -> dict:
+    """按**轮次**汇总的检索轨迹——给「检索轮次」图表用。
+
+    ## 为什么不用前端已经拿到的 progress 事件
+
+    跑完的会话 `useSession` 直接 return，**根本不开 EventSource**，
+    `progress` 恒为空数组。只从前端事件推的话，这张图只在跑的过程中可见，
+    刷新一下就没了——而「这次为什么只查到 41 个来源」恰恰是事后才想看的东西。
+    所以走 DB：`run_trace` 是落盘的，任何时候都能读。
+
+    ## round 用哪个口径（这条很容易搞错）
+
+    `run_trace.round` 有两套含义并存：
+
+    - `kind='retrieve'` / `kind='assess'`：**本次是第几轮**（1,2,3…）
+    - `kind='node:*'`：进入该节点时**已完成几轮**（`node:retrieve` 是 0,1,2…）
+
+    本端点**只取前两种事件**，「第 N 轮」的含义因此唯一。
+    详细约定见 `repo.save_node_timing` 的 docstring。
+    """
+    repo = get_repo()
+    if not repo.q1("SELECT 1 FROM session WHERE id=?", (sid,)):
+        raise HTTPException(404, "会话不存在")
+
+    rows = repo.q(
+        "SELECT round, kind, detail_json FROM run_trace "
+        "WHERE session_id=? AND kind IN ('retrieve','assess') ORDER BY round",
+        (sid,),
+    )
+
+    by_round: dict[int, dict] = {}
+    for r in rows:
+        rnd = r["round"]
+        # round 理论上从 1 开始。0 是历史脏数据（早期版本没给 retrieve 记轮次），
+        # 别把它画成「第 0 轮」，直接跳过。
+        if rnd is None or rnd < 1:
+            continue
+        try:
+            d = json.loads(r["detail_json"] or "{}")
+        except (ValueError, TypeError):
+            d = {}
+        if not isinstance(d, dict):
+            d = {}
+
+        slot = by_round.setdefault(rnd, {"round": rnd})
+        if r["kind"] == "retrieve":
+            for k in ("hits", "accepted", "new_sources", "fetched_total"):
+                if isinstance(d.get(k), (int, float)):
+                    slot[k] = d[k]
+        else:
+            for k in ("segments_total", "new_segments", "gaps"):
+                if isinstance(d.get(k), (int, float)):
+                    slot[k] = d[k]
+            for k in ("round_gain", "has_enough"):
+                if k in d:
+                    slot[k] = d[k]
+            urg = d.get("gaps_by_urgency")
+            if isinstance(urg, dict):
+                slot["gaps_by_urgency"] = urg
+            # 停止判据**只在真的触发了的那一轮**有值。
+            # 保留它是为了回答「为什么停在第 N 轮」，不是为了展示判据本身。
+            if d.get("stop_would_be"):
+                slot["stop_would_be"] = d["stop_would_be"]
+                slot["stop_layer"] = d.get("stop_layer") or ""
+
+    return {"rounds": [by_round[k] for k in sorted(by_round)]}
 
 
 @app.get("/api/sessions/{sid}/approval")

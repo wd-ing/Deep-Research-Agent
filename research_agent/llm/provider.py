@@ -565,20 +565,36 @@ class LLMClient:
         json_mode: bool = False,
     ) -> str:
         cfg = self.registry.stage(stage)
-        if cfg.provider in OPENAI_COMPAT:
-            text, usage = self._opencode(cfg, prompt, system, json_mode)
-        elif cfg.provider == "minimax":
-            text, usage = self._minimax(cfg, prompt, system, json_mode)
-        elif cfg.provider == "gemini":
-            text, usage = self._gemini(cfg, prompt, system, json_mode)
-        else:
-            raise ConfigError(f"未知 provider: {cfg.provider}")
+        t0 = time.time()
+        try:
+            if cfg.provider in OPENAI_COMPAT:
+                text, usage = self._opencode(cfg, prompt, system, json_mode)
+            elif cfg.provider == "minimax":
+                text, usage = self._minimax(cfg, prompt, system, json_mode)
+            elif cfg.provider == "gemini":
+                text, usage = self._gemini(cfg, prompt, system, json_mode)
+            else:
+                raise ConfigError(f"未知 provider: {cfg.provider}")
+        except Exception as e:
+            # 抛出去之前先把这次失败记下来——重试是调用方的事，
+            # 记账是这里的事，两者不能因为一个挂掉另一个。
+            self._record_error(cfg, prompt, e,
+                               int((time.time() - t0) * 1000))
+            raise
         self._record(cfg, prompt, text, usage)
         return text
 
     def complete_json(self, stage: str, prompt: str, system: str | None = None) -> Any:
         raw = self.complete(stage, prompt, system=system, json_mode=True)
-        return _parse_json(raw)
+        try:
+            return _parse_json(raw)
+        except Exception as e:
+            # `complete()` 已经记了一行 ok——token 确实花了，不该抹掉。
+            # 这里补记一行 error，表示这次尝试**业务上没成**。
+            # 两行的 token 不重复（这行记 0），所以 `session_cost()`
+            # 的花费统计不受影响；只有「调用次数」要按 status 过滤。
+            self._record_error(self.registry.stage(stage), prompt, e)
+            raise
 
     def complete_json_forced(self, stage: str, prompt: str,
                              name: str, schema: dict,
@@ -603,11 +619,21 @@ class LLMClient:
             "parameters": schema,
         }}
         cfg = self.registry.stage(stage)
-        blocks, usage = self._openai_compat_forced(cfg, system, prompt, tool)
-        self._record(cfg, prompt, "", usage)
+        t0 = time.time()
+        try:
+            blocks, usage = self._openai_compat_forced(cfg, system, prompt, tool)
+        except Exception as e:
+            self._record_error(cfg, prompt, e, int((time.time() - t0) * 1000))
+            raise
         for b in blocks:
             if b.get("type") == "tool_use":
+                # 先确认拿到了工具调用再记账——下面那个 EmptyOutput 是
+                # 业务失败不是调用失败，记成 ok 会把失败藏起来。
+                self._record(cfg, prompt, "", usage)
                 return b.get("input")
+        self._record_error(cfg, prompt, EmptyOutput(
+            f"环节 {stage} 要求调用 {name}，但模型返回了文本而不是工具调用。"
+            "检查是不是漏传 tool_choice。"), int((time.time() - t0) * 1000))
         raise EmptyOutput(
             f"环节 {stage} 要求调用 {name}，但模型返回了文本而不是工具调用。"
             "检查是不是漏传 tool_choice。")
@@ -634,19 +660,53 @@ class LLMClient:
           · tool_use 后面不能直接跟普通文本轮次，必须先 tool_result
         """
         cfg = self.registry.stage(stage)
-        if cfg.provider in OPENAI_COMPAT:
-            blocks, usage = self._opencode_tools(cfg, system, messages, tools)
-        elif cfg.provider == "minimax":
-            blocks, usage = self._minimax_tools(cfg, system, messages, tools)
-        else:
-            raise ConfigError(
-                f"环节 {stage} 的 provider {cfg.provider} 暂不支持工具调用")
+        t0 = time.time()
+        try:
+            if cfg.provider in OPENAI_COMPAT:
+                blocks, usage = self._opencode_tools(cfg, system, messages, tools)
+            elif cfg.provider == "minimax":
+                blocks, usage = self._minimax_tools(cfg, system, messages, tools)
+            else:
+                raise ConfigError(
+                    f"环节 {stage} 的 provider {cfg.provider} 暂不支持工具调用")
+        except Exception as e:
+            self._record_error(cfg, _msgs_chars(messages), e,
+                               int((time.time() - t0) * 1000))
+            raise
         text = "".join(b.get("text", "") for b in blocks
                        if b.get("type") == "text")
         self._record(cfg, _msgs_chars(messages), text, usage)
         return {"blocks": blocks, "usage": usage}
 
     # ---------- 记账（P7：只记不告警） ----------
+
+    def _record_error(self, cfg: StageConfig, prompt: str, exc: BaseException,
+                      ms: int | None = None) -> None:
+        """记一次**失败的**调用（2026-10-13 加）。
+
+        为什么必须有：`_record` 只在成功路径上调用，所以 504 / 429 /
+        连接超时 / JSON 解析失败这些情况，`llm_call` 里**查不到任何痕迹**。
+        真出问题时，能看到的只有「这一轮安静地过去了」，无从下手。
+
+        token 记 0，但留 `est_input_tokens`——这次尝试的规模还是值得知道，
+        它能回答「是不是长 prompt 更容易崩」这类问题。
+        """
+        try:
+            from ..db.repo import get_repo
+
+            get_repo().log_llm_call(
+                session_id=_CURRENT_SESSION.get(),
+                stage=cfg.stage,
+                model=f"{cfg.provider}/{cfg.model}",
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=ms,
+                est_input_tokens=_rough_tokens(prompt),
+                status="error",
+                error=f"{type(exc).__name__}: {exc}"[:500],
+            )
+        except Exception:
+            pass  # 记账失败不影响主流程
 
     def _record(self, cfg: StageConfig, prompt: str, out: str,
                 usage: dict | None = None) -> None:
