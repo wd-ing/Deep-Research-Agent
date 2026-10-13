@@ -102,7 +102,7 @@ def t_split():
 
 def t_embed():
     from research_agent.ingest.embed import (
-        Embedder, to_blob, from_blob, cosine_topk, stack_blobs, time_decay, DIM)
+        Embedder, to_blob, from_blob, cosine_topk, stack_blobs, DIM)
     e = Embedder.instance()
     vecs = e.embed_passages(["大型语言模型的推理能力", "苹果发布新款手机"])
     assert vecs.shape[0] == 2, vecs.shape
@@ -116,9 +116,8 @@ def t_embed():
     m = stack_blobs([to_blob(v) for v in vecs])
     idx, sc = cosine_topk(q, m, k=2)
     assert idx[0] == 0, f"Top-1 应为语义相近那条，实际 {idx}"
-    assert time_decay(None, "2026-10-03T00:00:00+00:00") == 1.0
-    assert time_decay("2020-01-01", "2026-10-03T00:00:00+00:00") < 0.1
-    return f"DIM={DIM}，float16 往返误差 <0.01，Top-1 正确，衰减正常"
+    # ⚠️ 这里原来还断言 `time_decay` 的两个行为，那个函数 2026-10-13 删了
+    return f"DIM={DIM}，float16 往返误差 <0.01，Top-1 正确"
 
 
 # ---------- 5. LLM 配置硬约束 ----------

@@ -130,21 +130,17 @@ def stack_blobs(blobs: Iterable[bytes]) -> np.ndarray:
     return np.vstack(mats)
 
 
-# ---------- 时间衰减 ----------
-
-def time_decay(source_date: str | None, now: str, half_life_days: float = 180.0) -> float:
-    """source_date 为空表示时效未知，不衰减（返回 1.0）。"""
-    from datetime import datetime, timezone
-
-    if not source_date:
-        return 1.0
-    try:
-        d = datetime.fromisoformat(source_date.replace("Z", "+00:00"))
-        if d.tzinfo is None:
-            d = d.replace(tzinfo=timezone.utc)
-        age = (datetime.fromisoformat(now.replace("Z", "+00:00")) - d).total_seconds() / 86400
-    except Exception:
-        return 1.0
-    if age <= 0:
-        return 1.0
-    return float(0.5 ** (age / half_life_days))
+# ⚠️ 这里原来有 `time_decay(source_date, now, half_life_days)`（2026-10-13 删）。
+# 它是一个「来源越新权重越高」的指数衰减函数（每 180 天减半）。
+# 从初始提交 fe5129c 就在，**一次都没被调用过**，因为它要服务的那个环节
+# ——库内检索的排序——**从来没被实现过**（全库没有一条 FTS5 MATCH 查询，
+# `cosine_topk` 也是零调用）。所以它不是「没写完」，是给一个不存在的
+# 环节预留的零件。
+#
+# 删它的理由不是省 18 行代码，而是**它会误导**：留着它，
+# HANDOVER 里那句「时间衰减接不到排序」就会一直暗示「排序已经存在、
+# 只差接一下」。将来真要做库内检索时，衰减公式是标准做法，重写只要几分钟。
+#
+# ⚠️ 注意别把 `source_date` 字段一起删了——那个**在大量使用**：
+# 来源库显示日期、`read_source` 工具让模型看得到来源日期、抓取时写入。
+# 删掉的只是「怎么用日期算权重」这个策略，不是时间信息本身。
