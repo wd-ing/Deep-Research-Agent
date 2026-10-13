@@ -200,12 +200,11 @@ stages:
     max_output_tokens: 4096
     guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 8192 }
 
-  # 证据分派。把断言映射到小节，直接决定报告结构，不能用 T0。
-  assign:
-    provider: xj189
-    temperature: 0.0
-    max_output_tokens: 4096
-    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 8192 }
+  # ⚠️ 这里原来还有一个 `assign`（证据分派：把断言映射到小节），
+  # **2026-10-13 删掉**：它要映射的「断言」已经不存在了。
+  # `claim` 表被 `superseded_by` 取代（段级/来源级），而分派现在
+  # 由 `assess` 带着框架一起做——每个环节调用前都会拿到
+  # 「这一节该看哪几段」。留着这段配置只会让人以为有个分派环节没接。
 
   # 段落概括。批量 12 段，每段一句话，机械生成。
   summarize:

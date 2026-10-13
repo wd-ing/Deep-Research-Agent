@@ -634,10 +634,14 @@ write 子图结构自检 7/7 全过，而连续三个 bug 全在 `node_write` �
 
 ### 中期的
 
-- **前端**（一行没写）：报告阅读 + 引用跳转、审批界面、`assemble_warnings` 高亮
+> ⚠️ 这里原来第一条写的是「**前端（一行没写）**：报告阅读 + 引用跳转、审批界面、`assemble_warnings` 高亮」——
+> **2026-10-13 核实为彻底过时并删除**：四项全在（`ReportView.tsx` 153 行、`ApprovalView.tsx` 81 行、
+> 引用跳转 `withRefs`、`ReportView.tsx:60` 存疑节琥珀色高亮），前端共 3047 行。这已是这张表第二次腐化。
+
 - **Agnes 接入**：`DESIGN_R7_SECONDARY_MODELS.md` 有完整方案（接 `write_plan`/`probe_*`/
   `outline`/`extract`，不接 `write_audit`/`relevance`），需要 provider 适配 + 令牌桶
-- `assign` / `dedupe`：配置里有、图里零调用点，**记着的待办**不是废代码
+- `dedupe`：配置里有、图里零调用点，**记着的待办**不是废代码。实测按内容哈希做触发率为 0，真要干活得是语义级去重
+- ~~`assign`~~：✅ **2026-10-13 删掉**。它要映射的「断言」已被 `superseded_by` 取代（`claim` → 段级/来源级取代），分派现在由 `assess` 带框架一起做。**环节不存在，不是待接入**——和 `claim`/`time_decay` 同一类
 - ~~段落概括 JSON 失败率~~：✅ **已彻底解决**（2026-10-13 核实）。`extract_batch.py:263` 用
   `complete_json_forced(..., name="emit_summaries", schema=...)` 强制工具调用，代码注释记着
   「同一组数据实测 3/3 通过」；**v5 真实数据 143/143 段概括完整，0 段为空**。

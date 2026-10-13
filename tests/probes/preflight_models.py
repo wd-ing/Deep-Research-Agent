@@ -9,6 +9,10 @@
   2. 解析成功（含 JSON 修复兜底）
   3. 关键字段齐全
   4. 思考与正文各占多少
+
+⚠️ 2026-10-13：这里原来还有一条 `assign`（证据分派）的用例，已随该环节
+一起删除——它映射的「断言」已被 `superseded_by` 取代。留着会让这个探针
+一跑就报「stage 不存在」，而真正的分派现在由 `assess` 带着框架一起做。
 """
 
 from __future__ import annotations
@@ -108,17 +112,6 @@ TASKS = [
          "claims": [{"t": e["text"][:120], "e": []} for e in EVIDENCE[:40]],
      }, ensure_ascii=False)[:40000],
      ("has_enough", "gaps")),
-
-    ("assign       T1", M31, "low", 8192,
-     "你把一批事实断言分派到研究小节。\n**严格输出 JSON**："
-     '{"assign": {"sec1": [0,2,5], "sec2": [1,3]}}\n'
-     "每条断言可分派到多个小节，也可以一条都不分派。"
-     "只输出 小节编号 到 下标数组 的映射，不要任何解释。",
-     json.dumps({
-         "sections": [{"id": s.get("id"), "title": s.get("title")} for s in OUTLINE[:6]],
-         "evidence": [{"i": e["source"], "t": e["text"][:120]} for e in EVIDENCE],
-     }, ensure_ascii=False)[:30000],
-     ("assign",)),
 
     ("summarize    T0", M3, None, 8192, prompts.SUMMARIZE,
      f"以下是 6 个报告段落，请为每段写一句话概括：\n\n" + "\n\n".join(

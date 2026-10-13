@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useSession, api } from './useSession'
-import type { Folder, SessionSummary, SourceLibrary, SourceDetailRow } from './types'
+import type { Folder, SessionSummary, SourceLibrary, SourceDetailRow, SegPreviews } from './types'
 import { ApprovalView } from './views/ApprovalView'
 import { ReportView } from './views/ReportView'
 import { WorkflowView } from './views/WorkflowView'
@@ -23,6 +23,11 @@ export default function App() {
   const [srcQ, setSrcQ] = useState('')
   const [srcCur, setSrcCur] = useState<string | null>(null)
   const [srcDetail, setSrcDetail] = useState<SourceDetailRow | null>(null)
+
+  // ---- 引用 hover 预览（seg_preview）----
+  // ⚠️ state 声明可以放前面，**取数的 effect 必须放在 `const d = s.detail` 之后**——
+  // `d` 在下面才声明，提前引用会踩到暂时性死区（tsc 查不出来，它不报 TDZ）。
+  const [previews, setPreviews] = useState<SegPreviews>({})
 
   // ⚠️ `/api/sessions` 里的 `deleted_at IS NULL` 是**硬过滤**（server.py:114），
   // 回收站的会话根本不在这一份里。必须单独打 `/api/trash`，
@@ -93,6 +98,20 @@ export default function App() {
 
   const d = s.detail
   const report = d?.report ?? ''
+
+  /** 引用 hover 预览。**只在有报告时取**：没有报告就没有引用可 hover。
+   *  换会话时先清空——留着上一场的预览，新报告里的段号
+   *  恰好同名就会显示别人的内容（段号是按 rowid 编的，
+   *  两个会话里 S1·1 指的是完全不同的段）。 */
+  useEffect(() => {
+    setPreviews({})
+    if (!sid || !d?.report) return
+    let alive = true
+    api.jget<SegPreviews>(`/api/sessions/${sid}/seg_preview`)
+      .then((r) => { if (alive) setPreviews(r) })
+      .catch(() => { if (alive) setPreviews({}) })
+    return () => { alive = false }
+  }, [sid, d?.report])
 
   return (
     <div className="flex h-screen text-ink">
@@ -199,6 +218,7 @@ export default function App() {
           <div className="flex-1 overflow-auto">
             <ReportView
               markdown={report}
+              previews={previews}
               ignoredCitations={d?.ignored_citations ?? []}
               onOpenSource={openSourceFromReport}
               onRef={(r) => {

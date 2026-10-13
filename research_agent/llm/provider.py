@@ -43,9 +43,11 @@ NEEDS_GUARD = {
     "probe_light", "probe_outline", "probe_degraded", "outline", "extract",
     "relevance", "assess", "write_plan", "write_audit",
     "write_section", "write_revise", "summarize",
-    # assign / dedupe：配置里有、图里没有调用点，是**记着的待办**不是废代码。
-    # 真要接入时它们已经在白名单和 guard 里了。查证：grep 调用点为 0。
-    "assign", "dedupe",
+    # dedupe：配置里有、图里没有调用点，是**记着的待办**不是废代码。
+    # 真要接入时它已经在白名单和 guard 里了。查证：grep 调用点为 0。
+    # （`assign` 原来也在这个名单里，2026-10-13 连配置一起删了——
+    #  它要映射的「断言」已被 superseded_by 取代，环节不存在了。）
+    "dedupe",
 }
 
 # MiniMax 的思考深度档位。省略 output_config.effort 时默认 max。

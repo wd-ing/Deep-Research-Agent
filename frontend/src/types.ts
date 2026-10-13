@@ -142,6 +142,26 @@ export interface SegmentRow {
   来源?: SourceMeta
 }
 
+/** 一个引用段号的 hover 预览（`GET /api/sessions/{id}/seg_preview`）。
+ *
+ *  **故意不含全文**：143 段全文几十 KB，而 hover 只看得到前两三行。
+ *  `已排除` 是刻意带上的——被排除的来源不会从报告里消失，
+ *  气泡是用户第一次看见这个标记的机会（不 hover 就永远看不见）。 */
+export interface SegPreview {
+  标题: string
+  概括: string
+  /** 正文前 180 字，空白已折叠 */
+  摘录: string
+  来源号: string
+  域名: string
+  名称: string
+  性质: string
+  已排除: boolean
+  token: number
+}
+
+export type SegPreviews = Record<string, SegPreview>
+
 /** 报告里被引用、但已被标记排除的来源（`GET /api/sessions/{id}`）。
  *  报告写完之后才排除，报告不会被改写——靠这条提示兜底。 */
 export interface IgnoredCitation {

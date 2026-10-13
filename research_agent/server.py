@@ -637,6 +637,75 @@ def approval(sid: str) -> dict:
     return {"waiting": True, "approval": payload}
 
 
+@app.get("/api/sessions/{sid}/seg_preview")
+def seg_preview(sid: str) -> dict:
+    """报告里所有引用段号的**轻量预览**（前端 hover 气泡用）。
+
+    ## 为什么不复用 `/seg/{ref}` 或 `/segments`
+
+    v5 报告 162 处引用，去重后 **93 个不同段号**：
+
+    - 逐个点开 = 93 次请求，鼠标扫一遍报告就几十个请求
+    - 一次全取 `/segments` = 把 143 段**全文**都拉下来（几十 KB，
+      而 hover 时看不到全文，只会用前两三行）
+
+    所以这里只给「够判断这段是什么」的那几样：标题、概括、前 180 字、
+    来源域名与性质、以及**是否已被用户排除**。
+
+    最后一项是刻意加的：被排除的来源不会从报告里消失（阶段 5 的前提），
+    hover 时如果看不到这个标记，用户会以为点开抽屉才知道——
+    而抽屉要点一下才看得见。气泡是第一次提醒的机会。
+
+    ## 段号必须复用 `EvidenceTools`
+
+    这里的 `tools.chunk_of` 就是 `node_write` 写引用时用的同一套编号。
+    **自己按 rowid 重算一遍会和报告里的段号错位**——
+    `/seg/{ref}` 已经踩过这个坑，注释还留在那里。
+    """
+    from .tools.evidence import EvidenceTools
+
+    repo = get_repo()
+    if not repo.q1("SELECT 1 FROM session WHERE id=?", (sid,)):
+        raise HTTPException(404, "会话不存在")
+    try:
+        tools = EvidenceTools(repo, sid)
+    except Exception as e:
+        raise HTTPException(500, f"段号索引构建失败：{e}")
+    if not tools.chunk_of:
+        return {}
+
+    rows = repo.q(
+        "SELECT c.id, c.source_id, c.heading_path, c.summary, c.content, "
+        "       c.token_count, s.domain, s.title, s.source_nature "
+        "FROM chunk c LEFT JOIN source s ON s.id=c.source_id "
+        "WHERE c.session_id=?", (sid,))
+    by_id = {r["id"]: r for r in rows}
+    bad = {r["source_id"] for r in repo.q(
+        "SELECT source_id FROM ignored_source WHERE source_id IN "
+        "(SELECT id FROM source WHERE session_id=?)", (sid,))}
+
+    out: dict[str, dict] = {}
+    for ref, cid in tools.chunk_of.items():
+        r = by_id.get(cid)
+        if not r:
+            continue
+        # 摘录取正文前 180 字。**折叠空白**——抓来的网页正文里
+        # 到处是换行和连续空格，不折的话一行放不下三个字。
+        text = " ".join((r["content"] or "").split())[:180]
+        out[ref] = {
+            "标题": r["heading_path"] or "",
+            "概括": r["summary"] or "",
+            "摘录": text,
+            "来源号": tools._src_ref(r["source_id"]) if r["source_id"] else "",
+            "域名": r["domain"] or "",
+            "名称": r["title"] or "",
+            "性质": r["source_nature"] or "",
+            "已排除": bool(r["source_id"] and r["source_id"] in bad),
+            "token": r["token_count"],
+        }
+    return out
+
+
 @app.get("/api/sessions/{sid}/seg/{ref}")
 def read_segment(sid: str, ref: str) -> dict:
     """按段号取原文（`S1·5` 形式），报告里的 `[S1·5]` 点击就走这里。
