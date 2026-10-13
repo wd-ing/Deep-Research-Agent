@@ -260,7 +260,9 @@ export default function App() {
         )}
 
         {s.view === 'done' && report && (
-          <div ref={reportScrollRef} className="flex-1 overflow-auto">
+          /* 抽屉打开时锁住这个容器——滚的是它，不是 body。
+             锁 body 没用：它压根不滚，报告会从抽屉底下划过去。 */
+          <div ref={reportScrollRef} className={s.seg ? 'flex-1 overflow-hidden' : 'flex-1 overflow-auto'}>
             <ReportView
               scrollRef={reportScrollRef}
               markdown={report}

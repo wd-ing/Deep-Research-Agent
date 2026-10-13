@@ -12,6 +12,37 @@ const REF_RE = /\[(S\d+·\d+)\]/g
  *  即时弹出就是一串闪烁的方块——等一小会儿，只为「停下来看」的意图服务。 */
 const HOVER_DELAY = 250
 
+/** 段号 → 本报告引用了几次。
+ *
+ *  ⚠️ 数的是**原文里的 `[S..·..]`**，不是数渲染出来的 chip。两者只有一种情况会差：
+ *  代码块——`code` 组件不过 `withRefs`，里面的 `[S2·1]` 会保持纯文本。
+ *  所以先把围栏代码块剔掉。行内反引号没剔（react-markdown 的 `code` 同样不转换），
+ *  v5 真实报告实测围栏 0 / 反引号 0，这里对得上。
+ */
+function refCounts(markdown: string): Map<string, number> {
+  const m = new Map<string, number>()
+  for (const x of markdown.replace(/```[\s\S]*?```/g, '').matchAll(REF_RE)) {
+    m.set(x[1], (m.get(x[1]) ?? 0) + 1)
+  }
+  return m
+}
+
+/** 引用被复用的次数 → 三档外观。
+ *
+ *  v5 真实报告实测：162 处引用 / 93 个去重段号，分布是
+ *  **1 次 51 段、2 次 24、3 次 12、4 次 5、7 次 1**。
+ *
+ *  所以「只出现一次」占 55%，它是**基准**，不需要任何强调；
+ *  值得跳出来的是被反复引用的那 6 个段——报告的承重墙。
+ *  之前 162 处全是同一种蓝底虚线，等于完全没有信息：
+ *  一句话是靠一堆材料堆出来的、还是孤证，全看不出来。 */
+function tierClass(n: number): string {
+  if (n >= 4) return 'bg-blue-100 font-medium text-blue-900 underline decoration-solid decoration-blue-400 hover:bg-blue-200'
+  if (n >= 2) return 'bg-blue-50 text-accent underline decoration-dotted hover:bg-blue-100'
+  return 'text-accent underline decoration-dotted hover:bg-blue-50'
+}
+
+
 /** 引用标记 + hover 预览。
  *
  *  ⚠️ 气泡用 **portal + `position: fixed`**，两个原因缺一不可：
@@ -26,17 +57,21 @@ const HOVER_DELAY = 250
  *  等于给同一句话两个提示，其中一个还要等一秒。
  */
 function RefChip({
-  ref: segRef, seg, onClick,
+  ref: segRef, seg, count, onClick,
 }: {
   ref: string
   seg: SegPreview | undefined
+  /** 本报告引用这一段的次数。用来分档 + 在气泡里说明。 */
+  count: number
   onClick: () => void
 }) {
   const [show, setShow] = useState(false)
   const [pos, setPos] = useState({ left: 0, top: 0, below: true })
   const timer = useRef<number | null>(null)
 
-  const open = (e: React.MouseEvent) => {
+  // ⚠️ 参数是 `SyntheticEvent` 不是 `MouseEvent`：键盘 Tab 过来的
+  //  `onFocus` 也要算同一个位置，`FocusEvent` 同样有 `currentTarget`。
+  const open = (e: React.SyntheticEvent, delay = HOVER_DELAY) => {
     const r = e.currentTarget.getBoundingClientRect()
     // 高度先按估算给（3 行文字 + 头部），真放不下就翻到上方
     const h = seg?.概括 ? 190 : 150
@@ -46,7 +81,7 @@ function RefChip({
       top: below ? r.bottom + 6 : r.top - 6,
       below,
     })
-    timer.current = window.setTimeout(() => setShow(true), HOVER_DELAY)
+    timer.current = window.setTimeout(() => setShow(true), delay)
   }
   const close = () => {
     if (timer.current) { clearTimeout(timer.current); timer.current = null }
@@ -56,15 +91,32 @@ function RefChip({
     if (timer.current) clearTimeout(timer.current)
   }, [])
 
+  /** 无障碍标签只说「这是什么、指向哪儿、复用了几次」，**不复制正文**——
+   *  全文和概括在抽屉里，回车就能读到；塞进 aria-label 只会让屏幕阅读器
+   *  把同一段话读两遍。气泡本身不进 a11y 树（`pointer-events-none` 的
+   *  portal，和按钮没有 `aria-describedby` 关联），所以标签必须自足。 */
+  const ariaLabel = [
+    `引用 ${segRef}`,
+    seg?.域名 && `来自 ${seg.域名}`,
+    count > 1 && `本报告引用 ${count} 次`,
+  ].filter(Boolean).join('，')
+
   return (
     <>
       <button
         onMouseEnter={open}
         onMouseLeave={close}
-        onClick={onClick}
+        // 键盘可达：Tab 到引用就该出气泡，和 hover 同一份逻辑。
+        // **焦点不给延迟**——hover 的延迟是为了躲开「扫过」，而 Tab 是明确的停留。
+        onFocus={(e) => open(e, 0)}
+        onBlur={close}
+        // 点击前先收气泡：抽屉一开，气泡(portal 到 body, z-50)会浮在
+        // 抽屉(z-40)上面，而鼠标还压在这个引用上，它不会自己消失。
+        onClick={() => { close(); onClick() }}
+        aria-label={ariaLabel}
         // 报告里经常出现 `[S2·1][S21·1]` 这种相邻引用，
         // 不留左右间距会粘成一串 `S2·1S21·1`，看着像乱码。
-        className="mx-[1px] rounded bg-blue-50 px-1 text-[0.85em] text-accent underline decoration-dotted hover:bg-blue-100"
+        className={`mx-[1px] rounded px-1 text-[0.85em] ${tierClass(count)}`}
       >{segRef}</button>
       {show && seg && createPortal(
         <div
@@ -96,7 +148,11 @@ function RefChip({
               ⚠ 这个来源已被你标记为无用
             </div>
           )}
-          <div className="mt-1 text-[10px] text-muted">点击看原文</div>
+          <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted">
+            {/* 只在复用时说——被引一次是常态，标出来反而是噪音 */}
+            {count > 1 && <span>本报告引用 {count} 次</span>}
+            <span className="ml-auto">点击看原文</span>
+          </div>
         </div>,
         document.body,
       )}
@@ -111,6 +167,7 @@ function withRefs(
   children: ReactNode,
   onRef: (ref: string) => void,
   previews: SegPreviews,
+  counts: Map<string, number>,
 ): ReactNode {
   if (typeof children === 'string') {
     const out: ReactNode[] = []
@@ -121,7 +178,7 @@ function withRefs(
       const ref = m[1]
       out.push(
         <RefChip key={`${ref}-${i}`} ref={ref} seg={previews[ref]}
-                 onClick={() => onRef(ref)} />
+                 count={counts.get(ref) ?? 1} onClick={() => onRef(ref)} />
       )
       last = i + m[0].length
     }
@@ -134,9 +191,9 @@ function withRefs(
     // validateDOMNesting。元素原样放行（`withRefs` 对元素直接返回它本身）。
     return children.map((c, i) => {
       if (typeof c === 'string' || typeof c === 'number') {
-        return <span key={i}>{withRefs(c, onRef, previews)}</span>
+        return <span key={i}>{withRefs(c, onRef, previews, counts)}</span>
       }
-      return <Fragment key={i}>{withRefs(c, onRef, previews)}</Fragment>
+      return <Fragment key={i}>{withRefs(c, onRef, previews, counts)}</Fragment>
     })
   }
   return children
@@ -194,9 +251,10 @@ function mdComponents(
   onRef: (ref: string) => void,
   previews: SegPreviews,
   ids: Map<string, string>,
+  counts: Map<string, number>,
   compact = false,
 ) {
-  const R = (c: ReactNode) => withRefs(c, onRef, previews)
+  const R = (c: ReactNode) => withRefs(c, onRef, previews, counts)
   // 标题 id：目录靠它跳转，所以正文里的 `[S2·1]` 也要去掉再比
   const idOf = (c: ReactNode) =>
     ids.get(textOf(c).replace(/\[S\d+·\d+\]/g, '').trim()) ?? undefined
@@ -213,14 +271,20 @@ function mdComponents(
           // 大环节标题下压一条线：43 个标题滚过去时靠这条线分段。
           // `scroll-mt-24` 是给顶部常驻区（进度条+目录条）让位——
           // 不加的话点目录跳过来，标题正好藏在常驻条底下
-          : 'mb-3 mt-8 scroll-mt-24 border-b border-line pb-1 text-base font-semibold'
+          : 'mb-3 mt-8 scroll-mt-24 border-b border-line pb-1 text-lg font-semibold'
       }>{R(children)}</h2>
     ),
+    // ⚠️ **层级原来是倒置的**：正文 16px，而 h3 只有 14px——小节标题
+    // 比它管辖的正文还小。h2 的 16px 又跟正文同号，只靠字重区分，
+    // 43 个标题滚过去全糊成一片。
+    // 现在：h2 = 18px + 下边线，h3 = 16px 半粗 + 左侧色条。
+    // 色条用 `-ml-3 pl-3` **往外借位**——正文左边缘保持对齐，
+    // 只把色条放进 `max-w-3xl px-6` 的内边距里（不会溢出、不用改容器）。
     h3: ({ children }: { children?: ReactNode }) => (
-      <h3 id={idOf(children)} className={compact ? 'scroll-mt-24 text-sm font-medium'
-                                                 : 'mb-2 mt-5 scroll-mt-24 text-sm font-semibold'}>
-        {R(children)}
-      </h3>
+      <h3 id={idOf(children)} className={compact
+        ? 'scroll-mt-24 text-sm font-medium'
+        : '-ml-3 mb-2 mt-6 scroll-mt-24 border-l-2 border-accent/40 pl-3 text-base font-semibold'
+      }>{R(children)}</h3>
     ),
     p: ({ children }: { children?: ReactNode }) => (
       <p className={compact ? 'my-2' : 'my-3'}>{R(children)}</p>
@@ -352,12 +416,17 @@ export function ReportView({
   // ---- 目录 / 进度 / 当前节 ----
   const toc = useMemo(() => scanHeadings(parts.body, parts.doubt), [parts])
   const ids = useMemo(() => headingIds(toc), [toc])
+  /** 数的是**整篇**（含存疑节）。分档看的是「这个段被引用几次」，
+   *  跨正文和存疑节才是读者心里的那个数。 */
+  const counts = useMemo(() => refCounts(markdown), [markdown])
   const [openToc, setOpenToc] = useState(false)
   const [activeId, setActiveId] = useState('')
   const [pct, setPct] = useState(0)
 
-  const bodyMd = useMemo(() => mdComponents(onRef, previews, ids), [onRef, previews, ids])
-  const doubtMd = useMemo(() => mdComponents(onRef, previews, ids, true), [onRef, previews, ids])
+  const bodyMd = useMemo(
+    () => mdComponents(onRef, previews, ids, counts), [onRef, previews, ids, counts])
+  const doubtMd = useMemo(
+    () => mdComponents(onRef, previews, ids, counts, true), [onRef, previews, ids, counts])
 
   useEffect(() => {
     const el = scrollRef.current
