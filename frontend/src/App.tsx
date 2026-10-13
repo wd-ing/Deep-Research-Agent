@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSession, api } from './useSession'
 import type { Folder, SessionSummary, SourceLibrary, SourceDetailRow, SegPreviews } from './types'
 import { ApprovalView } from './views/ApprovalView'
@@ -9,6 +9,7 @@ import { SegDrawer, NatureBadge } from './components/SegDrawer'
 import { RoundChart } from './components/RoundChart'
 import { Sidebar, type Pane } from './components/Sidebar'
 import { SourceDetail } from './components/SourceDetail'
+import { NewResearchDialog } from './components/NewResearchDialog'
 
 export default function App() {
   const [sid, setSid] = useState<string | null>(null)
@@ -31,6 +32,13 @@ export default function App() {
   // ⚠️ state 声明可以放前面，**取数的 effect 必须放在 `const d = s.detail` 之后**——
   // `d` 在下面才声明，提前引用会踩到暂时性死区（tsc 查不出来，它不报 TDZ）。
   const [previews, setPreviews] = useState<SegPreviews>({})
+
+  // ---- 新建研究对话框（替掉原生 prompt）----
+  const [newOpen, setNewOpen] = useState(false)
+
+  // 报告正文的滚动容器。目录跳转、阅读进度、当前节高亮全靠它——
+  // 滚动的是这个容器，不是报告自己（报告是里面一块静态内容）。
+  const reportScrollRef = useRef<HTMLDivElement>(null)
 
   // ⚠️ `/api/sessions` 里的 `deleted_at IS NULL` 是**硬过滤**（server.py:114），
   // 回收站的会话根本不在这一份里。必须单独打 `/api/trash`，
@@ -117,6 +125,7 @@ export default function App() {
 
   async function start(question: string) {
     const id = await s.create(question)
+    setNewOpen(false)
     setSid(id)
     await refresh()
     void s.start(id)
@@ -124,6 +133,10 @@ export default function App() {
 
   const d = s.detail
   const report = d?.report ?? ''
+
+  /** 切会话的过渡态：`sid` 有了、`detail` 还没到（`useSession` 里会先置空）。
+   *  没有它的话这个窗口里主区域什么都不渲染——看着像点了没反应。 */
+  const switching = !!sid && s.view === 'idle' && !d
 
   /** 引用 hover 预览。**只在有报告时取**：没有报告就没有引用可 hover。
    *  换会话时先清空——留着上一场的预览，新报告里的段号
@@ -148,10 +161,7 @@ export default function App() {
         folders={folders}
         onPick={setSid}
         onChanged={refresh}
-        onNew={() => {
-          const q = prompt('要研究什么问题？')
-          if (q) void start(q)
-        }}
+        onNew={() => setNewOpen(true)}
         pane={pane}
         // 离开来源库时 `srcCur` 和 `srcDetail` 要**一起**清。
         // 只清前者会让详情页残留上一条来源——列表里没有任何行是选中态，
@@ -224,6 +234,13 @@ export default function App() {
           </div>
         )}
 
+        {switching && (
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 text-muted">
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-line border-t-accent" />
+            <p className="text-sm">正在打开…</p>
+          </div>
+        )}
+
         {/* 待审批时**只显示审批视图**——规划环节已经跑完，
             审批页本身就是结论，不需要再叠一层工作流 */}
         {(s.view === 'running'
@@ -243,8 +260,9 @@ export default function App() {
         )}
 
         {s.view === 'done' && report && (
-          <div className="flex-1 overflow-auto">
+          <div ref={reportScrollRef} className="flex-1 overflow-auto">
             <ReportView
+              scrollRef={reportScrollRef}
               markdown={report}
               previews={previews}
               ignoredCitations={d?.ignored_citations ?? []}
@@ -288,7 +306,29 @@ export default function App() {
       </main>
       )}
 
+      {/* 全局忙碌指示：任何请求在飞时，顶部一条 2px 的不定长进度线。
+          `busy` 是计数器不是布尔值（并发请求时布尔值会被先完成的那次清掉）。
+          它覆盖的是「点了之后有一小段没反应」的那些请求——建会话、启动、
+          审批、切换会话取详情。 */}
+      {s.busy && (
+        <div className="fixed inset-x-0 top-0 z-40 h-0.5 overflow-hidden bg-line" aria-hidden>
+          <div className="h-full w-1/3 animate-pulse bg-accent" />
+        </div>
+      )}
+
       {pane === 'session' && <SegDrawer seg={s.seg} onClose={() => s.setSeg(null)} />}
+
+      {/* 新建研究。`list` 已经在手上了，「最近问过」不用额外请求。
+          只给未归档的——归档是「我不想再看了」，摆进新建框里是干扰。 */}
+      {newOpen && (
+        <NewResearchDialog
+          busy={s.busy}
+          recent={list.filter((x) => !x.archived_at).slice(0, 4)
+            .map((x) => ({ id: x.id, question: x.question }))}
+          onCancel={() => setNewOpen(false)}
+          onSubmit={(q) => void start(q)}
+        />
+      )}
 
       {/* 一次操作没成的提示（2026-10-13 加）。
           `role="status" + aria-live`：屏幕阅读器能听到——项目里已有

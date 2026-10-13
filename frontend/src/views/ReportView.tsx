@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { IgnoredCitation, SegPreview, SegPreviews } from '../types'
 import { NatureBadge } from '../components/SegDrawer'
+import { ProgressBar, TocBar, scanHeadings, type TocItem } from '../components/Toc'
 
 const REF_RE = /\[(S\d+·\d+)\]/g
 
@@ -141,6 +142,41 @@ function withRefs(
   return children
 }
 
+/** ReactNode 里所有文字，递归取出来（跳过结构）。
+ *
+ *  用于给标题算 id：markdown 组件拿到的 `children` 可能是一段纯文本，
+ *  也可能是 `[文本, <RefChip/>]` 这样的数组，两种都要能取出可比的文本。
+ */
+function textOf(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(textOf).join('')
+  if (node && typeof node === 'object' && 'props' in node) {
+    const p = (node as { props?: { children?: ReactNode } }).props
+    return p?.children ? textOf(p.children) : ''
+  }
+  return ''
+}
+
+/** 标题文本 → 目录 id。
+ *
+ *  ⚠️ **必须渲染时就带上 id，不能事后用 useEffect + setAttribute 补。**
+ *  补过一次确实对，但 `previews` 到位后 `mdComponents` 会被重算，
+ *  `h2`/`h3` 就成了**新的组件类型**——React 会把整棵标题树卸载重建，
+ *  刚补好的 id 全部消失，而那个 effect 的依赖是 `toc`（没变）、不会重跑。
+ *  结果就是标题永远没有 id、目录点了没反应。
+ *
+ *  查表是纯函数，重渲多少次结果都一样，StrictMode 跑两遍也没事。
+ */
+function headingIds(toc: TocItem[]): Map<string, string> {
+  const m = new Map<string, string>()
+  for (const t of toc) {
+    // 清洗后撞名的标题只记第一个：目录跳到哪一个都说得过去，
+    // 但**不能**让后一个覆盖前面的——那会让目录里两项指向同一节。
+    if (!m.has(t.text)) m.set(t.text, t.id)
+  }
+  return m
+}
+
 /** 报告里出现的 markdown 元素的统一样式。
  *
  *  ⚠️ 原来 `<article>` 上写的是 `prose-sm`，但 `@tailwindcss/typography`
@@ -157,9 +193,13 @@ function withRefs(
 function mdComponents(
   onRef: (ref: string) => void,
   previews: SegPreviews,
+  ids: Map<string, string>,
   compact = false,
 ) {
   const R = (c: ReactNode) => withRefs(c, onRef, previews)
+  // 标题 id：目录靠它跳转，所以正文里的 `[S2·1]` 也要去掉再比
+  const idOf = (c: ReactNode) =>
+    ids.get(textOf(c).replace(/\[S\d+·\d+\]/g, '').trim()) ?? undefined
   return {
     h1: ({ children }: { children?: ReactNode }) => (
       <h1 className={compact ? 'mb-2 text-base font-semibold' : 'mb-4 text-xl font-semibold'}>
@@ -167,15 +207,18 @@ function mdComponents(
       </h1>
     ),
     h2: ({ children }: { children?: ReactNode }) => (
-      <h2 className={
+      <h2 id={idOf(children)} className={
         compact
-          ? 'mb-2 mt-3 text-sm font-semibold'
-          // 大环节标题下压一条线：43 个标题滚过去时靠这条线分段
-          : 'mb-3 mt-8 border-b border-line pb-1 text-base font-semibold'
+          ? 'mb-2 mt-3 scroll-mt-24 text-sm font-semibold'
+          // 大环节标题下压一条线：43 个标题滚过去时靠这条线分段。
+          // `scroll-mt-24` 是给顶部常驻区（进度条+目录条）让位——
+          // 不加的话点目录跳过来，标题正好藏在常驻条底下
+          : 'mb-3 mt-8 scroll-mt-24 border-b border-line pb-1 text-base font-semibold'
       }>{R(children)}</h2>
     ),
     h3: ({ children }: { children?: ReactNode }) => (
-      <h3 className={compact ? 'text-sm font-medium' : 'mb-2 mt-5 text-sm font-semibold'}>
+      <h3 id={idOf(children)} className={compact ? 'scroll-mt-24 text-sm font-medium'
+                                                 : 'mb-2 mt-5 scroll-mt-24 text-sm font-semibold'}>
         {R(children)}
       </h3>
     ),
@@ -237,7 +280,9 @@ function mdComponents(
  *  他后来标成了不可信。不提示就是让不可信结论悄悄留在那里。
  *
  *  报告有 2 万字，提示条若只挂在正文最上方，用户滚到中段读到那些
- *  段落时就看不见了，所以 `sticky` 常驻在滚动容器顶部。
+ *  段落时就看不见了——所以它常驻。**现在由外层的 sticky 容器统一负责**，
+ *  原来这里自己带的 `sticky top-0 z-10` 已经去掉：进度条也占顶部，
+ *  两块各自 sticky 会互相压住。
  */
 function IgnoredBanner({
   items, onOpenSource,
@@ -248,7 +293,7 @@ function IgnoredBanner({
   if (!items.length) return null
   const total = items.reduce((a, x) => a + x.citations, 0)
   return (
-    <div className="sticky top-0 z-10 mb-5 rounded-md border border-amber-300 bg-amber-50 px-3.5 py-2.5">
+    <div className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3.5 py-2.5">
       <div className="text-[13px] font-medium leading-relaxed text-amber-900">
         ⚠ 本报告引用了 {items.length} 个已排除的来源
         <span className="font-normal">（共 {total} 处引用）：</span>
@@ -281,7 +326,7 @@ function IgnoredBanner({
 }
 
 export function ReportView({
-  markdown, onRef, ignoredCitations = [], onOpenSource, previews = {},
+  markdown, onRef, ignoredCitations = [], onOpenSource, previews = {}, scrollRef,
 }: {
   markdown: string
   onRef: (ref: string) => void
@@ -289,6 +334,9 @@ export function ReportView({
   onOpenSource?: (id: string) => void
   /** 段号 → 预览。缺了引用就只是没有气泡，引用仍可点开抽屉。 */
   previews?: SegPreviews
+  /** 外层那个 `overflow-auto` 容器。目录跳转、进度条、当前节高亮
+   *  都要拿它算——报告正文不是滚动它自己，是滚动那个容器。 */
+  scrollRef: React.RefObject<HTMLDivElement | null>
 }) {
   const parts = useMemo(() => {
     // 「存疑与未完成」是系统主动声明的弱点，要和正文视觉区分开
@@ -301,31 +349,88 @@ export function ReportView({
   //  原来存疑节那一整套 components 是单独写的、没套 `withRefs`——
   //  那节里的 `[S12·3]` 全是死文本。而它恰恰是全报告最长的一节
   //  （v5 实测 5,221 字符），引用密度不低。
-  const bodyMd = useMemo(() => mdComponents(onRef, previews), [onRef, previews])
-  const doubtMd = useMemo(() => mdComponents(onRef, previews, true), [onRef, previews])
+  // ---- 目录 / 进度 / 当前节 ----
+  const toc = useMemo(() => scanHeadings(parts.body, parts.doubt), [parts])
+  const ids = useMemo(() => headingIds(toc), [toc])
+  const [openToc, setOpenToc] = useState(false)
+  const [activeId, setActiveId] = useState('')
+  const [pct, setPct] = useState(0)
+
+  const bodyMd = useMemo(() => mdComponents(onRef, previews, ids), [onRef, previews, ids])
+  const doubtMd = useMemo(() => mdComponents(onRef, previews, ids, true), [onRef, previews, ids])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onScroll = () => {
+      const max = el.scrollHeight - el.clientHeight
+      setPct(max <= 0 ? 0 : Math.min(100, Math.round((el.scrollTop / max) * 100)))
+      // 当前节 = 最后一个越过「距容器顶 96px」这条线的标题。
+      // 96px 是给常驻的进度条+目录条留的位置，标题不能算在它底下。
+      const top = el.getBoundingClientRect().top + 96
+      let cur = ''
+      for (const t of toc) {
+        const h = el.querySelector(`#${t.id}`)
+        if (h && h.getBoundingClientRect().top <= top) cur = t.id
+      }
+      setActiveId(cur)
+    }
+    onScroll()
+    el.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', onScroll)
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', onScroll)
+    }
+  }, [scrollRef, toc])
+
+  const jump = (id: string) => {
+    const h = scrollRef.current?.querySelector(`#${id}`)
+    if (!h) return
+    // 用户在系统里关了动效就别滑——全局 CSS 也压了 transition，
+    // 但 scroll-behavior 不在那条规则里，得显式判断
+    const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    h.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' })
+    setOpenToc(false)
+  }
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-8">
-      <IgnoredBanner items={ignoredCitations} onOpenSource={onOpenSource ?? (() => {})} />
-      {/* ⚠️ 这里原来写的是 `prose-sm`——那个类从未生效，见 mdComponents 的说明 */}
-      <article className="leading-7 text-ink">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={bodyMd}>
-          {parts.body}
-        </ReactMarkdown>
-      </article>
+    <>
+      {/* 进度条 + 排除提示 + 目录，合成**一个**常驻区。
+          原来 IgnoredBanner 自己带 `sticky top-0`，现在进度条也占顶部，
+          两个各自 sticky 会叠在一起——所以收进同一个容器按顺序排。 */}
+      <div className="sticky top-0 z-20 bg-white/95 backdrop-blur">
+        <ProgressBar pct={pct} />
+        <div className="mx-auto max-w-3xl px-6">
+          <IgnoredBanner items={ignoredCitations} onOpenSource={onOpenSource ?? (() => {})} />
+          <TocBar
+            toc={toc} active={activeId} open={openToc}
+            onToggle={() => setOpenToc((v) => !v)} onJump={jump}
+          />
+        </div>
+      </div>
 
-      {parts.doubt && (
-        <section className="mt-10 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
-          <div className="mb-2 text-xs font-medium text-amber-900">
-            以下是系统自己声明的存疑与未完成，和上面的正文可信度不同
-          </div>
-          <article className="text-sm leading-6 text-amber-950">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={doubtMd}>
-              {parts.doubt}
-            </ReactMarkdown>
-          </article>
-        </section>
-      )}
-    </div>
+      <div className="mx-auto max-w-3xl px-6 pb-8 pt-4">
+        {/* ⚠️ 这里原来写的是 `prose-sm`——那个类从未生效，见 mdComponents 的说明 */}
+        <article className="leading-7 text-ink">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={bodyMd}>
+            {parts.body}
+          </ReactMarkdown>
+        </article>
+
+        {parts.doubt && (
+          <section className="mt-10 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+            <div className="mb-2 text-xs font-medium text-amber-900">
+              以下是系统自己声明的存疑与未完成，和上面的正文可信度不同
+            </div>
+            <article className="text-sm leading-6 text-amber-950">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={doubtMd}>
+                {parts.doubt}
+              </ReactMarkdown>
+            </article>
+          </section>
+        )}
+      </div>
+    </>
   )
 }
