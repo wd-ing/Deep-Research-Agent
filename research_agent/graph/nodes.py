@@ -321,25 +321,15 @@ def node_await_approval(state: ResearchState) -> dict:
             "已抽取段数": state.get("last_round_segments", 0),
         },
         "queries": state.get("plan_queries", {}),
-        "recalled": [
-            {"id": c["id"], "summary": c.get("summary"),
-             "heading": c.get("heading_path"), "session_id": c.get("session_id"),
-             "source_date": c.get("source_date")}
-            for c in (state.get("recalled_chunks") or [])[:40]
-        ],
     }
     reply = interrupt(payload)
+    # ⚠️ 原来这里还按 `approved_recalled_ids` 筛一遍 `recalled_chunks`
+    # （历史召回）。召回 2026-10-12 砍掉后，`recalled_chunks` **从没有任何写入方**，
+    # 这里恒为空转，报告里的「认知演进」一节也因 `if earlier:` 永不成立而永不出现。
+    # 2026-10-13 连同那条链路一起删干净——空转的代码只会让人以为功能坏了。
     if isinstance(reply, dict):
-        keep = set(reply.get("approved_recalled_ids") or [])
-        return {
-            "plan_approved": bool(reply.get("approved", True)),
-            "recalled_approved": [c for c in (state.get("recalled_chunks") or [])
-                                  if c.get("id") in keep],
-            "recalled_rejected": [c for c in (state.get("recalled_chunks") or [])
-                                  if c.get("id") not in keep],
-        }
-    return {"plan_approved": bool(reply), "recalled_approved": [],
-            "recalled_rejected": []}
+        return {"plan_approved": bool(reply.get("approved", True))}
+    return {"plan_approved": bool(reply)}
 
 
 # ================================================================ 检索
@@ -1251,15 +1241,11 @@ def node_write(state: ResearchState) -> dict:
                  f" | 正文 {s.get('char_count') or 0} 字"
                  for s in all_sources]
 
-    keep = state.get("recalled_approved") or []
-    earlier = [{"summary": c.get("summary"), "date": c.get("source_date")}
-               for c in keep[:30]] if keep else []
-
     out = write_subgraph.run_write(
         session_id=sid, question=state["question"],
         outline=state.get("outline") or [],
         signals=(pr.get("signals") or {}),
-        segments=segs, on_topic=gate["keep"], earlier=earlier,
+        segments=segs, on_topic=gate["keep"],
         src_lines=src_lines,
         # 概括缺失的段数要一路传到报告里。静默丢证据比报错危险得多——
         # 报告看起来完整，实际上缺了料，而且从成品里永远看不出来。

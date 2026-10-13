@@ -401,47 +401,6 @@ class Repo:
         """事实被推翻时标记取代，不静默覆盖。"""
         self.x("UPDATE chunk SET superseded_by=? WHERE id=?", (new_id, old_id))
 
-    # ---------- 冲突 ----------
-
-    def add_contradiction(
-        self, session_id: str, topic: str, claim_a: str | None, claim_b: str | None
-    ) -> str:
-        cid = new_id("x_")
-        self.x(
-            "INSERT INTO contradiction (id,session_id,topic,claim_a,claim_b,created_at) "
-            "VALUES (?,?,?,?,?,?)",
-            (cid, session_id, topic, claim_a, claim_b, now()),
-        )
-        return cid
-
-    def open_contradictions(self, session_id: str) -> list[sqlite3.Row]:
-        return self.q(
-            "SELECT * FROM contradiction WHERE session_id=? AND resolution IS NULL",
-            (session_id,),
-        )
-
-    # ---------- 主题（展示用） ----------
-
-    def set_topics(self, session_id: str, names: Iterable[str]) -> None:
-        with self._write_lock:
-            for name in names:
-                name = name.strip()
-                if not name:
-                    continue
-                slug = name.lower().replace(" ", "-")
-                self.conn.execute(
-                    "INSERT OR IGNORE INTO topic (id,name,slug,created_at) VALUES (?,?,?,?)",
-                    (new_id("t_"), name, slug, now()),
-                )
-                row = self.conn.execute("SELECT id FROM topic WHERE name=?", (name,)).fetchone()
-                if row:
-                    self.conn.execute(
-                        "INSERT OR REPLACE INTO session_topic (session_id,topic_id,updated_at) "
-                        "VALUES (?,?,?)",
-                        (session_id, row["id"], now()),
-                    )
-            self.conn.commit()
-
     # ---------- 无用来源排除 ----------
 
     def ignore_source(self, source_id: str, reason: str = "") -> None:
@@ -459,23 +418,6 @@ class Repo:
 
     def ignored_source_ids(self) -> set[str]:
         return {r["source_id"] for r in self.q("SELECT source_id FROM ignored_source")}
-
-    def topics_of(self, session_id: str) -> list[str]:
-        rows = self.q(
-            "SELECT t.name FROM topic t JOIN session_topic st ON st.topic_id=t.id "
-            "WHERE st.session_id=? ORDER BY t.name",
-            (session_id,),
-        )
-        return [r["name"] for r in rows]
-
-    def sessions_by_topic(self, topic: str) -> list[sqlite3.Row]:
-        return self.q(
-            "SELECT s.* FROM session s "
-            "JOIN session_topic st ON st.session_id=s.id "
-            "JOIN topic t ON t.id=st.topic_id "
-            "WHERE t.name=? AND s.archived_at IS NOT NULL ORDER BY s.archived_at DESC",
-            (topic,),
-        )
 
     # ---------- 抓取缓存（7 天） ----------
 

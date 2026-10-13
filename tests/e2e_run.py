@@ -79,18 +79,15 @@ def main() -> None:
     q = out.get("plan_queries") or {}
     print(f"\n  中文查询 {len(q.get('zh') or [])} 条: {q.get('zh')}")
     print(f"  英文查询 {len(q.get('en') or [])} 条: {q.get('en')}")
-    print(f"  召回旧段落: {len(out.get('recalled_chunks') or [])}")
 
     # 记录代价基线
     before = repo.session_cost(sid)
     print(f"\n  审批前累计 token: {before}")
 
     # ---- 第二段：批准，继续跑到结束 ----
-    recall = out.get("recalled_chunks") or []
     tick("批准大纲，继续跑 retrieve → extract → …")
     out2 = g.invoke(
-        Command(resume={"approved": True,
-                        "approved_recalled_ids": [c["id"] for c in recall]}),
+        Command(resume={"approved": True}),
         config=cfg,
     )
     tick("全部节点跑完")

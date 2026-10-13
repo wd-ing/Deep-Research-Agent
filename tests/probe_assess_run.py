@@ -171,15 +171,13 @@ def main() -> None:
     show_outline(out)
     _show_confidence(out)
 
-    recall = out.get("recalled_chunks") or []
     seen: set = set()
     tick("批准，继续 assess → （够料就收工 / 没够就再搜）")
     state = out
     rounds = 0
     while True:
         state = g.invoke(
-            Command(resume={"approved": True,
-                            "approved_recalled_ids": [c["id"] for c in recall]}),
+            Command(resume={"approved": True}),
             config=cfg)
         show_trace(repo, sid, seen)
         rounds += 1

@@ -53,10 +53,7 @@ def t_db():
     r.complete_chunks([(cid, "测试概括句", b"\x00" * 768, 20)])
     assert len(r.ready_chunks(sid)) == 1, "补全后应可检索"
     r.archive_session(sid)
-    r.set_topics(sid, ["AI 模型"])
-    assert "AI 模型" in r.topics_of(sid)
-    assert len(r.sessions_by_topic("AI 模型")) == 1
-    return f"session/report/source/chunk 往返正常，归档与主题正常"
+    return f"session/report/source/chunk 往返正常，归档正常"
 
 
 # ---------- 2. URL 规范化 ----------

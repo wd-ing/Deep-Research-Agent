@@ -82,7 +82,6 @@ export interface ApprovalPayload {
   框架可信度?: { 种类: string; 停止原因: string; 说明: string }
   当前材料?: { 来源数: number; 段落数: number; 已抽取段数?: number }
   queries?: Record<string, string[]>
-  recalled?: unknown[]
 }
 
 export interface ApprovalResponse {
@@ -126,8 +125,6 @@ export interface IgnoredCitation {
 export interface SessionDetail extends SessionSummary {
   report: string | null
   sources: SourceRow[]
-  topics: string[]
-  open_contradictions: unknown[]
   ignored_citations: IgnoredCitation[]
 }
 

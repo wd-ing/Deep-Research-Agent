@@ -79,7 +79,9 @@ class CreateIn(BaseModel):
 
 class ApproveIn(BaseModel):
     approved: bool = True
-    approved_recalled_ids: list[str] = Field(default_factory=list)
+    # 原来还有 `approved_recalled_ids`（历史召回的段落勾选）。召回 2026-10-12
+    # 砍掉后它没有任何消费方——前端从没提交过，图里也从没读过非空值。
+    # 2026-10-13 删掉，别让它看起来像「审批页能勾选召回段落」。
 
 
 @app.post("/api/sessions")
@@ -488,25 +490,16 @@ def get_session(sid: str) -> dict:
     out = dict(s)
     out["report"] = rep["markdown"] if rep else None
     out["sources"] = [dict(r) for r in srcs]
-    out["topics"] = repo.topics_of(sid)
-    out["open_contradictions"] = [dict(r) for r in repo.open_contradictions(sid)]
     out["ignored_citations"] = _ignored_citations(repo, sid)
     return out
 
 
 @app.post("/api/sessions/{sid}/archive")
 def archive(sid: str) -> dict:
-    """显式归档。只有归档后的会话才进入历史检索。"""
+    """显式归档：只是从默认列表里收起来，报告和数据一律不动。"""
     repo = get_repo()
     repo.archive_session(sid)
-    return {"ok": True, "note": "已归档，将参与后续会话的历史召回"}
-
-
-@app.post("/api/sessions/{sid}/topics")
-def set_topics(sid: str, body: dict) -> dict:
-    repo = get_repo()
-    repo.set_topics(sid, body.get("topics") or [])
-    return {"topics": repo.topics_of(sid)}
+    return {"ok": True, "note": "已归档，不再出现在默认会话列表中"}
 
 
 @app.get("/api/sessions/{sid}/chunks")
@@ -604,16 +597,6 @@ def read_segments(sid: str, refs: str) -> dict:
         return EvidenceTools(repo, sid)._read_segments(wanted)
     except Exception as e:
         raise HTTPException(500, f"读取失败：{e}")
-
-
-@app.get("/api/topics")
-def topics() -> list[dict]:
-    repo = get_repo()
-    rows = repo.q(
-        "SELECT t.name, COUNT(st.session_id) AS sessions FROM topic t "
-        "JOIN session_topic st ON st.topic_id=t.id GROUP BY t.id ORDER BY sessions DESC"
-    )
-    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------- 运行
@@ -778,8 +761,7 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
     from langgraph.types import Command
 
     cfg = {"configurable": {"thread_id": sid}}
-    cmd = Command(resume={"approved": body.approved,
-                          "approved_recalled_ids": body.approved_recalled_ids})
+    cmd = Command(resume={"approved": body.approved})
     # 上一次 run 推到哪了——续跑要接着往后推，否则会把旧事件重发一遍
     seen_keys = _last_seen.get(sid) or set()
 

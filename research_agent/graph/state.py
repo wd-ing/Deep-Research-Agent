@@ -160,7 +160,6 @@ class WriteState(TypedDict, total=False):
     segments: list               # 全部证据段落 [{ref, heading_path, summary, content, ...}]
     on_topic: list               # 通过段级闸门的那些
     src_lines: list              # 全量来源清单（主 agent 要靠它写 cautions）
-    earlier: list                # 此前研究的已确认段落
     n_no_summary: int            # 概括缺失的段落数，必须一路报到报告里
 
     # ---- 主 agent 产出 ----

@@ -70,7 +70,7 @@ SEGMENTS = [{"ref": f"S{(i % 3) + 1}·{(i // 3) + 1}",
 BASE = {"question": "固态电池的产业化与技术路线",
         "outline": OUTLINE, "signals": {"subtopics": []},
         "segments": SEGMENTS, "on_topic": SEGMENTS,
-        "src_lines": SRC, "earlier": []}
+        "src_lines": SRC}
 
 
 
@@ -620,7 +620,7 @@ PLAN_ERR = ("MiniMax 500: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",
             "\"message\":\"output new_sensitive (1027)\"}}")
 out13 = W.node_final({
     "question": "固态电池的产业化进展", "spec": {}, "assembled": "",
-    "audit": {}, "violations": {}, "failed": [], "earlier": [],
+    "audit": {}, "violations": {}, "failed": [],
     "uncovered_tasks": [], "assemble_warnings": [],
     "plan_failed": PLAN_ERR, "src_lines": ["[S1] 某来源 | a.com"],
 })
@@ -640,7 +640,7 @@ print("  ✓ 横幅在存疑一节之前（末尾才提就等于没提）")
 # 正常路径不能被这条横幅污染
 out_ok = W.node_final({
     "question": "Q", "spec": {"thesis": "T"}, "assembled": "## A\n正文",
-    "audit": {}, "violations": {}, "failed": [], "earlier": [],
+    "audit": {}, "violations": {}, "failed": [],
     "uncovered_tasks": [], "assemble_warnings": [], "src_lines": []})
 assert "没有产出正文" not in out_ok["report_markdown"], "正常报告不该有失败横幅"
 assert "本文主张" in out_ok["report_markdown"]

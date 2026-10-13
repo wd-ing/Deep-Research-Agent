@@ -89,33 +89,6 @@ CREATE INDEX IF NOT EXISTS idx_chunk_status   ON chunk(status);
 CREATE INDEX IF NOT EXISTS idx_chunk_session  ON chunk(session_id);
 CREATE INDEX IF NOT EXISTS idx_chunk_source   ON chunk(source_id);
 
--- ---------- 主题：展示与归类用，不参与检索必需环节 ----------
-CREATE TABLE IF NOT EXISTS topic (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL UNIQUE,
-    slug        TEXT NOT NULL UNIQUE,
-    created_at  TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS session_topic (
-    session_id  TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
-    topic_id    TEXT NOT NULL REFERENCES topic(id) ON DELETE CASCADE,
-    updated_at  TEXT NOT NULL,
-    PRIMARY KEY (session_id, topic_id)
-);
-CREATE INDEX IF NOT EXISTS idx_session_topic_topic ON session_topic(topic_id);
-
--- ---------- 冲突记录：矛盾结论并列，不静默覆盖 ----------
-CREATE TABLE IF NOT EXISTS contradiction (
-    id            TEXT PRIMARY KEY,
-    session_id    TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
-    topic         TEXT NOT NULL,
-    claim_a       TEXT REFERENCES chunk(id),
-    claim_b       TEXT REFERENCES chunk(id),
-    resolution    TEXT,                      -- null 表示尚未裁决
-    created_at    TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_contradiction_session ON contradiction(session_id);
-
 -- ---------- 调用记账：只记不告警 ----------
 CREATE TABLE IF NOT EXISTS llm_call (
     id            TEXT PRIMARY KEY,
@@ -128,17 +101,6 @@ CREATE TABLE IF NOT EXISTS llm_call (
     created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_llm_call_session ON llm_call(session_id);
-
--- ---------- 上传文档 ----------
-CREATE TABLE IF NOT EXISTS ingested_doc (
-    id          TEXT PRIMARY KEY,
-    path        TEXT NOT NULL,
-    title       TEXT,
-    doc_type    TEXT NOT NULL,               -- pdf/md
-    source_date TEXT,
-    parsed_at   TEXT,
-    created_at  TEXT NOT NULL
-);
 
 -- ---------- 抓取缓存：正文与抓取时间，7 天有效期 ----------
 CREATE TABLE IF NOT EXISTS fetch_cache (

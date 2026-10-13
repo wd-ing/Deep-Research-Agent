@@ -1176,7 +1176,6 @@ def node_final(state: WriteState) -> dict:
     audit = state.get("audit") or {}
     violations = state.get("violations") or {}
     failed = state.get("failed") or []
-    earlier = state.get("earlier") or []
     uncovered = state.get("uncovered_tasks") or []
     asm_warn = state.get("assemble_warnings") or []
     plan_failed = state.get("plan_failed")
@@ -1232,13 +1231,11 @@ def node_final(state: WriteState) -> dict:
         parts.append("\n## 存疑与未完成\n\n"
                      + "\n".join(f"- {d}" for d in doubt) + "\n")
 
-    if earlier:
-        lines = [f"- **{c.get('date') or '日期未知'}**：{(c.get('summary') or '').strip()}"
-                 for c in earlier if (c.get("summary") or "").strip()]
-        if lines:
-            parts.append("\n## 认知演进\n\n"
-                         "以下是此前研究留下的相关结论，供你对照本次结果：\n\n"
-                         + "\n".join(lines) + "\n")
+    # 原来这里还有一节「## 认知演进」，内容是此前研究留下的结论。
+    # 它的数据来自 `earlier` ← `recalled_approved` ← `recalled_chunks`，
+    # 而 `recalled_chunks` 从召回被砍那天起就没有任何写入方，
+    # 所以 `if earlier:` 永不成立——这一节**从来没在真实报告里出现过**。
+    # 2026-10-13 连同 `earlier` 字段一起删掉。
 
     md = "".join(parts)
     # 定位标记是给审查看的，不能留在最终报告里
@@ -1292,7 +1289,7 @@ def build_write_graph():
 
 def run_write(session_id: str, question: str, outline: list, signals: dict,
               segments: list, on_topic: list, src_lines: list,
-              earlier: list | None = None, n_no_summary: int = 0) -> dict:
+              n_no_summary: int = 0) -> dict:
     """write 子图入口。返回 report_markdown 与事件。"""
     if not outline or not segments:
         return {"report_markdown":
@@ -1302,7 +1299,7 @@ def run_write(session_id: str, question: str, outline: list, signals: dict,
     st: WriteState = {
         "session_id": session_id, "question": question, "outline": outline,
         "signals": signals, "segments": segments, "on_topic": on_topic,
-        "src_lines": src_lines, "earlier": earlier or [],
+        "src_lines": src_lines,
         "drafts": {}, "violations": {}, "failed": [],
         "rework_rounds": 0, "rework_effective": True,
     }
