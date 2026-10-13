@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import numpy as np
 
@@ -100,47 +100,31 @@ def from_blob(blob: bytes) -> np.ndarray:
     return np.frombuffer(blob, dtype=np.float16).astype(np.float32)
 
 
-def cosine_topk(
-    query: np.ndarray,
-    matrix: np.ndarray,
-    k: int = 10,
-) -> tuple[np.ndarray, np.ndarray]:
-    """余弦相似度 Top-K。
-
-    入库时向量已 L2 归一化，所以点积即余弦。
-    向量按需从 SQLite 读出，不常驻。
-    """
-    if matrix.size == 0:
-        return np.array([], dtype=np.int64), np.array([], dtype=np.float32)
-    k = min(k, matrix.shape[0])
-    q = np.asarray(query, dtype=np.float32)
-    qn = np.linalg.norm(q)
-    if qn > 0:
-        q = q / qn
-    sims = matrix @ q
-    idx = np.argpartition(-sims, k - 1)[:k]
-    idx = idx[np.argsort(-sims[idx])]
-    return idx, sims[idx]
-
-
-def stack_blobs(blobs: Iterable[bytes]) -> np.ndarray:
-    mats = [from_blob(b) for b in blobs]
-    if not mats:
-        return np.zeros((0, DIM), dtype=np.float32)
-    return np.vstack(mats)
-
-
-# ⚠️ 这里原来有 `time_decay(source_date, now, half_life_days)`（2026-10-13 删）。
-# 它是一个「来源越新权重越高」的指数衰减函数（每 180 天减半）。
-# 从初始提交 fe5129c 就在，**一次都没被调用过**，因为它要服务的那个环节
-# ——库内检索的排序——**从来没被实现过**（全库没有一条 FTS5 MATCH 查询，
-# `cosine_topk` 也是零调用）。所以它不是「没写完」，是给一个不存在的
-# 环节预留的零件。
+# ⚠️ 这里原来有 `cosine_topk()` 和 `stack_blobs()`（2026-10-13 删）。
+# 它俩是一套东西的两半：`stack_blobs` 把 BLOB 还原成矩阵，
+# `cosine_topk` 在矩阵上按余弦取 Top-K。这正是「按相似度召回段落」
+# 的实现——而**这个环节从来没被接上**：`node_finalize` 算完向量就写库，
+# 全库没有一条查询去读它。删之前它们唯一的使用者是 `tests/smoke.py` 的
+# `t_embed`，那是拿一个从没有真实调用方的函数去测它自己。
 #
-# 删它的理由不是省 18 行代码，而是**它会误导**：留着它，
-# HANDOVER 里那句「时间衰减接不到排序」就会一直暗示「排序已经存在、
-# 只差接一下」。将来真要做库内检索时，衰减公式是标准做法，重写只要几分钟。
+# 上面的 `time_decay()` 同理（2026-10-13 删）：来源越新权重越高的指数衰减
+# （每 180 天减半），从初始提交 fe5129c 就在，一次都没被调用过，因为它要
+# 服务的库内检索排序从来没被实现过。它不是「没写完」，是给一个不存在的
+# 环节预留的零件。留着它会误导——HANDOVER 里那句「时间衰减接不到排序」
+# 就会一直暗示「排序已经存在、只差接一下」。将来真要做库内检索时，
+# 衰减公式是标准做法，重写只要几分钟。
 #
 # ⚠️ 注意别把 `source_date` 字段一起删了——那个**在大量使用**：
 # 来源库显示日期、`read_source` 工具让模型看得到来源日期、抓取时写入。
 # 删掉的只是「怎么用日期算权重」这个策略，不是时间信息本身。
+#
+# ⚠️ `source_date` 同理别误删。上面删的三样都只是**策略**，
+# 数据（`chunk.embedding` 列、`source_date` 字段、`content`/`summary` 正文）
+# 一个都没动。`content` 和 `summary` 是写作阶段的证据入口，必不可删。
+
+# 📌 本模块现在**零生产调用方**（2026-10-13 起）：向量化已停，
+#    节点里最后那处 `EMB.embed_document()` 随 node_finalize 一起删了。
+#    `embed_passages` / `embed_document` / `to_blob` / `from_blob` 留着，
+#    因为「库里按语义找段落」是这个工具迟早要长出来的功能，重写一个
+#    句向量封装（含 e5 系列的 query/passage 前缀硬规则）不值当。
+#    代价是 sentence_transformers 这个重依赖还挂在依赖树里。

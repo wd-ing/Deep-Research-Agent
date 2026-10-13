@@ -2794,6 +2794,12 @@ SQLite 不支持递归 CTE）。
 （它只是个工具，不暗示任何已完成的流程）。将来做库内检索直接能用。
 它生产零调用，唯一调用点在 `smoke.t_embed`。
 
+> 🔄 **这条判断后来被推翻了**（同一天晚些时候）。我当时只核了「`cosine_topk`
+> 自身有没有调用方」，没核「`chunk.embedding` 有没有任何查询读过」——
+> 结果是**全库零条**。既然向量算出来根本没人读，算子保留不保留就没有意义了，
+> 连向量本身也一并停算。见文末「2026-10-13 停算向量化」一节。
+> **教训：判断一个算子「无误导性」之前，先确认它服务的对象是否真的存在。**
+
 ### `claim`：文档漏记了一次替换
 
 用户补充的事实：**`claim` 是早期设计，后期清理了，换了另外一套——
@@ -2912,3 +2918,104 @@ React 的 `validateDOMNesting` 会报警。portal 到 `document.body` 一次解�
 `tests/probes/preflight_models.py` 里那条用例（不删的话探针一跑就报
 「stage 不存在」）。`dedupe` **保留**——它是「环节该存在但没做」，
 和 `assign` 不是一类。
+
+---
+
+## 2026-10-13 停算向量化
+
+用户在四条待办里选了「选项 1：不优化了」，随后追问「那是不是向量数据库也不用了？」
+
+### 先纠正问题本身
+
+**没有向量数据库这个东西。** 扫遍依赖：faiss / chroma / milvus / qdrant /
+weaviate / pgvector / pinecone / annoy / hnsw —— 一个都没有。
+所谓「向量」就是 `chunk.embedding` 一个 BLOB 列，**384 维** float16
+（= 768 **字节**/段，143 段共 107 KB）。
+
+（顺带纠正我自己上一条的口误：不是「768 维」，768 是字节数。）
+
+核实到的四条：
+
+| 项 | 真实情况 |
+|---|---|
+| `embed_document()` 生产调用点 | **只有 1 处**：`nodes.py` 的 `node_finalize` |
+| `cosine_topk()` | 零生产调用 |
+| 按向量相似度检索的 SQL | **全库 0 条** |
+| `chunk.status` 的读取方 | 只有 `node_finalize` 自己的 `WHERE status='pending'`（幂等用）+ `ready_chunks()`（零生产调用） |
+
+### 为什么值得改
+
+不是「代码洁癖」，是 **251 秒**：v5 整轮 1591s 里 `finalize` 占 315s，
+其中 LLM 只花 64s，**剩下 251s（整轮 15.8%）全在算一列没人读的数据**。
+
+### 改动范围（用户选 A + B）
+
+| 档 | 内容 | 决定 |
+|---|---|---|
+| **A** | `node_finalize` 不再调 `embed_document()` | 做 |
+| **B** | 删 `cosine_topk()` / `stack_blobs()` / `repo.ready_chunks()` / `complete_chunks()` 的死参数 | 做 |
+| **C** | migration 删掉 `chunk.embedding` 列 | **不做**——历史向量还在，将来真做库内检索不必改 schema |
+| **D** | 删 `chunk_fts` | **不做**——零 MATCH 查询没错，但它由触发器维护、算力成本≈0，删了只省 schema 复杂度不省时间 |
+
+### ⚠️ 这次改动最大的坑
+
+`repo.complete_chunks()` 里 `status='complete'` 和 `embedding=?` 在**同一条 UPDATE** 上：
+
+```sql
+UPDATE chunk SET summary=?, embedding=?, status='complete' WHERE id=?
+```
+
+只删向量化而不动这个，段落会**永久卡在 pending**——而 `node_finalize`
+正是靠 `WHERE status='pending'` 选段的，所以二次运行会把它们全部重跑一遍，
+而且是「报告已经写完了却又重算一遍」的形状，极难察觉。
+已同步把 `embedding=?` 从 UPDATE 里摘掉。这条已写进代码注释。
+
+### 顺带发现的一个 bug
+
+`complete_chunks()` 的签名收着 `token_count`，docstring 也写了，
+但 SQL 里**从来没写过它**：
+
+```python
+[(s, b, cid) for cid, s, b, _ in updates]   # 第 4 位用 _ 直接丢了
+```
+
+所以 `node_finalize` 里那次 `count_tokens(row["content"])` 是**纯白算**——
+chunk 插入时 `add_chunk` 已经写过 `token_count` 了。
+量级微不足道（143 次 tokenizer 调用），但它是白算的。一并删。
+
+`node_finalize` 那条 SELECT 里连带删掉的 `content` / `heading_path` /
+`source_id` 和 `s.*` 五列同理：它们只为了拼向量化文本而查出来。
+
+### 留下的代价（都说清楚）
+
+1. `embedding` 列保留但新会话不再写入 → 这列只会越来越空。
+2. `embed.py` 整个模块**零生产调用方**，`sentence_transformers`
+   这个重依赖仍挂在依赖树里。保留的理由是「按语义找段落」是这个工具
+   迟早要长出来的功能，而重写句向量封装（尤其 e5 系列的 query/passage
+   前缀硬规则）不值当。
+3. `smoke.t_embed` 只能整体跳过（需真下 HuggingFace 模型，SSL 不通），
+   所以**没有端到端跑过真正的向量化路径**。验证靠的是「删完之后不再需要它」
+   加上对 `complete_chunks` 的直接回放。
+
+### 实测
+
+真实库 `/tmp/ra_xj189_v5.db` 拷贝，143 段打回 `pending` 后回放 `node_finalize`：
+
+```
+回放前: {n:143, embedding非空:0, summary空:0}
+回放后: {n:143, complete:143, embedding非空:0, summary空:0}
+耗时:   0.033s        （原 315s）
+cost_tokens: 465684    正确回写，session_cost() 不受影响
+第二次:  skipped: no pending chunks   幂等仍成立
+```
+
+### 教训
+
+我在这轮之前刚做过一次同类判断（`time_decay` 该不该删），当时的结论是
+「`cosine_topk` 保留，它和已有的 embedding 数据配对，无误导性」。
+
+**那次只核了「`cosine_topk` 自己有没有调用方」，没核「`chunk.embedding`
+有没有任何查询读过」。** 两个问题是不同的，答案是相反的：
+算子确实零调用，但它服务的那个数据列也是零读取。
+
+⇒ **判断一个算子「无误导性」之前，先确认它服务的对象是否真的存在。**

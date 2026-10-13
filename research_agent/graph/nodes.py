@@ -16,9 +16,8 @@ import time
 from typing import Any
 
 from ..db.repo import get_repo
-from ..ingest.embed import Embedder, to_blob
 from ..ingest.extract import Fetcher
-from ..ingest.split import RecursiveSplitter, count_tokens
+from ..ingest.split import RecursiveSplitter
 from ..llm.provider import LLMClient, session_scope
 from ..search.base import SearchHit
 from ..search.normalize import content_hash, domain_of, guess_source_type, normalize_url
@@ -69,7 +68,6 @@ MAX_QUERIES_PER_LANG = 5          # 单次每种语言的查询条数上限
 
 SPLITTER = RecursiveSplitter(max_tokens=2000, target_tokens=1000)
 LLM = LLMClient()
-EMB = Embedder.instance()
 SX = SearXNGProvider(script=".searxng/searxng.sh")
 TV = TavilyProvider()
 
@@ -1274,10 +1272,10 @@ def node_write(state: ResearchState) -> dict:
 @scoped
 @_timed_node("finalize")
 def node_finalize(state: ResearchState) -> dict:
-    """向量化 + 状态与成本回写。
+    """段落收尾 + 状态与成本回写。
 
-    概括句已搬到 node_extract（见那里的说明），这里只负责把
-    「概括句 + 正文」拼起来向量化，以及写回成本与状态。
+    概括句已搬到 node_extract（见那里的说明），这里只负责把段落从
+    pending 翻成 complete，以及写回成本与状态。
     """
     repo = get_repo()
     sid = state["session_id"]
@@ -1286,16 +1284,14 @@ def node_finalize(state: ResearchState) -> dict:
         return {"events": [{"kind": "finalize", "skipped": "no report"}]}
 
     chunks = repo.q(
-        "SELECT c.id, c.content, c.heading_path, c.source_id, c.summary, "
-        "       s.url, s.domain, s.title, s.source_type, s.source_date, s.engine "
-        "FROM chunk c LEFT JOIN source s ON s.id=c.source_id "
+        "SELECT c.id, c.summary FROM chunk c "
         "WHERE c.session_id=? AND c.status='pending' ORDER BY c.ingested_at",
         (sid,),
     )
     if not chunks:
         return {"events": [{"kind": "finalize", "skipped": "no pending chunks"}]}
 
-    # ---- 1. 向量化 ----
+    # ---- 1. 段落收尾 ----
     # 概括句已经不在这里生成了：它从 node_finalize 搬到 node_extract。
     # 原先报告写完之后才概括，产出只进跨会话召回的索引，写作阶段压根看不到；
     # 写作只能对着抽取出来的原子断言工作，而断言的父级是整篇文章，
@@ -1307,27 +1303,48 @@ def node_finalize(state: ResearchState) -> dict:
         if not summary:
             no_sum += 1
             continue
-        vec = EMB.embed_document(summary, row["content"])
-        updates.append((row["id"], summary, to_blob(vec),
-                        count_tokens(row["content"])))
+        updates.append((row["id"], summary))
     if updates:
         repo.complete_chunks(updates)
 
-    # ---- 3. 状态与成本回写 ----
+    # ---- 2. 状态与成本回写 ----
     cost = repo.session_cost(sid)
     repo.add_cost(sid, cost)
     repo.finish_session(sid, "done")
 
     remaining = len(chunks) - len(updates) - no_sum
     return {
-        "embedded_chunks": len(updates),
+        "finalized_chunks": len(updates),
         "cost_tokens": cost,
         "events": [{
-            "kind": "finalize", "chunks": len(chunks), "embedded": len(updates),
+            "kind": "finalize", "chunks": len(chunks), "finalized": len(updates),
             "no_summary": no_sum, "remaining_pending": max(0, remaining),
             "cost_tokens": cost,
         }],
     }
+
+
+# ⚠️ node_finalize 原本的第一段是「向量化」，2026-10-13 整段删掉：
+#     vec = EMB.embed_document(summary, row["content"])
+#     updates.append((row["id"], summary, to_blob(vec), count_tokens(row["content"])))
+# 理由不是「向量检索以后可能有用」，而是它**算出来就再没被读过**：
+#   - 全库没有独立的向量库。`chunk.embedding` 只是一个 BLOB 列（384 维 float16）
+#   - `cosine_topk()` 零生产调用；`chunk_fts` 是零 MATCH 查询；
+#     `ready_chunks()` 零生产调用——「按相似度召回段落」这个环节从来没被实现过
+#   - 所以 v5 那一轮 143 段花了 251 秒（整轮 1591s 的 15.8%）在写一列没人读的数据
+# 连带删掉的：`EMB = Embedder.instance()` 单例、`to_blob` 导入、`count_tokens`
+# 导入，以及那次 `count_tokens()` 调用本身——`complete_chunks` 的列表推导
+# 用 `_` 把它丢了，从来没进过 SQL，而 chunk 插入时 `add_chunk` 已经写过
+# token_count 了。上面那条 SELECT 里连带删掉的 content/heading_path/
+# source_id 和 s.* 五列同理：它们只为了拼向量化文本而查出来。
+#
+# `embedding` 列**保留**：历史会话那 143 段向量还在（107 KB），将来真要做
+# 库内检索时不必改 schema。代价是这列从此只会越来越空。
+#
+# ⚠️ 改这段最容易踩的坑：`complete_chunks` 里的 `status='complete'`
+# 必须留着。它跟 `embedding=?` 原本在同一条 UPDATE 上——只删向量化而不
+# 处理这个，段落会永久卡在 pending，而本函数正是靠 `WHERE status='pending'`
+# 选段的，二次运行会把它们全部重跑一遍。
 
 
 # ---- 会话摘要（产品化阶段 3）----

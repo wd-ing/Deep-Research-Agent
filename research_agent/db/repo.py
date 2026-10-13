@@ -405,22 +405,27 @@ class Repo:
         self.x("UPDATE source SET source_nature=?, nature_reason=? WHERE id=?",
                (nature, reason, source_id))
 
-    def complete_chunks(self, updates: Sequence[tuple[str, str, bytes, int]]) -> None:
-        """批量补概括句与向量。updates: (chunk_id, summary, embedding_blob, token_count)"""
+    def complete_chunks(self, updates: Sequence[tuple[str, str]]) -> None:
+        """批量补概括句并把段落标记为可写。updates: (chunk_id, summary)
+
+        2026-10-13 改：原先是 `SET summary=?, embedding=?, status='complete'`，
+        且签名收 `token_count`——但 SQL 里从来没写过它，列表推导用 `_` 直接
+        丢掉了第 4 位，所以调用方那次 `count_tokens()` 是纯白算。向量化已停，
+        `embedding` 列保留（历史数据还在）但不再写入。
+        """
         with self._write_lock:
             self.conn.executemany(
-                "UPDATE chunk SET summary=?, embedding=?, status='complete' WHERE id=?",
-                [(s, b, cid) for cid, s, b, _ in updates],
+                "UPDATE chunk SET summary=?, status='complete' WHERE id=?",
+                [(s, cid) for cid, s in updates],
             )
             self.conn.commit()
 
-    def ready_chunks(self, session_id: str | None = None) -> list[sqlite3.Row]:
-        """只取 status='complete' 的段落参与检索。"""
-        if session_id:
-            return self.q(
-                "SELECT * FROM chunk WHERE status='complete' AND session_id=?", (session_id,)
-            )
-        return self.q("SELECT * FROM chunk WHERE status='complete'")
+    # ⚠️ 这里原来有 `ready_chunks(session_id=None)`（2026-10-13 删）。
+    # docstring 写「只取 status='complete' 的段落参与检索」，但全库**没有任何
+    # 一条按向量相似度检索的查询**——`chunk_fts` 是零 MATCH 查询，
+    # `cosine_topk` 是零调用。所以这个方法服务的「检索集」从来不存在，
+    # 唯一的调用方是 `tests/smoke.py` 在测它自己。
+    # 它跟本轮删掉的 `cosine_topk` 是一套东西的上下游。
 
     def supersede_chunk(self, old_id: str, new_id: str) -> None:
         """事实被推翻时标记取代，不静默覆盖。"""

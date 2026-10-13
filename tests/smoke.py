@@ -49,9 +49,15 @@ def t_db():
         content="这是一段测试内容，用来验证两阶段入库。", status="pending",
     )
     assert r.q1("SELECT id FROM chunk WHERE status='pending'") is not None
-    assert len(r.ready_chunks(sid)) == 0, "pending 不该出现在检索集里"
-    r.complete_chunks([(cid, "测试概括句", b"\x00" * 768, 20)])
-    assert len(r.ready_chunks(sid)) == 1, "补全后应可检索"
+    # ⚠️ 这里原来调 `r.ready_chunks(sid)` 断言「pending 不在检索集里」，
+    # 那个方法 2026-10-13 删了——它服务的「检索集」从来没被实现过。
+    # 断言的意图保留，改用直查 status。
+    assert r.q1("SELECT id FROM chunk WHERE session_id=? AND status='complete'",
+                (sid,)) is None, "pending 不该出现在可写集里"
+    r.complete_chunks([(cid, "测试概括句")])
+    done = r.q1("SELECT id, summary FROM chunk WHERE session_id=? AND status='complete'",
+                (sid,))
+    assert done is not None and done["summary"] == "测试概括句", "补全后应可写"
     r.archive_session(sid)
     return f"session/report/source/chunk 往返正常，归档正常"
 
@@ -101,8 +107,7 @@ def t_split():
 
 
 def t_embed():
-    from research_agent.ingest.embed import (
-        Embedder, to_blob, from_blob, cosine_topk, stack_blobs, DIM)
+    from research_agent.ingest.embed import Embedder, to_blob, from_blob, DIM
     e = Embedder.instance()
     vecs = e.embed_passages(["大型语言模型的推理能力", "苹果发布新款手机"])
     assert vecs.shape[0] == 2, vecs.shape
@@ -113,11 +118,13 @@ def t_embed():
     blob = to_blob(vecs[0])
     back = from_blob(blob)
     assert abs(float(back @ back) - 1.0) < 0.01, "float16 往返后模长应仍为 1"
-    m = stack_blobs([to_blob(v) for v in vecs])
-    idx, sc = cosine_topk(q, m, k=2)
-    assert idx[0] == 0, f"Top-1 应为语义相近那条，实际 {idx}"
-    # ⚠️ 这里原来还断言 `time_decay` 的两个行为，那个函数 2026-10-13 删了
-    return f"DIM={DIM}，float16 往返误差 <0.01，Top-1 正确"
+    assert len(blob) == DIM * 2, f"blob 应为 DIM×2 字节，实得 {len(blob)}"
+    # ⚠️ 这里原来还有两行 `stack_blobs(...)` + `cosine_topk(...)` 的 Top-1 断言，
+    # 以及更早之前 `time_decay` 的两个行为断言。这三个函数 2026-10-13 全删了——
+    # 它们都是「按相似度召回段落」的零件，而这个环节从来没被实现过
+    # （node_finalize 算完向量就写库，没有任何查询读它）。
+    # 上面「语义相近的应排前」这行断言保留：那才是句向量该保证的事。
+    return f"DIM={DIM}，float16 往返误差 <0.01，语义排序正确"
 
 
 # ---------- 5. LLM 配置硬约束 ----------

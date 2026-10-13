@@ -18,6 +18,7 @@
 | **R8-a** 审批点后置 + 框架校准 | 4/5 小节被收窄 | ✅ |
 | **R8-b** 审查重构（blocked + 逐条核对） | 审查三轮收敛 high 2→1→0 | ✅ |
 | **R8-c** 切 xj189 + 全阶段流式 | 总 token 665k → 466k（−30%）| ✅ |
+| **C1-k** 停算向量化（2026-10-13） | finalize 315s → 0.03s，整轮 −15.8% | ✅（真实库 143 段回放） |
 
 **总账：MiniMax 基线 665k token / 1,402 秒 → v5 466k / 1,206 秒 / 报告 23,130 字。**
 
@@ -241,12 +242,58 @@ reason 写「首轮返修强化了证据分级」「已有明显改善」，字�
 | ~~`assign`~~ | ✅ **2026-10-13 删掉**：它映射的「断言」已被 `superseded_by` 取代，分派现在由 `assess` 带框架一起做——环节不存在了，不是待接入 |
 | 段落概括 JSON 失败率 | 已改强制 `tool_choice`，v5 实测 0 失败。**根因未查**（已绕过） |
 | `_opencode_tools` 之外的流式 | relevance / summarize / extract 等未流式（刻意，够不着 60 秒） |
-| 失败调用无留痕 | 504/429 是异常不是记账行，`llm_call` 里查不到，
-只能从 stdout 数 `⚠️` 行。**要补需要动 schema。** |
+| 失败调用无留痕 | 504/429 是异常不是记账行，`llm_call` 里查不到，只能从 stdout 数 `⚠️` 行。**要补需要动 schema。** |
+| ~~向量化~~ | ✅ **2026-10-13 停算**：算出来的 143 个向量从来没被任何查询读过，却花了整轮 15.8%。详见第五节 |
 
 ---
 
-## 五、怎么重跑
+## 五、C1-k｜停算向量化（2026-10-13）
+
+**数据**：v5 整轮 1591s 里，`finalize` 占 315s（20%）。其中 LLM 只花 64s，
+**剩下 251s 全是本地句向量推理**——143 段 × multilingual-e5-small，CPU。
+
+**为什么停**：不是「以后可能有用」，是**算出来就再没被读过**。
+
+| 核实项 | 结果 |
+|---|---|
+| 独立的向量数据库（faiss/chroma/qdrant/pgvector…） | **一个都没有**。`chunk.embedding` 就是个 BLOB 列 |
+| `embed_document()` 生产调用点 | 只有 `node_finalize` 一处 |
+| `cosine_topk()` | 零生产调用 |
+| 按向量相似度检索的 SQL | **全库 0 条** |
+| `chunk_fts`（FTS5 + 4 触发器） | 零 MATCH 查询，但触发器维护、算力≈0，**保留** |
+
+顺带删掉的死代码：`stack_blobs()`、`repo.ready_chunks()`、
+`complete_chunks()` 里那个从没进过 SQL 的 `token_count` 参数
+（列表推导用 `_` 丢了第 4 位，所以调用方那次 `count_tokens()` 是纯白算）。
+
+⚠️ **这次改动最大的坑**：`complete_chunks()` 里
+`status='complete'` 和 `embedding=?` 在同一条 UPDATE 上。
+只删向量化不管这个，段落会**永久卡在 pending**，而 `node_finalize` 正是靠
+`WHERE status='pending'` 选段的，二次运行会把它们全部重跑一遍。
+
+**实测**（真实库 `/tmp/ra_xj189_v5.db` 拷贝，143 段打回 pending 后回放）：
+
+```
+回放前: {'n': 143, 'embedding非空': 0, 'summary空': 0}
+回放后: {'n': 143, 'complete': 143, 'embedding非空': 0, 'summary空': 0}
+node_finalize 耗时: 0.033s      （原 315s）
+cost_tokens: 465684（正确回写，session_cost 不受影响）
+第二次运行: skipped: no pending chunks（幂等仍成立）
+```
+
+**留下的代价**（都说清楚）：
+
+- `embedding` 列保留但新会话不再写入 → 这列只会越来越空。
+  选这条是因为历史 143 个向量还在（107 KB），将来真做库内检索不必改 schema。
+- `embed.py` 整个模块**零生产调用方**，`sentence_transformers`
+  这个重依赖仍挂在依赖树里。删它等于放弃「按语义找段落」这个迟早要长的功能，
+  重写一个句向量封装（含 e5 系列的 query/passage 前缀硬规则）不值当。
+- `smoke.t_embed` 只能整体跳过——它需要真下 HuggingFace 模型（SSL 不通）。
+  所以本轮**没有端到端跑过真正的向量化路径**，验证靠的是「删完之后不再需要它」。
+
+---
+
+## 六、怎么重跑
 
 ```bash
 # 完整流程（含 write）
