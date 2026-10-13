@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -128,9 +128,106 @@ function withRefs(
     return out.length ? out : children
   }
   if (Array.isArray(children)) {
-    return children.map((c, i) => <span key={i}>{withRefs(c, onRef, previews)}</span>)
+    // ⚠️ **只给文本节点套 span。** 数组里可能混着块级元素——比如嵌套列表的
+    // `li > ul`，给 `<ul>` 套 span 就是 `<span><ul>`，React 会报
+    // validateDOMNesting。元素原样放行（`withRefs` 对元素直接返回它本身）。
+    return children.map((c, i) => {
+      if (typeof c === 'string' || typeof c === 'number') {
+        return <span key={i}>{withRefs(c, onRef, previews)}</span>
+      }
+      return <Fragment key={i}>{withRefs(c, onRef, previews)}</Fragment>
+    })
   }
   return children
+}
+
+/** 报告里出现的 markdown 元素的统一样式。
+ *
+ *  ⚠️ 原来 `<article>` 上写的是 `prose-sm`，但 `@tailwindcss/typography`
+ *  **从来没安装过**——`node_modules/@tailwindcss/` 目录都不存在，构建产物里
+ *  一条 `.prose*` 规则都没生成。那个类一直在骗人：看着像有排版，实际是空的。
+ *
+ *  不装依赖、改手写的理由：项目只需要表格和列表两类，而 typography 会带进
+ *  一整套 `.prose-*` 工具类，跟现有 Tailwind 配置打架。
+ *
+ *  v5 真实报告实测：5 行表格、14 个无序项、5 个有序项、1 个引用块、128 处加粗。
+ *  之前 `table/th/td` 全都没被接管，而 Tailwind preflight 对表格只给了
+ *  `table{border-collapse:collapse}`——**没有边框、没有单元格内边距**，
+ *  那张表渲染成一坨挤在一起的文字。 */
+function mdComponents(
+  onRef: (ref: string) => void,
+  previews: SegPreviews,
+  compact = false,
+) {
+  const R = (c: ReactNode) => withRefs(c, onRef, previews)
+  return {
+    h1: ({ children }: { children?: ReactNode }) => (
+      <h1 className={compact ? 'mb-2 text-base font-semibold' : 'mb-4 text-xl font-semibold'}>
+        {R(children)}
+      </h1>
+    ),
+    h2: ({ children }: { children?: ReactNode }) => (
+      <h2 className={
+        compact
+          ? 'mb-2 mt-3 text-sm font-semibold'
+          // 大环节标题下压一条线：43 个标题滚过去时靠这条线分段
+          : 'mb-3 mt-8 border-b border-line pb-1 text-base font-semibold'
+      }>{R(children)}</h2>
+    ),
+    h3: ({ children }: { children?: ReactNode }) => (
+      <h3 className={compact ? 'text-sm font-medium' : 'mb-2 mt-5 text-sm font-semibold'}>
+        {R(children)}
+      </h3>
+    ),
+    p: ({ children }: { children?: ReactNode }) => (
+      <p className={compact ? 'my-2' : 'my-3'}>{R(children)}</p>
+    ),
+    ul: ({ children }: { children?: ReactNode }) => (
+      <ul className={compact ? 'my-2 list-disc space-y-0.5 pl-5' : 'my-3 list-disc space-y-1 pl-5'}>
+        {children}
+      </ul>
+    ),
+    ol: ({ children }: { children?: ReactNode }) => (
+      <ol className={compact ? 'my-2 list-decimal space-y-0.5 pl-5' : 'my-3 list-decimal space-y-1 pl-5'}>
+        {children}
+      </ol>
+    ),
+    li: ({ children }: { children?: ReactNode }) => <li>{R(children)}</li>,
+    blockquote: ({ children }: { children?: ReactNode }) => (
+      <blockquote className="my-3 border-l-2 border-line pl-3 text-muted">{children}</blockquote>
+    ),
+    code: ({ children }: { children?: ReactNode }) => (
+      <code className="rounded bg-gray-100 px-1 py-0.5 text-[0.9em]">{children}</code>
+    ),
+    /** 外链一律新标签页打开并断 `opener`——报告是长文，来回切标签很容易，
+     *  不带 `rel="noreferrer"` 还会把来源页面的 window 句柄交出去。 */
+    a: ({ children, href }: { children?: ReactNode; href?: string }) => (
+      <a href={href} target="_blank" rel="noreferrer"
+         className="text-accent underline decoration-dotted underline-offset-2">
+        {children}
+      </a>
+    ),
+    strong: ({ children }: { children?: ReactNode }) => (
+      <strong className="font-semibold">{children}</strong>
+    ),
+    hr: () => <hr className="my-6 border-line" />,
+    /** 表格：preflight 不给任何边框和内边距，这四个必须成套接管。
+     *  外层 `overflow-x-auto`——报告正文是 `max-w-3xl`，宽表硬撑会把
+     *  整篇的排版挤变形。 */
+    table: ({ children }: { children?: ReactNode }) => (
+      <div className="my-4 overflow-x-auto">
+        <table className="w-full border-collapse text-sm">{children}</table>
+      </div>
+    ),
+    thead: ({ children }: { children?: ReactNode }) => <thead>{children}</thead>,
+    tr: ({ children }: { children?: ReactNode }) => <tr>{children}</tr>,
+    th: ({ children }: { children?: ReactNode }) => (
+      <th className="border border-line bg-gray-50 px-3 py-2 text-left font-medium">{children}</th>
+    ),
+    td: ({ children }: { children?: ReactNode }) => (
+      <td className="border border-line px-3 py-2 align-top">{R(children)}</td>
+    ),
+  }
 }
 
 /** 报告顶部提示条：这份报告引用了已被你标记排除的来源。
@@ -200,26 +297,19 @@ export function ReportView({
     return { body: markdown.slice(0, i), doubt: markdown.slice(i) }
   }, [markdown])
 
+  // ⚠️ `compact` 只改标题/段落的尺寸，**引用拦截两段都用**。
+  //  原来存疑节那一整套 components 是单独写的、没套 `withRefs`——
+  //  那节里的 `[S12·3]` 全是死文本。而它恰恰是全报告最长的一节
+  //  （v5 实测 5,221 字符），引用密度不低。
+  const bodyMd = useMemo(() => mdComponents(onRef, previews), [onRef, previews])
+  const doubtMd = useMemo(() => mdComponents(onRef, previews, true), [onRef, previews])
+
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
       <IgnoredBanner items={ignoredCitations} onOpenSource={onOpenSource ?? (() => {})} />
-      <article className="prose-sm leading-7 text-ink">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={{
-            h1: ({ children }) => <h1 className="mb-4 text-xl font-semibold">{withRefs(children, onRef, previews)}</h1>,
-            h2: ({ children }) => <h2 className="mb-3 mt-8 border-b border-line pb-1 text-base font-semibold">{withRefs(children, onRef, previews)}</h2>,
-            h3: ({ children }) => <h3 className="mb-2 mt-5 text-sm font-semibold">{withRefs(children, onRef, previews)}</h3>,
-            p: ({ children }) => <p className="my-3">{withRefs(children, onRef, previews)}</p>,
-            li: ({ children }) => <li>{withRefs(children, onRef, previews)}</li>,
-            blockquote: ({ children }) => (
-              <blockquote className="my-3 border-l-2 border-line pl-3 text-muted">{children}</blockquote>
-            ),
-            code: ({ children }) => (
-              <code className="rounded bg-gray-100 px-1 py-0.5 text-[0.9em]">{children}</code>
-            ),
-          }}
-        >
+      {/* ⚠️ 这里原来写的是 `prose-sm`——那个类从未生效，见 mdComponents 的说明 */}
+      <article className="leading-7 text-ink">
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={bodyMd}>
           {parts.body}
         </ReactMarkdown>
       </article>
@@ -230,15 +320,7 @@ export function ReportView({
             以下是系统自己声明的存疑与未完成，和上面的正文可信度不同
           </div>
           <article className="text-sm leading-6 text-amber-950">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                h2: ({ children }) => <h2 className="mb-2 text-sm font-semibold">{children}</h2>,
-                h3: ({ children }) => <h3 className="text-sm font-medium">{children}</h3>,
-                p: ({ children }) => <p className="my-2">{children}</p>,
-                li: ({ children }) => <li>{children}</li>,
-              }}
-            >
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={doubtMd}>
               {parts.doubt}
             </ReactMarkdown>
           </article>

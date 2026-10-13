@@ -4,9 +4,24 @@ import type {
   SseEvent, View,
 } from './types'
 
+/** 把后端的错误体翻成人能读的一句话。
+ *
+ *  FastAPI 的错误体是 `{"detail": "段号 S12·3 不存在"}`。以前只拼
+ *  `${r.status} ${url}`，用户看到的是 `404 /api/sessions/s_x/seg/S12%C2%B73`——
+ *  状态码和 URL 对他没有任何意义。**报错要说清「哪一步失败、为什么」。** */
+async function errText(r: Response, url: string): Promise<string> {
+  try {
+    const j = await r.json() as { detail?: unknown }
+    if (typeof j?.detail === 'string' && j.detail) return j.detail
+  } catch {
+    // 错误体不是 JSON（比如反向代理返回的 HTML 502 页），退回状态码
+  }
+  return `${r.status} ${url}`
+}
+
 async function jget<T>(url: string): Promise<T> {
   const r = await fetch(url)
-  if (!r.ok) throw new Error(`${r.status} ${url}`)
+  if (!r.ok) throw new Error(await errText(r, url))
   return r.json() as Promise<T>
 }
 
@@ -16,7 +31,7 @@ async function jpost<T>(url: string, body?: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
-  if (!r.ok) throw new Error(`${r.status} ${url}`)
+  if (!r.ok) throw new Error(await errText(r, url))
   return r.json() as Promise<T>
 }
 
@@ -34,6 +49,25 @@ export function useSession(sid: string | null) {
   // 增量无法归属到具体小节——这是实测确认的约束，不是偷懒）。
   const [draft, setDraft] = useState('')
   const [seg, setSeg] = useState<SegmentRow | null>(null)
+
+  // ---- 一次操作没成时的提示（2026-10-13 加）----
+  // ⚠️ **不要复用 `error`。** 那个字段驱动的是**整屏错误态**（图跑挂了、
+  // 会话读不出来），而这里报的是**某一次操作没成**：点引用没反应、
+  // 标记排除没保存、连不上服务。共用一个字段的后果正是 v5 之前的 bug——
+  // `openSeg` 失败只 `setError`，而错误区只在 `view === 'error'` 时渲染，
+  // 那句「读取 S12·3 失败」**永远不会有人看见**。
+  const [notice, setNotice] = useState<string | null>(null)
+  const noticeTimer = useRef<number | null>(null)
+
+  /** 弹一条会自己消失的提示。重复调用只延长显示时间，不叠加。 */
+  const notify = useCallback((msg: string) => {
+    setNotice(msg)
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current)
+    noticeTimer.current = window.setTimeout(() => setNotice(null), 7000)
+  }, [])
+  useEffect(() => () => {
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current)
+  }, [])
 
   const esRef = useRef<EventSource | null>(null)
   const timerRef = useRef<number | null>(null)
@@ -167,14 +201,21 @@ export function useSession(sid: string | null) {
     try {
       const r = await jget<{ 段落?: SegmentRow[]; 没找到?: string[] }>(
         `/api/sessions/${id}/seg/${enc}`)
-      setSeg(r.段落?.[0] ?? null)
+      // 后端查无此段时抛 404；真拿到空数组（字典非空但没段）也要兜住，
+      // 否则 `setSeg(null)` 让抽屉不开，用户只看到「点了没反应」。
+      if (!r.段落?.length) {
+        notify(`报告里引用的 ${ref} 在库里找不到${r.没找到?.length ? `：${r.没找到.join('、')}` : ''}`)
+        return
+      }
+      setSeg(r.段落[0])
     } catch (e) {
-      setError(`读取 ${ref} 失败：${String(e)}`)
+      notify(`打不开 ${ref}：${(e as Error).message}`)
     }
-  }, [])
+  }, [notify])
 
   return {
     view, detail, progress, node, approval, error, thinking, draft, seg,
+    notice, notify, setNotice,
     start, approve, create, archive, openSeg,
     setSeg, setView, setProgress, setNode, setApproval, setError, loadDetail,
   }

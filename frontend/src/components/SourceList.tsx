@@ -11,9 +11,13 @@ import { ConfirmDialog } from './ConfirmDialog'
  *  「先看一手再看社区」这个顺序不该变。
  */
 export function SourceList({
-  lib, q, onQuery, cur, onPick, onIgnore, onUnignore,
+  lib, libErr, onRetryLib, q, onQuery, cur, onPick, onIgnore, onUnignore,
 }: {
   lib: Lib | null
+  /** 加载失败的原因。`lib === null` 分不清「加载中」和「加载失败」，
+   *  所以失败必须显式传进来（见下面 `if (!lib)` 处的说明）。 */
+  libErr: string | null
+  onRetryLib: () => void
   q: string
   onQuery: (v: string) => void
   cur: string | null
@@ -45,6 +49,25 @@ export function SourceList({
   }, [lib])
 
   if (!lib) {
+    // ⚠️ 这里原来只有一句「来源库加载中…」。但 `lib === null` **同时**表示
+    // 「还在加载」和「加载失败」——请求失败时 App 把 lib 置回 null，
+    // 于是列表永远停在「加载中…」。2026-10-13 实测：后端停掉后侧栏就卡在这句上，
+    // 而底部提示条同时在说「来源库加载失败」，**两边自相矛盾**。
+    // 所以失败必须有自己的状态，不能靠 `lib` 猜。
+    if (libErr) {
+      return (
+        <div className="space-y-2 px-3 py-4 text-xs text-muted">
+          <div className="text-red-600">来源库没加载出来</div>
+          <div className="leading-relaxed">{libErr}</div>
+          <button
+            onClick={onRetryLib}
+            className="rounded border border-line px-2 py-1 text-[11px] text-ink hover:bg-gray-50"
+          >
+            重试
+          </button>
+        </div>
+      )
+    }
     return <div className="px-3 py-4 text-xs text-muted">来源库加载中…</div>
   }
 

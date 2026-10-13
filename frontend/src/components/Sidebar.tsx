@@ -186,7 +186,7 @@ function SessionRow({
 
 export function Sidebar({
   list, trash, cur, folders, onPick, onChanged, onNew, pane, onPane,
-  lib, srcQuery, onSrcQuery, srcCur, onPickSource, onIgnoreSource,
+  lib, libErr, onRetryLib, srcQuery, onSrcQuery, srcCur, onPickSource, onIgnoreSource,
 }: {
   list: SessionSummary[]
   /** 回收站内容。来自 `/api/trash`——不在 `list` 里（那边硬过滤 deleted_at）。 */
@@ -200,6 +200,10 @@ export function Sidebar({
   pane: Pane
   onPane: (p: Pane) => void
   lib: SourceLibrary | null
+  /** 来源库加载失败的原因。`lib === null` 同时表示「加载中」和「失败」，
+   *  光看它分不出来——分不出来时列表会一直停在「加载中…」。 */
+  libErr: string | null
+  onRetryLib: () => void
   srcQuery: string
   onSrcQuery: (v: string) => void
   srcCur: string | null
@@ -266,7 +270,8 @@ export function Sidebar({
 
       {pane === 'source' ? (
         <SourceList
-          lib={lib} q={srcQuery} onQuery={onSrcQuery}
+          lib={lib} libErr={libErr} onRetryLib={onRetryLib}
+          q={srcQuery} onQuery={onSrcQuery}
           cur={srcCur} onPick={onPickSource}
           onIgnore={(id, reason) => onIgnoreSource(id, true, reason)}
           onUnignore={(id) => onIgnoreSource(id, false, '')}

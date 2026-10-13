@@ -20,6 +20,9 @@ export default function App() {
   // ---- 来源库（产品化阶段 4）----
   const [pane, setPane] = useState<Pane>('session')
   const [lib, setLib] = useState<SourceLibrary | null>(null)
+  /** 失败原因单独存。`lib === null` 既表示「加载中」也表示「加载失败」，
+   *  只靠它判断的话来源库列表会永远停在「来源库加载中…」。 */
+  const [libErr, setLibErr] = useState<string | null>(null)
   const [srcQ, setSrcQ] = useState('')
   const [srcCur, setSrcCur] = useState<string | null>(null)
   const [srcDetail, setSrcDetail] = useState<SourceDetailRow | null>(null)
@@ -33,10 +36,16 @@ export default function App() {
   // 回收站的会话根本不在这一份里。必须单独打 `/api/trash`，
   // 否则侧栏「回收站」档永远只能拿到空数组。
   const refresh = useCallback(async () => {
-    try { setList(await api.jget<SessionSummary[]>('/api/sessions')) } catch { /* 忽略 */ }
-    try { setTrash(await api.jget<SessionSummary[]>('/api/trash')) } catch { /* 忽略 */ }
-    try { setFolders(await api.jget<Folder[]>('/api/folders')) } catch { /* 忽略 */ }
-  }, [])
+    let failed = 0
+    try { setList(await api.jget<SessionSummary[]>('/api/sessions')) } catch { failed++ }
+    try { setTrash(await api.jget<SessionSummary[]>('/api/trash')) } catch { failed++ }
+    try { setFolders(await api.jget<Folder[]>('/api/folders')) } catch { failed++ }
+    // **静默失败在这里最坏**：服务没起来时侧栏就是个空列表，用户会理解成
+    // 「我没有历史会话」而不是「服务挂了」——那会让他去找根本不存在的 bug。
+    // 三条全挂 = 服务不可达；只挂一条 = 局部问题，都得说。
+    if (failed === 3) s.notify('连不上后端服务。侧栏是空的——那是拿不到数据，不是不存在数据。')
+    else if (failed > 0) s.notify(`侧栏有 ${failed} 项没加载出来，其余正常`)
+  }, [s.notify])
 
   /** 来源库**只在切到来源视图时才拉**——它要按 session 建段号索引算引用数，
    *  比会话列表重得多；不看见就别付这个成本。 */
@@ -44,8 +53,14 @@ export default function App() {
     try {
       setLib(await api.jget<SourceLibrary>(
         `/api/sources${q ? `?q=${encodeURIComponent(q)}` : ''}`))
-    } catch { /* 忽略 */ }
-  }, [])
+      setLibErr(null)
+    } catch (e) {
+      setLib(null)
+      const msg = (e as Error).message
+      setLibErr(msg)
+      s.notify(`来源库加载失败：${msg}`)
+    }
+  }, [s.notify])
 
   useEffect(() => { void refresh() }, [refresh, s.view])
 
@@ -59,8 +74,13 @@ export default function App() {
   const pickSource = useCallback(async (id: string) => {
     setSrcCur(id)
     try { setSrcDetail(await api.jget<SourceDetailRow>(`/api/sources/${id}`)) }
-    catch { setSrcDetail(null) }
-  }, [])
+    catch (e) {
+      setSrcDetail(null)
+      // 详情页会把 null 渲染成「左侧来源库里点一条」——但列表里其实
+      // 已经有选中态了，两边对不上，不说明原因用户会一直点。
+      s.notify(`打不开这个来源：${(e as Error).message}`)
+    }
+  }, [s.notify])
 
   /** 标记 / 取消排除。三处视图都读这个状态，必须一起刷新：
    *  来源库列表、当前打开的来源详情、以及**当前会话的报告提示条**
@@ -69,7 +89,13 @@ export default function App() {
     async (id: string, ignore: boolean, reason: string) => {
       try {
         await api.jpost(`/api/sources/${id}/${ignore ? 'ignore' : 'unignore'}`, { reason })
-      } catch { /* 忽略：列表下次刷新会露出真值 */ }
+      } catch (e) {
+        // ⚠️ 这条**必须**提示，不能像以前那样「下次刷新会露出真值」。
+        // 「标记排除」是用户对报告可信度的判断：以为标上了、其实没存，
+        // 等于用户以为某条证据已作废，它却还留在报告结论里——这比不标更糟。
+        s.notify(`标记失败，这个来源仍是原状态：${(e as Error).message}`)
+        return
+      }
       await refreshLib(srcQ)
       // 按**刚改的那条**判断要不要刷详情，不是按「当前选中的那条」。
       // 两者可以不是一回事：在列表里标记 A，右边打开的却是 B。
@@ -78,7 +104,7 @@ export default function App() {
       if (srcDetail?.id === id) await pickSource(id)
       if (sid) await s.loadDetail(sid)
     },
-    [refreshLib, srcQ, srcDetail, pickSource, sid, s.loadDetail],
+    [refreshLib, srcQ, srcDetail, pickSource, sid, s.loadDetail, s.notify],
   )
 
   /** 报告提示条上的来源名 → 跳来源库并选中它（兑现「可在来源库中查看」） */
@@ -135,6 +161,8 @@ export default function App() {
           if (p === 'session') { setSrcCur(null); setSrcDetail(null) }
         }}
         lib={lib}
+        libErr={libErr}
+        onRetryLib={() => void refreshLib(srcQ)}
         srcQuery={srcQ}
         onSrcQuery={setSrcQ}
         srcCur={srcCur}
@@ -221,10 +249,7 @@ export default function App() {
               previews={previews}
               ignoredCitations={d?.ignored_citations ?? []}
               onOpenSource={openSourceFromReport}
-              onRef={(r) => {
-                console.log('[ref-click]', r, sid)
-                void s.openSeg(sid ?? '', r)
-              }}
+              onRef={(r) => { void s.openSeg(sid ?? '', r) }}
             />
           </div>
         )}
@@ -264,6 +289,29 @@ export default function App() {
       )}
 
       {pane === 'session' && <SegDrawer seg={s.seg} onClose={() => s.setSeg(null)} />}
+
+      {/* 一次操作没成的提示（2026-10-13 加）。
+          `role="status" + aria-live`：屏幕阅读器能听到——项目里已有
+          aria 用得很少，这条是最需要「机器也能感知」的一处（静默失败正是
+          无障碍问题的一部分 sighted 用户能看见、盲用户连「没反应」都感知不到）。
+          `⚠` 只在这里出现：它表示「某件事没成功，需要你知道」。 */}
+      {s.notice && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-5 left-1/2 z-50 flex max-w-[min(600px,calc(100vw-32px))]
+                     -translate-x-1/2 items-start gap-2 rounded-md border border-red-200
+                     bg-white px-3.5 py-2.5 shadow-lg"
+        >
+          <span className="mt-px shrink-0 text-red-500" aria-hidden>⚠</span>
+          <span className="min-w-0 flex-1 text-[13px] leading-relaxed text-ink">{s.notice}</span>
+          <button
+            onClick={() => s.setNotice(null)}
+            aria-label="关闭提示"
+            className="shrink-0 text-muted hover:text-ink"
+          >×</button>
+        </div>
+      )}
     </div>
   )
 }
