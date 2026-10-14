@@ -78,11 +78,17 @@ def _make_nature_items(items: list[dict]) -> list[dict]:
     所以开头 2500 字始终保留，它是判定信号的主要来源。
     """
     out = []
-    for i, it in enumerate(items):
+    for it in items:
         segs = it.get("segments") or []
         head = (it.get("text") or "")[:NATURE_HEAD_CHARS]
         out.append({
-            "i": i,
+            # ⚠️ 这里**原来**还塞过一个 `"i": i`（items 里的全局下标），
+            # 只有 `_render_nature` 用它。而 `_render_nature` 拿全局下标
+            # 去渲染给模型看、`_run_nature_batch` 又拿它去和
+            # **切片长度** `len(batch)` 比——于是第 2 批起下标必然越界，
+            # 被 `continue` 整批静默丢弃（v5 实测 41 个来源丢 21 个）。
+            # 根因就是「提示词里的下标」和「校验用的下标」不是同一套。
+            # 现在下标一律按**批内**编号，提示词与校验天然一致。
             "source_id": it["source_id"],
             "title": it.get("title") or "",
             "url": it.get("url") or "",
@@ -95,10 +101,12 @@ def _make_nature_items(items: list[dict]) -> list[dict]:
 
 def _render_nature(batch: list[dict]) -> str:
     parts = []
-    for it in batch:
+    # 下标**按批内编号**（0..len(batch)-1），和 `_run_nature_batch` 的校验、
+    # `batch[i]` 取值用的是同一套。见 `_make_nature_items` 里那段注释。
+    for k, it in enumerate(batch):
         summ = "\n".join(f"  - {s}" for s in it["summaries"] if s)
         parts.append(
-            f"===== 来源 {it['i']} =====\n"
+            f"===== 来源 {k} =====\n"
             f"标题：{it['title']}\n"
             f"URL：{it['url']}\n"
             f"各段概括：\n{summ or '（无）'}\n"
@@ -107,28 +115,40 @@ def _render_nature(batch: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-def _run_nature_batch(batch: list[dict]) -> list[dict]:
-    """一次调用判一批来源的性质。失败抛异常交给上层重试。"""
+def _run_nature_batch(batch: list[dict]) -> tuple[list[dict], list[str]]:
+    """一次调用判一批来源的性质。失败抛异常交给上层重试。
+
+    返回 `(判定结果, 没判到的 source_id)`。**没判到的必须显式带出去**：
+    模型少回一条、或给了越界下标，原来都只 `continue` 掉——
+    不抛异常、不计数、不进 `failed_batches`，于是「这一批全军覆没」
+    和「这一批成功」在事件里长得一模一样（2026-10-14 修）。
+    """
     blob = _render_nature(batch)
     data = LLM.complete_json("extract",
                              f"以下是 {len(batch)} 个来源的元信息与开头：\n\n{blob}",
                              system=prompts.SOURCE_NATURE)
     out = []
+    seen = set()
     for it in (data.get("sources") or []):
         i = it.get("source_index")
         if not isinstance(i, int) or not (0 <= i < len(batch)):
             continue          # 模型给错下标就跳过，不猜
         src = batch[i]
+        # 同一条重复回来也只算一次，否则 seen 会掩盖真正的缺口
+        if src["source_id"] in seen:
+            continue
+        seen.add(src["source_id"])
         out.append({
             "kind": "claims",              # 保持同一形状，node_extract 不用改
             "source_id": src["source_id"],
             "title": src.get("title", ""),
             "url": src.get("url", ""),
             "claims": [],
-            "source_nature": it.get("source_nature", "unknown"),
-            "nature_reason": it.get("nature_reason", ""),
+            "source_nature": it.get("source_nature") or "unknown",
+            "nature_reason": it.get("nature_reason") or "",
         })
-    return out
+    missing = [s["source_id"] for s in batch if s["source_id"] not in seen]
+    return out, missing
 
 
 def make_batches(items: list[dict]) -> list[list[dict]]:
@@ -139,7 +159,8 @@ def make_batches(items: list[dict]) -> list[list[dict]]:
 def _node_extract(state: ExtractBatchState) -> dict:
     batches = state.get("batches") or []
     if not batches:
-        return {"results": [], "failed_batches": 0, "events": []}
+        return {"results": [], "failed_batches": 0,
+                "unjudged_sources": [], "events": []}
 
     async def run():
         sem = asyncio.Semaphore(CONCURRENCY)
@@ -153,23 +174,34 @@ def _node_extract(state: ExtractBatchState) -> dict:
 
     raw = asyncio.run(run())
 
-    results, failed = [], 0
+    results, failed, unjudged = [], 0, []
     for i, r in enumerate(raw):
         if isinstance(r, Exception):
             failed += 1
+            unjudged.extend(b["source_id"] for b in batches[i])
             results.append({"kind": "extract_error", "batch": i,
                             "error": f"{type(r).__name__}: {r}"[:200]})
         else:
-            results.extend(r)
+            out_i, missing = r
+            results.extend(out_i)
+            unjudged.extend(missing)
 
+    judged = len([r for r in results if r.get("kind") == "claims"])
     return {
         "results": results,
         "failed_batches": failed,
+        "unjudged_sources": unjudged,
         "events": [{
             "kind": "extract_batch", "batches": len(batches),
             "sources": sum(len(b) for b in batches),
-            "results": len([r for r in results if r.get("kind") == "claims"]),
+            "results": judged,
             "failed": failed,
+            # ⚠️ 2026-10-14 新增。以前 `sources` 和 `results` 不相等只说明
+            # 「这一批全丢了」，但**没人读这两个数的差**，所以从外面看
+            # 「整批没判到」和「判到了」长得一模一样。v5 就是这么丢掉的
+            # 21 个来源（占 51%）。差值必须自己报出来。
+            "unjudged": len(unjudged),
+            "unjudged_sample": unjudged[:5],
         }],
     }
 
@@ -199,7 +231,8 @@ def extract_all(items: list[dict]) -> dict:
     白读整篇是纯浪费。调换顺序后它读的是真正的概括（每段约 38 字）。
     """
     if not items:
-        return {"results": [], "summaries": {}, "failed_batches": 0, "events": []}
+        return {"results": [], "summaries": {}, "failed_batches": 0,
+                "unjudged_sources": [], "events": []}
 
     # 1) 先概括，并挂回 segments，后面的 nature 才有「概括」可用
     sum_out = summarize_segments(

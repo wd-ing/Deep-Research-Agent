@@ -82,14 +82,25 @@ export function SegDrawer({
 }
 
 /** 来源性质要标出来——community / media 的可信度不同于 research。 */
+/** 来源性质 → 标签与颜色。**唯一一份**。
+ *
+ *  `NatureBadge`（详情里的色块）和 `SourceList` 的分组标题（一个小圆点）
+ *  都从这里取色——两处各写一份的话，早晚漂移成两种紫。
+ *  `chip` 是文字色块的类，`dot` 是同色系的小圆点（分组标题用，比色块安静）。 */
+export const NATURE_META: Record<string, { label: string; chip: string; dot: string }> = {
+  first_party: { label: '一手', chip: 'bg-green-100 text-green-800', dot: 'bg-green-400' },
+  research: { label: '研究', chip: 'bg-purple-100 text-purple-800', dot: 'bg-purple-400' },
+  media: { label: '媒体', chip: 'bg-blue-100 text-blue-800', dot: 'bg-blue-400' },
+  community: { label: '社区', chip: 'bg-amber-100 text-amber-800', dot: 'bg-amber-400' },
+  aggregator: { label: '聚合', chip: 'bg-gray-100 text-gray-700', dot: 'bg-gray-400' },
+}
+const NATURE_UNKNOWN = { label: '未判', chip: 'bg-gray-100 text-gray-500', dot: 'bg-gray-300' }
+
+export function natureMeta(nature: string | null | undefined) {
+  return NATURE_META[nature ?? ''] ?? NATURE_UNKNOWN
+}
+
 export function NatureBadge({ nature }: { nature: string | null }) {
-  const map: Record<string, [string, string]> = {
-    first_party: ['一手', 'bg-green-100 text-green-800'],
-    research: ['研究', 'bg-purple-100 text-purple-800'],
-    media: ['媒体', 'bg-blue-100 text-blue-800'],
-    community: ['社区', 'bg-amber-100 text-amber-800'],
-    aggregator: ['聚合', 'bg-gray-100 text-gray-700'],
-  }
-  const [label, cls] = map[nature ?? ''] ?? ['未判', 'bg-gray-100 text-gray-500']
-  return <span className={`rounded px-1.5 py-0.5 text-2xs ${cls}`}>{label}</span>
+  const m = natureMeta(nature)
+  return <span className={`rounded px-1.5 py-0.5 text-2xs ${m.chip}`}>{m.label}</span>
 }

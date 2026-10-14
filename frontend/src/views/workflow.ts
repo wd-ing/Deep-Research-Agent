@@ -102,15 +102,25 @@ function toStep(e: ProgressEntry, seq: number): Step | null {
         detail: lines,
       }
     }
-    case 'extract':
+    case 'extract': {
+      // 两件独立的事，都得说：「概括」批次失败 → 段落没进写作材料；
+      // 「性质」没判出来 → 来源库里归到「未判」组、写作时看到的是「性质未判」。
+      // 性质这一条原来后端根本没报（整批被静默丢弃），2026-10-14 才补上 `unjudged_sources`。
+      const sumFail = n(e, 'summarize_failed_batches') ?? 0
+      const unjudged = n(e, 'unjudged_sources') ?? 0
+      const detail = [
+        ...(sumFail > 0
+          ? [`${sumFail} 批概括失败，这些段落的要点没进写作材料`] : []),
+        ...(unjudged > 0
+          ? [`${unjudged} 个来源没判出性质，来源库里会归到「未判」组`] : []),
+      ]
       return {
         id, label: `抽取（第 ${n(e, 'round') ?? '?'} 轮）`,
         summary: `${n(e, 'sources')} 来源 → ${n(e, 'segments')} 段 · 概括成功 ${n(e, 'summarized')}`,
-        warn: (n(e, 'summarize_failed_batches') ?? 0) > 0,
-        detail: (n(e, 'summarize_failed_batches') ?? 0) > 0
-          ? [`${n(e, 'summarize_failed_batches')} 批概括失败，这些段落的要点没进写作材料`]
-          : undefined,
+        warn: detail.length > 0,
+        detail: detail.length ? detail : undefined,
       }
+    }
     case 'assess': {
       const thin = (e.thin_sections as string[] | undefined) ?? []
       const gaps = e.gaps as number | undefined

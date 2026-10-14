@@ -679,6 +679,16 @@ def node_extract(state: ResearchState) -> dict:
     n_ok = len([r for r in results if r.get("kind") == "claims"])
     n_err = len([r for r in results if r.get("kind") == "extract_error"])
 
+    # ⚠️ 送了但没判出性质的来源。**必须显式报出来**：性质只影响来源库分组和
+    # 写作提示词里的「性质」字段，判不出来不影响流程，所以丢掉了也没人发现。
+    # 2026-10-14 实测：`_run_nature_batch` 的下标拿全局值去比切片长度，
+    # 第 2 批起整批静默丢弃，41 个来源丢了 21 个（占 51%），
+    # 而来源库里那一组被标成「未判」——**看起来像模型判不出来，其实是代码丢的**。
+    unjudged = out.get("unjudged_sources") or []
+    if unjudged:
+        print(f"⚠️  {len(unjudged)}/{len(items)} 个来源没判出性质，"
+              f"来源库里会归到「未判」组：{unjudged[:5]}", flush=True)
+
     return {
         "pending_extract": [],
         "all_evidence": results,
@@ -687,6 +697,7 @@ def node_extract(state: ResearchState) -> dict:
             "sources": len(items), "ok": n_ok, "errors": n_err,
             "segments": n_seg, "summarized": n_sum,
             "summarize_failed_batches": out.get("failed"),
+            "unjudged_sources": len(unjudged),
             "gate": stats,
         }],
     }

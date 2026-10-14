@@ -143,6 +143,10 @@ class ExtractBatchState(TypedDict, total=False):
     batches: list                # [[{source_id,title,url,published,text}, ...], ...]
     results: list                # [{source_id, claims, source_nature, ...}]
     failed_batches: int
+    # 送了但没判出性质的 source_id。**必须和 failed_batches 分开**：
+    # 抛异常是「这一批失败」，没判到是「这一批的一部分没回来」，
+    # 原来后者被静默丢掉（2026-10-14 修，见 extract_batch._run_nature_batch）
+    unjudged_sources: list
     events: Annotated[list, operator.add]
 
 

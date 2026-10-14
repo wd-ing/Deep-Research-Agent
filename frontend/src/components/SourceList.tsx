@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { SourceLibrary as Lib, SourceLibItem } from '../types'
-import { NatureBadge } from './SegDrawer'
+import { natureMeta } from './SegDrawer'
 import { ConfirmDialog } from './ConfirmDialog'
 
 /** 来源库列表（侧栏）。
@@ -103,14 +103,23 @@ export function SourceList({
                   n.has(g.nature) ? n.delete(g.nature) : n.add(g.nature)
                   return n
                 })}
-                className="flex w-full items-center gap-1 rounded px-2 py-1 text-left text-2xs text-muted hover:bg-white"
+                className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left transition-colors hover:bg-gray-50"
               >
-                <span className="w-2 shrink-0 text-2xs leading-none">
+                <span className="w-2 shrink-0 text-2xs leading-none text-muted">
                   {isClosed ? '▶' : '▼'}
                 </span>
-                {/* NatureBadge 自己就渲染中文标签，别再补一遍文字 */}
-                <NatureBadge nature={g.nature} />
-                <span className="ml-auto opacity-60">{g.items.length}</span>
+                {/* 分组是**结构**，不该比内容更抢眼。原来这里放的是
+                    `NatureBadge`——一个紫色圆角块，在一列 41 条的列表里
+                    它是最跳的元素，可它只标着「研究」两个字。
+                    改成同色系的小圆点：颜色还在（还能一眼分辨性质），
+                    但让位给下面的来源。颜色取自 NATURE_META，和详情页一致。 */}
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${natureMeta(g.nature).dot}`} />
+                <span className="min-w-0 flex-1 truncate text-2xs font-medium text-muted">
+                  {g.label}
+                </span>
+                <span className="shrink-0 text-2xs tabular-nums text-muted/70">
+                  {g.items.length}
+                </span>
               </button>
 
               {!isClosed && g.items.map((s) => (
@@ -128,16 +137,33 @@ export function SourceList({
                     onClick={() => onPick(s.id)}
                     className="block w-full px-2 py-1.5 pr-7 text-left"
                   >
-                    <div className="line-clamp-2 text-xs leading-snug text-ink">
-                      {s.title || '(无标题)'}
+                    {/* 日期放标题行右侧，且只到月：侧栏正文只有 227px，
+                        四项（域名/日期/段数/引用）全塞第二行时中位总宽 236px
+                        ——**按现在的排法就装不下**，实测 54% 的行会掉到第二行，
+                        行高在 61/79px 之间跳，列表看着是花的。
+                        年月挪上来后第二行能给域名留 142px，只有 7% 的域名会截断。
+                        完整日期（到日）在右侧详情页有，这里丢掉不算丢信息。 */}
+                    <div className="flex items-start gap-2">
+                      <div
+                        className="line-clamp-2 min-w-0 flex-1 text-xs leading-snug text-ink"
+                        title={s.title || '(无标题)'}
+                      >
+                        {s.title || '(无标题)'}
+                      </div>
+                      {s.source_date && (
+                        <span className="shrink-0 pt-px text-2xs tabular-nums text-muted/70">
+                          {s.source_date.slice(0, 7)}
+                        </span>
+                      )}
                     </div>
-                    <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-2xs text-muted">
-                      <span className="max-w-[9rem] truncate">{s.domain}</span>
-                      {s.source_date && <span>{s.source_date.slice(0, 10)}</span>}
-                      <span>{s.segments} 段</span>
+                    <div className="mt-0.5 flex items-center gap-2 text-2xs text-muted">
+                      <span className="min-w-0 flex-1 truncate" title={s.domain ?? undefined}>
+                        {s.domain}
+                      </span>
+                      <span className="shrink-0 tabular-nums">{s.segments} 段</span>
                       {s.citations > 0
-                        ? <span className="text-accent">{s.citations} 处引用</span>
-                        : <span className="text-gray-400">未被引用</span>}
+                        ? <span className="shrink-0 tabular-nums text-accent">{s.citations} 处引用</span>
+                        : <span className="shrink-0 text-gray-400">未被引用</span>}
                     </div>
                     {/* 已排除要说清**为什么**，以及排除到底意味着什么——
                         否则用户以为「标记一下报告里的它就没了」 */}
