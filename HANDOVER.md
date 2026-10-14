@@ -579,6 +579,41 @@ P2 给段落抽屉加背景滚动锁，容器从 `overflow-auto` 切成 `overflo
 `onClick`，焦点不在按钮上，那一步等于没测）。
 要补就是「打开抽屉时把焦点移进抽屉」——那是焦点管理的方案问题，不是 bug，先不动。
 
+### 24. SSE 的外层字段被前端丢掉 → 环节归类跟着「当前节点」漂移
+
+2026-10-14 修掉的 bug。服务端发的是 `{kind:"progress", node:<图节点>, event:e}`
+（`server.py:832`），**`node` 在外层**，而 `useSession` 只存了内层 `ev.event`。
+`buildPhases` 里那句 `/write|finalize/.test(e.node) || currentNode === 'write'`
+于是恒为 false，归类退化成「渲染那一刻正在跑哪个节点」——
+**写作阶段整个「规划」环节消失，一到 finalize 又全部弹回规划**（v5 里写作占 58%）。
+
+⇒ **SSE 消息是嵌套的：外层是传输元数据（node / kind），内层是业务事件。
+拆包时要把整个外层一起留着**，别顺手 `.push(ev.event)` 就完事。
+前端类型 `SseEvent` 本来就写对了（`{kind:'progress', node, event}`），
+**类型写对了不等于用对了**——用的时候还是只取了内层。
+
+**这个 bug 为什么能活这么久**：它长得像对的。
+`phaseOf()` 里有注释专门解释「`summary` 必须跟 `finalize` 同属收尾」，
+但那个分支**永远走不到**，因为调用方从没传过真实 node。
+⇒ **代码里的防护性注释也要验证它真的会执行**，别只读注释就放心。
+
+### 25. 回放服务只测得到审批为止，写作阶段根本测不到
+
+`tests/replay_server.py` 的 `FakeGraph` **永远返回审批中断**，
+`/api/sessions/{id}/approval` 恒为 `waiting: true`。于是批准之后回放确实
+把 after-approval 的事件发出去了，但前端在下一次 `loadApproval` 时又被
+翻回审批页——**实测点了「通过，开始写作」，界面纹丝不动**。
+
+后果：**工作流视图的写作阶段从来没被前端测过**，坑 24 那个 bug 自然活到现在。
+
+⚠️ 录制数据本身没问题（`run_after_approval.json` 里 7 条 progress 全带 `node`），
+是**回放器的图桩不支持「审批之后」这个状态**。
+
+⇒ 真要测写作阶段，要么给 `FakeGraph` 加一个「审批已放行」的开关，
+要么单独录一段 after-approval 的事件直接喂进去。
+在那之前，**工作流视图的验证只能靠函数级探针**（`buildPhases` 是纯函数，
+esbuild 打个包就能在 node 里跑真实数据）。
+
 ---
 
 ## 八、待办
@@ -597,6 +632,7 @@ P2 给段落抽屉加背景滚动锁，容器从 `overflow-auto` 切成 `overflo
 | 失败调用留痕 | ✅ **本轮完成**。迁移 `0008_llm_call_failure.sql` 加 `status`/`error`；`provider._record_error()` + 三条失败路径。`complete_json` 解析失败记**两行**（ok 行 token 确实花了 + error 行业务没成），`session_cost()` 不受影响。探针 `tests/probe_call_failure.py` |
 | 拖拽排序 | ✅ **本轮完成**。`repo.reorder_folders()` + `PATCH /api/folders/order` + `FolderTree` 原生 HTML5 DnD。**只做同级排序**，跨层级走菜单「移到…」 |
 | 引用 hover 预览 | ✅ **2026-10-13 已做**（原记录「⬜ 下轮」已过时）。新端点 `GET /api/sessions/{id}/seg_preview`，前端 `RefChip` 用 **portal + `position:fixed`** 出气泡（见 `DECISIONS.md`）。**原生 `title` 必须去掉**，留着会和气泡同时出现 |
+| **前端审计与修复** | ✅ **2026-10-14**。全量扫了 19 个文件/3950 行，修掉四条会骗人的缺陷：① 工作流视图环节归类错乱（写作阶段「规划」整个消失，根因是 `useSession` 丢掉了 SSE 外层的 `node`）② 侧栏写操作静默失败（`act()` 无 catch，删不掉看起来像删掉了）③ `jpatch`/`jdel` 错误信息还是老格式 ④ 新建/启动/审批/归档失败完全无声。另有 12 条一致性缺口 + 6 条清理项列在 `DECISIONS.md`，等美化时一并处理。**⚠️ 坑 25：回放只测得到审批为止，写作阶段从没被前端测过** |
 | **前端打磨三轮** | **✅ P0/P1/P2 全部完成（2026-10-13）**，都是只动前端、不动后端。**P0**（`27507bc`）：手写表格样式（`prose-sm` 原来是空类，typography 从未安装）、`notice` 通道、7 处静默吞错、来源库失败态、`ErrorBoundary`。**P1**（`fef594c`）：目录+进度条、新建研究对话框、加载态。**P2**：抽屉 Esc/遮罩/滚动锁、引用气泡键盘可达、引用按复用次数分三档、标题层级 |
 | 存疑节高亮 | ✅ 已在 `ReportView` 里做了（琥珀色区块） |
 | ~~流式第二步：正文增量~~ | ✅ **2026-10-13 核实：早就做完了，原记录过时**。`server.py:723` 推 `{"kind": "draft"}`（`reasoning` 推成 `thinking`），带 40 字/0.25s 节流和收尾 flush；`types.ts:53` 有类型、`useSession.ts:108` 在消费。剩下的**已知限制**不是待办：正文增量无法归属到具体小节（`write_section` 是 4 并发，`run_tool_loop` 拿不到 task_id） |
