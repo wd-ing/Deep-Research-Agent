@@ -187,6 +187,7 @@ function SessionRow({
 export function Sidebar({
   list, trash, cur, folders, onPick, onChanged, onNew, pane, onPane,
   lib, libErr, onRetryLib, srcQuery, onSrcQuery, srcCur, onPickSource, onIgnoreSource,
+  onNotify,
 }: {
   list: SessionSummary[]
   /** 回收站内容。来自 `/api/trash`——不在 `list` 里（那边硬过滤 deleted_at）。 */
@@ -204,6 +205,10 @@ export function Sidebar({
    *  光看它分不出来——分不出来时列表会一直停在「加载中…」。 */
   libErr: string | null
   onRetryLib: () => void
+  /** 写操作失败时弹提示。走 App 的 notice 通道——
+   *  侧栏自己的红字条（FolderTree 里那个 `err`）在这里不合适：
+   *  那是文件夹树的局部状态，而这里失败的是会话。 */
+  onNotify: (msg: string) => void
   srcQuery: string
   onSrcQuery: (v: string) => void
   srcCur: string | null
@@ -245,9 +250,23 @@ export function Sidebar({
   const archived = shown.filter((s) => s.archived_at)
   const rest = shown.filter((s) => !s.archived_at)
 
-  const act = async (fn: () => Promise<unknown>) => {
-    await fn()
-    onChanged()
+  /** 一次写操作。**失败必须说出来**——
+   *
+   *  ⚠️ 原来这里是裸的 `await fn(); onChanged()`，没有任何 catch。
+   *  重命名 / 归档 / 移到文件夹 / 恢复 / 彻底删除全走它，请求一失败
+   *  **界面什么都不发生**，而确认框早在请求发出**之前**就关掉了——
+   *  用户以为「删掉了」，其实研究还在列表里。这是「以为标上了其实没存」
+   *  那一类，比不操作更糟。同一个项目里 `FolderTree.run()` 是有
+   *  try/catch + 红字的，这里是遗漏不是风格。
+   *
+   *  带上操作名：光说「操作失败」用户还得回忆刚点的是哪个按钮。 */
+  const act = async (what: string, fn: () => Promise<unknown>) => {
+    try {
+      await fn()
+      onChanged()
+    } catch (e) {
+      onNotify(`${what}失败，状态没变：${(e as Error).message}`)
+    }
   }
 
   return (
@@ -330,7 +349,7 @@ export function Sidebar({
                 </div>
                 <div className="mt-1 flex gap-2">
                   <button
-                    onClick={() => act(() => api.jpost(`/api/sessions/${s.id}/restore`))}
+                    onClick={() => act('恢复', () => api.jpost(`/api/sessions/${s.id}/restore`))}
                     className="rounded border border-line px-2 py-0.5 text-[11px] text-muted hover:bg-white hover:text-ink"
                   >恢复</button>
                   <button
@@ -350,20 +369,20 @@ export function Sidebar({
                 {archived.map((s) => (
                   <SessionRow key={s.id} s={s} active={s.id === cur} choices={choices}
                     onOpen={() => onPick(s.id)}
-                    onRename={(t) => act(() => api.jpatch(`/api/sessions/${s.id}`, { title: t }))}
-                    onArchive={(v) => act(() => api.jpatch(`/api/sessions/${s.id}`, { archived: v }))}
+                    onRename={(t) => act('重命名', () => api.jpatch(`/api/sessions/${s.id}`, { title: t }))}
+                    onArchive={(v) => act(v ? '归档' : '取消归档', () => api.jpatch(`/api/sessions/${s.id}`, { archived: v }))}
                     onDelete={() => setConfirm({ s, purge: false })}
-                    onMove={(fid) => act(() => api.jpatch(`/api/sessions/${s.id}`, { folder_id: fid }))} />
+                    onMove={(fid) => act('移动到文件夹', () => api.jpatch(`/api/sessions/${s.id}`, { folder_id: fid }))} />
                 ))}
               </>
             )}
             {rest.map((s) => (
               <SessionRow key={s.id} s={s} active={s.id === cur} choices={choices}
                 onOpen={() => onPick(s.id)}
-                onRename={(t) => act(() => api.jpatch(`/api/sessions/${s.id}`, { title: t }))}
-                onArchive={(v) => act(() => api.jpatch(`/api/sessions/${s.id}`, { archived: v }))}
+                onRename={(t) => act('重命名', () => api.jpatch(`/api/sessions/${s.id}`, { title: t }))}
+                onArchive={(v) => act(v ? '归档' : '取消归档', () => api.jpatch(`/api/sessions/${s.id}`, { archived: v }))}
                 onDelete={() => setConfirm({ s, purge: false })}
-                onMove={(fid) => act(() => api.jpatch(`/api/sessions/${s.id}`, { folder_id: fid }))} />
+                onMove={(fid) => act('移动到文件夹', () => api.jpatch(`/api/sessions/${s.id}`, { folder_id: fid }))} />
             ))}
             {!shown.length && (
               <div className="px-1 py-3 text-xs text-muted">
@@ -388,7 +407,7 @@ export function Sidebar({
           onConfirm={async () => {
             const { s, purge } = confirm
             setConfirm(null)
-            await act(() => purge
+            await act(purge ? '彻底删除' : '移到回收站', () => purge
               ? api.jdel(`/api/sessions/${s.id}/purge`)
               : api.jdel(`/api/sessions/${s.id}`))
           }}

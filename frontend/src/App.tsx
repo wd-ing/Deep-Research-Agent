@@ -124,11 +124,25 @@ export default function App() {
   }, [refreshLib, pickSource])
 
   async function start(question: string) {
-    const id = await s.create(question)
+    // ⚠️ 建会话失败**不能**让对话框自己关掉、更不能默默 reject。
+    // 原来 `onSubmit={(q) => void start(q)}` + `await s.create()` 无 catch，
+    // 网络一抖就是 unhandled rejection：对面上卡在「正在创建…」，
+    // 控制台才有线索（项目里也没有 unhandledrejection 兜底）。
+    // 现在失败就**留在原地 + 说原因**，用户改个问题重试即可。
+    let id: string
+    try {
+      id = await s.create(question)
+    } catch (e) {
+      s.notify(`建不了这场研究：${(e as Error).message}`)
+      return
+    }
     setNewOpen(false)
     setSid(id)
     await refresh()
-    void s.start(id)
+    // 启动是**另一个**请求，它失败时会议话已经建好了——
+    // 提示要说清「会话已建好，只是没启动」，否则用户会去重复建。
+    void s.start(id).catch((e: unknown) =>
+      s.notify(`会话已建好，但启动失败：${(e as Error).message}`))
   }
 
   const d = s.detail
@@ -173,6 +187,7 @@ export default function App() {
         lib={lib}
         libErr={libErr}
         onRetryLib={() => void refreshLib(srcQ)}
+        onNotify={s.notify}
         srcQuery={srcQ}
         onSrcQuery={setSrcQ}
         srcCur={srcCur}
@@ -213,7 +228,8 @@ export default function App() {
           </div>
           {d && !d.archived_at && d.status === 'done' && (
             <button
-              onClick={() => void s.archive(d.id).then(refresh)}
+              onClick={() => void s.archive(d.id).then(refresh).catch(
+                  (e: unknown) => s.notify(`归档失败：${(e as Error).message}`))}
               className="rounded border border-line px-3 py-1 text-xs text-muted hover:bg-gray-50"
             >
               归档（不出现在默认列表）
@@ -255,7 +271,8 @@ export default function App() {
 
         {s.view === 'awaiting' && s.approval && (
           <div className="flex-1 overflow-auto">
-            <ApprovalView approval={s.approval} onApprove={() => void s.approve(sid!)} />
+            <ApprovalView approval={s.approval} onApprove={() => void s.approve(sid!).catch(
+              (e: unknown) => s.notify(`批准失败：${(e as Error).message}`))} />
           </div>
         )}
 

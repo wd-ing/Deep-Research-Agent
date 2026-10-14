@@ -255,19 +255,24 @@ export function useSession(sid: string | null) {
 
 export type SessionApi = ReturnType<typeof useSession>
 
+/** ⚠️ 这两个也**必须**走 `errText`。它们原本拼的是 `${r.status} ${url}`，
+ *  是 P0 之前的老格式——而它们恰好是「改名 / 归档 / 移文件夹 / 删除」全部
+ *  写操作的入口：用户点「移到回收站」失败，看到的是
+ * `500 /api/sessions/s_xxx`，既不知道哪一步失败也不知道原因。
+ * 同文件里的 `jget`/`jpost` 早就修好了，这两个漏了。 */
 async function jpatch<T>(url: string, body: unknown): Promise<T> {
   const r = await fetch(url, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!r.ok) throw new Error(`${r.status} ${url}`)
+  if (!r.ok) throw new Error(await errText(r, url))
   return r.json() as Promise<T>
 }
 
 async function jdel<T>(url: string): Promise<T> {
   const r = await fetch(url, { method: 'DELETE' })
-  if (!r.ok) throw new Error(`${r.status} ${url}`)
+  if (!r.ok) throw new Error(await errText(r, url))
   return r.json() as Promise<T>
 }
 
