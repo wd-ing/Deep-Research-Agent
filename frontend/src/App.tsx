@@ -217,7 +217,7 @@ export default function App() {
                 <span className="inline-flex items-center gap-1.5">
                 <span className={[
                   'inline-block h-1.5 w-1.5 rounded-full',
-                  d.status === 'running' ? 'wf-running-dot bg-accent' : 'bg-gray-300',
+                  d.status === 'running' ? 'wf-running-dot bg-live' : 'bg-gray-300',
                 ].join(' ')} />
                 {d.status}
               </span>
@@ -363,7 +363,7 @@ export default function App() {
                      bg-white px-3.5 py-2.5 shadow-lg"
         >
           <span className="mt-px shrink-0 text-red-500" aria-hidden>⚠</span>
-          <span className="min-w-0 flex-1 text-[13px] leading-relaxed text-ink">{s.notice}</span>
+          <span className="min-w-0 flex-1 text-xs leading-relaxed text-ink">{s.notice}</span>
           <button
             onClick={() => s.setNotice(null)}
             aria-label="关闭提示"

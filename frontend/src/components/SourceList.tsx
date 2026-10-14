@@ -61,7 +61,7 @@ export function SourceList({
           <div className="leading-relaxed">{libErr}</div>
           <button
             onClick={onRetryLib}
-            className="rounded border border-line px-2 py-1 text-[11px] text-ink hover:bg-gray-50"
+            className="rounded border border-line px-2 py-1 text-2xs text-ink hover:bg-gray-50"
           >
             重试
           </button>
@@ -83,7 +83,7 @@ export function SourceList({
           placeholder="搜索标题 / 域名…"
           className="w-full rounded-md border border-line bg-white px-2.5 py-1.5 text-sm outline-none focus:border-accent"
         />
-        <div className="flex gap-2 text-[11px] text-muted">
+        <div className="flex gap-2 text-2xs text-muted">
           <span>{lib.total} 个来源</span>
           <span>{lib.segments} 段</span>
           <span>{lib.citations} 处引用</span>
@@ -103,9 +103,9 @@ export function SourceList({
                   n.has(g.nature) ? n.delete(g.nature) : n.add(g.nature)
                   return n
                 })}
-                className="flex w-full items-center gap-1 rounded px-2 py-1 text-left text-[11px] text-muted hover:bg-white"
+                className="flex w-full items-center gap-1 rounded px-2 py-1 text-left text-2xs text-muted hover:bg-white"
               >
-                <span className="w-2 shrink-0 text-[9px] leading-none">
+                <span className="w-2 shrink-0 text-2xs leading-none">
                   {isClosed ? '▶' : '▼'}
                 </span>
                 {/* NatureBadge 自己就渲染中文标签，别再补一遍文字 */}
@@ -121,18 +121,17 @@ export function SourceList({
                   className={[
                     'group/src relative mb-0.5 rounded-md transition-colors',
                     s.ignored ? 'bg-gray-50 opacity-60' : '',
-                    s.id === cur ? 'bg-white shadow-sm ring-1 ring-line'
-                                  : 'hover:bg-white',
+                    s.id === cur ? 'sel' : 'hover:bg-white',
                   ].join(' ')}
                 >
                   <button
                     onClick={() => onPick(s.id)}
                     className="block w-full px-2 py-1.5 pr-7 text-left"
                   >
-                    <div className="line-clamp-2 text-[12px] leading-snug text-ink">
+                    <div className="line-clamp-2 text-xs leading-snug text-ink">
                       {s.title || '(无标题)'}
                     </div>
-                    <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[10px] text-muted">
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-2xs text-muted">
                       <span className="max-w-[9rem] truncate">{s.domain}</span>
                       {s.source_date && <span>{s.source_date.slice(0, 10)}</span>}
                       <span>{s.segments} 段</span>
@@ -143,7 +142,7 @@ export function SourceList({
                     {/* 已排除要说清**为什么**，以及排除到底意味着什么——
                         否则用户以为「标记一下报告里的它就没了」 */}
                     {s.ignored && (
-                      <div className="mt-0.5 text-[10px] text-amber-700">
+                      <div className="mt-0.5 text-2xs text-amber-700">
                         ⊘ 已排除{s.ignore_reason ? `：${s.ignore_reason}` : ''}
                         {s.citations > 0 && '（报告已引用，不会被改写）'}
                       </div>
@@ -151,7 +150,7 @@ export function SourceList({
                     {/* 不在题的来源要标出来——它留了库但没进报告，
                         「为什么列表里有它却没被引用」这个疑问得有个答案 */}
                     {!s.on_topic && !s.ignored && (
-                      <div className="mt-0.5 text-[10px] text-amber-600">
+                      <div className="mt-0.5 text-2xs text-amber-600">
                         ⚠ 相关性判定为不在题，未参与报告
                       </div>
                     )}
@@ -163,7 +162,7 @@ export function SourceList({
                     }}
                     title={s.ignored ? '取消排除' : '标记为无用来源'}
                     aria-label={s.ignored ? `取消排除 ${s.domain}` : `标记 ${s.domain} 为无用来源`}
-                    className="absolute right-1 top-1.5 hidden rounded px-1 text-[11px] text-muted hover:bg-gray-200 hover:text-ink group-hover/src:block"
+                    className="absolute right-1 top-1.5 hidden rounded px-1 text-2xs text-muted hover:bg-gray-200 hover:text-ink group-hover/src:block"
                   >
                     {s.ignored ? '↺' : '⊘'}
                   </button>

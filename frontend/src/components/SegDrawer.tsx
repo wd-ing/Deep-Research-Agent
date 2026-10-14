@@ -51,7 +51,7 @@ export function SegDrawer({
               {/* 报告已经写完了，排除来源不会回头改写它。
                   用户点开这一段时，是最后一次提醒「这段材料你后来标为不可信」的时机 */}
               {src.ignored && (
-                <div className="rounded bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800">
+                <div className="rounded bg-amber-50 px-2 py-1.5 text-2xs leading-relaxed text-amber-800">
                   ⚠ 你已把这个来源标记为无用
                   {src.ignore_reason && `：${src.ignore_reason}`}
                   <div className="mt-0.5 text-amber-700">
@@ -91,5 +91,5 @@ export function NatureBadge({ nature }: { nature: string | null }) {
     aggregator: ['聚合', 'bg-gray-100 text-gray-700'],
   }
   const [label, cls] = map[nature ?? ''] ?? ['未判', 'bg-gray-100 text-gray-500']
-  return <span className={`rounded px-1.5 py-0.5 text-[11px] ${cls}`}>{label}</span>
+  return <span className={`rounded px-1.5 py-0.5 text-2xs ${cls}`}>{label}</span>
 }

@@ -61,7 +61,7 @@ function SessionRow({
     <div
       className={[
         'group relative mb-0.5 rounded-md px-3 py-2 transition-colors',
-        active ? 'bg-white shadow-sm ring-1 ring-line' : 'hover:bg-white',
+        active ? 'sel' : 'hover:bg-white',
       ].join(' ')}
     >
       {editing ? (
@@ -80,16 +80,16 @@ function SessionRow({
         <button onClick={onOpen} className="block w-full text-left">
           <div className="flex items-start gap-1.5">
             {s.status === 'running' && (
-              <span className="wf-running-dot mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+              <span className="wf-running-dot mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-live" />
             )}
             {s.archived_at && (
-              <span className="mt-0.5 shrink-0 text-[11px] text-muted">📌</span>
+              <span className="mt-0.5 shrink-0 text-2xs text-muted">📌</span>
             )}
             <span className="min-w-0 flex-1 truncate text-sm text-ink">
               {s.title || s.question}
             </span>
           </div>
-          <div className="mt-0.5 flex items-center gap-2 pl-3 text-[11px] text-muted">
+          <div className="mt-0.5 flex items-center gap-2 pl-3 text-2xs text-muted">
             {s.status !== 'done' && <span>{s.status}</span>}
             {s.cost_tokens > 0 && <span>{tokens(s.cost_tokens)} token</span>}
             <span>{ago(s.created_at)}</span>
@@ -105,7 +105,7 @@ function SessionRow({
         <div className="pl-3">
           <button
             onClick={() => setShowSum((v) => !v)}
-            className="block w-full text-left text-[11px] leading-snug text-muted hover:text-ink"
+            className="block w-full text-left text-2xs leading-snug text-muted hover:text-ink"
             title={s.summary.summary}
           >
             <span className="mr-1 inline-block w-2 align-middle text-gray-400">
@@ -114,7 +114,7 @@ function SessionRow({
             {s.summary.summary}
           </button>
           {showSum && (
-            <div className="mt-1 space-y-1 border-l border-line pl-2 text-[11px] leading-snug">
+            <div className="mt-1 space-y-1 border-l border-line pl-2 text-2xs leading-snug">
               {(s.summary.key_points ?? []).map((p, i) => (
                 <div key={i} className="flex gap-1 text-muted">
                   <span className="shrink-0 text-gray-400">·</span>
@@ -123,7 +123,7 @@ function SessionRow({
               ))}
               {(s.summary.gaps ?? []).length > 0 && (
                 <div className="mt-1.5 border-t border-line pt-1">
-                  <div className="mb-0.5 text-[10px] text-gray-400">没答上的</div>
+                  <div className="mb-0.5 text-2xs text-gray-400">没答上的</div>
                   {(s.summary.gaps ?? []).map((g, i) => (
                     <div key={i} className="flex gap-1 text-amber-700">
                       <span className="shrink-0">?</span>
@@ -174,7 +174,7 @@ function SessionRow({
             </MenuItem>
           ))}
           {!choices.length && (
-            <div className="px-2.5 py-1.5 text-[11px] text-muted">
+            <div className="px-2.5 py-1.5 text-2xs text-muted">
               还没有文件夹，在左下角「+ 新建」建一个。
             </div>
           )}
@@ -278,9 +278,11 @@ export function Sidebar({
           <button
             key={k}
             onClick={() => onPane(k)}
+            // 原来只靠底色表示选中，读屏用户完全听不出当前在哪个视图
+            aria-pressed={pane === k}
             className={[
               'flex-1 rounded px-2 py-1 text-xs transition-colors',
-              pane === k ? 'bg-white font-medium text-ink shadow-sm'
+              pane === k ? 'sel font-medium'
                          : 'text-muted hover:bg-white',
             ].join(' ')}
           >{label}</button>
@@ -300,7 +302,12 @@ export function Sidebar({
       <div className="space-y-2 p-3">
         <button
           onClick={onNew}
-          className="w-full rounded-md bg-accent px-3 py-2 text-sm text-white shadow-sm transition-all hover:bg-blue-700 hover:shadow active:scale-[.98]"
+          // ⚠️ 原来是**满屏最重的元素**（实心蓝 + 阴影 + 按下缩放），
+          // 比报告里任何一个标题都重。这个按钮并不常按（一场研究十几分钟才开一次），
+          // 而内容才是要看很久的东西——所以降成描边：还找得到，但不抢。
+          className="w-full rounded-md border border-accent/40 bg-white px-3 py-2 text-sm
+                     font-medium text-accent transition-colors
+                     hover:border-accent hover:bg-accent/5"
         >新建研究</button>
         <input
           value={q}
@@ -314,9 +321,10 @@ export function Sidebar({
               <button
                 key={k}
                 onClick={() => setFilter(k)}
+                aria-pressed={filter === k}
                 className={[
-                  'flex-1 rounded px-1 py-1 text-[11px] transition-colors',
-                  filter === k ? 'bg-white font-medium text-ink shadow-sm' : 'text-muted hover:bg-white',
+                  'flex-1 rounded px-1 py-1 text-2xs transition-colors',
+                  filter === k ? 'sel font-medium' : 'text-muted hover:bg-white',
                 ].join(' ')}
               >{label}</button>
             ))}
@@ -339,7 +347,7 @@ export function Sidebar({
       <div className="flex-1 overflow-auto px-2 pb-4">
         {filter === 'trash' ? (
           <>
-            <div className="px-1 py-1.5 text-[11px] text-muted">
+            <div className="px-1 py-1.5 text-2xs text-muted">
               回收站里的会话数据完整保留，可随时恢复。
             </div>
             {shown.map((s) => (
@@ -350,11 +358,11 @@ export function Sidebar({
                 <div className="mt-1 flex gap-2">
                   <button
                     onClick={() => act('恢复', () => api.jpost(`/api/sessions/${s.id}/restore`))}
-                    className="rounded border border-line px-2 py-0.5 text-[11px] text-muted hover:bg-white hover:text-ink"
+                    className="rounded border border-line px-2 py-0.5 text-2xs text-muted hover:bg-white hover:text-ink"
                   >恢复</button>
                   <button
                     onClick={() => setConfirm({ s, purge: true })}
-                    className="rounded border border-line px-2 py-0.5 text-[11px] text-muted hover:border-red-300 hover:text-red-600"
+                    className="rounded border border-line px-2 py-0.5 text-2xs text-muted hover:border-red-300 hover:text-red-600"
                   >彻底删除</button>
                 </div>
               </div>
@@ -365,7 +373,7 @@ export function Sidebar({
           <>
             {archived.length > 0 && (
               <>
-                <div className="px-1 py-1 text-[11px] text-muted">已归档</div>
+                <div className="px-1 py-1 text-2xs text-muted">已归档</div>
                 {archived.map((s) => (
                   <SessionRow key={s.id} s={s} active={s.id === cur} choices={choices}
                     onOpen={() => onPick(s.id)}

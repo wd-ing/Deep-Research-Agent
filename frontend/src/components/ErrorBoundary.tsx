@@ -34,7 +34,7 @@ export class ErrorBoundary extends Component<
           研究任务本身不受影响——它跑在后端，刷新页面就能继续看进度。
         </p>
         <pre className="max-h-64 max-w-2xl overflow-auto whitespace-pre-wrap rounded border
-                        border-red-200 bg-white px-3 py-2 text-left text-[11px] text-red-700">
+                        border-red-200 bg-white px-3 py-2 text-left text-2xs text-red-700">
           {err.message}
           {'\n\n'}
           {err.stack?.split('\n').slice(0, 6).join('\n')}

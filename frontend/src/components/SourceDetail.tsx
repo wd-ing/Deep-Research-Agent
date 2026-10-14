@@ -75,7 +75,7 @@ export function SourceDetail({
         </div>
         {src.segments.map((s) => (
           <article key={s.id} className="mb-4 border-l-2 border-line pl-3">
-            <div className="flex items-center gap-2 text-[11px]">
+            <div className="flex items-center gap-2 text-2xs">
               <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-ink">
                 {s.ref}
               </code>
@@ -89,7 +89,7 @@ export function SourceDetail({
             {s.summary && (
               <p className="mt-1 text-xs leading-relaxed text-ink">{s.summary}</p>
             )}
-            <p className="mt-1.5 text-[13px] leading-6 whitespace-pre-wrap text-muted">
+            <p className="mt-1.5 text-xs leading-6 whitespace-pre-wrap text-muted">
               {s.content}
             </p>
           </article>

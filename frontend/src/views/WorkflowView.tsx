@@ -15,7 +15,7 @@ function Dot({ state, warn }: { state?: Step['state']; warn?: boolean }) {
   if (state === 'running') {
     return (
       <span className="mt-1 flex h-3 w-3 shrink-0 items-center justify-center">
-        <span className="wf-running-dot h-2 w-2 rounded-full bg-accent" />
+        <span className="wf-running-dot h-2 w-2 rounded-full bg-live" />
       </span>
     )
   }
@@ -39,7 +39,7 @@ function StepRow({ step }: { step: Step }) {
             className={[
               'shrink-0 text-sm',
               step.warn ? 'font-medium text-amber-700' : 'text-ink',
-              running ? 'text-accent' : '',
+              running ? 'text-live' : '',
             ].join(' ')}
           >
             {step.label}
@@ -48,13 +48,13 @@ function StepRow({ step }: { step: Step }) {
             {step.summary}
           </span>
           {running && (
-            <span className="shrink-0 text-[11px] text-accent">进行中</span>
+            <span className="shrink-0 text-2xs text-live">进行中</span>
           )}
           {hasDetail && !running && (
             <button
               onClick={() => setOpen((o) => !o)}
               className={[
-                'shrink-0 rounded px-1 text-[11px] transition-colors',
+                'shrink-0 rounded px-1 text-2xs transition-colors',
                 step.warn
                   ? 'text-amber-600 hover:bg-amber-50'
                   : 'text-muted hover:bg-gray-100 hover:text-ink',
@@ -97,7 +97,7 @@ function PhaseBlock({
         {/* 箭头用 CSS 过渡而不是换字符，展开时才有「转」的动画 */}
         <span
           className={[
-            'shrink-0 text-[10px] text-muted transition-transform duration-200',
+            'shrink-0 text-2xs text-muted transition-transform duration-200',
             open ? 'rotate-90' : '',
           ].join(' ')}
         >
@@ -106,19 +106,19 @@ function PhaseBlock({
         <span
           className={[
             'shrink-0 text-sm font-medium transition-colors',
-            running ? 'text-accent' : 'text-ink',
+            running ? 'text-live' : 'text-ink',
           ].join(' ')}
         >
           {phase.label}环节
         </span>
         {running && (
-          <span className="wf-running-dot h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+          <span className="wf-running-dot h-1.5 w-1.5 shrink-0 rounded-full bg-live" />
         )}
         <span className="min-w-0 flex-1 truncate text-xs leading-5 text-muted/90">
           {phase.summary}
         </span>
         {warns > 0 && (
-          <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800">
+          <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-2xs text-amber-800">
             {warns} 处需注意
           </span>
         )}

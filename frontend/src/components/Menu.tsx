@@ -83,7 +83,7 @@ export function MenuItem({
             : 'text-ink hover:bg-gray-100',
       ].join(' ')}
     >
-      <span className="w-3 shrink-0 text-[10px]">{active ? '✓' : ''}</span>
+      <span className="w-3 shrink-0 text-2xs">{active ? '✓' : ''}</span>
       <span className="min-w-0 flex-1 truncate">{children}</span>
     </button>
   )

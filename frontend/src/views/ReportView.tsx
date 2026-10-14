@@ -129,14 +129,14 @@ function RefChip({
               : { left: pos.left, top: pos.top, transform: 'translateY(-100%)' }
           }
         >
-          <div className="flex items-center gap-1.5 text-[11px] text-muted">
+          <div className="flex items-center gap-1.5 text-2xs text-muted">
             <span className="shrink-0 font-medium text-ink">{segRef}</span>
             {seg.域名 && <span className="truncate">{seg.域名}</span>}
             <NatureBadge nature={seg.性质 || null} />
             <span className="ml-auto shrink-0 tabular-nums">{seg.token} token</span>
           </div>
           {seg.标题 && (
-            <div className="mt-1 truncate text-[11px] text-muted">{seg.标题}</div>
+            <div className="mt-1 truncate text-2xs text-muted">{seg.标题}</div>
           )}
           {seg.概括 ? (
             <p className="mt-1 text-xs leading-5">{seg.概括}</p>
@@ -144,11 +144,11 @@ function RefChip({
             <p className="mt-1 line-clamp-3 text-xs leading-5 text-muted">{seg.摘录}</p>
           )}
           {seg.已排除 && (
-            <div className="mt-1.5 rounded bg-amber-50 px-1.5 py-1 text-[11px] leading-4 text-amber-800">
+            <div className="mt-1.5 rounded bg-amber-50 px-1.5 py-1 text-2xs leading-4 text-amber-800">
               ⚠ 这个来源已被你标记为无用
             </div>
           )}
-          <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted">
+          <div className="mt-1 flex items-center justify-between gap-2 text-2xs text-muted">
             {/* 只在复用时说——被引一次是常态，标出来反而是噪音 */}
             {count > 1 && <span>本报告引用 {count} 次</span>}
             <span className="ml-auto">点击看原文</span>
@@ -358,7 +358,7 @@ function IgnoredBanner({
   const total = items.reduce((a, x) => a + x.citations, 0)
   return (
     <div className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3.5 py-2.5">
-      <div className="text-[13px] font-medium leading-relaxed text-amber-900">
+      <div className="text-xs font-medium leading-relaxed text-amber-900">
         ⚠ 本报告引用了 {items.length} 个已排除的来源
         <span className="font-normal">（共 {total} 处引用）：</span>
         {items.map((it, i) => (
@@ -374,12 +374,12 @@ function IgnoredBanner({
           </span>
         ))}
       </div>
-      <p className="mt-1 text-[11px] leading-relaxed text-amber-800">
+      <p className="mt-1 text-2xs leading-relaxed text-amber-800">
         排除发生在报告写完之后，<b>报告不会被改写</b>。这些材料你后来标为不可信，
         引用处的结论请自行复核；点来源名可直接查看。
       </p>
       {items.some((x) => x.reason) && (
-        <ul className="mt-1 space-y-0.5 text-[11px] text-amber-700">
+        <ul className="mt-1 space-y-0.5 text-2xs text-amber-700">
           {items.filter((x) => x.reason).map((x) => (
             <li key={x.id}>· {x.domain}：{x.reason}</li>
           ))}

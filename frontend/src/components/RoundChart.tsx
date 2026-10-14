@@ -130,7 +130,7 @@ const Chart = ({ rounds }: { rounds: TraceRound[] }) => {
       {gridY.map((gy, i) => (
         <span
           key={gy}
-          className="absolute -translate-y-1/2 text-[10px] tabular-nums text-gray-400"
+          className="absolute -translate-y-1/2 text-2xs tabular-nums text-gray-400"
           style={{ top: py(gy), left: 0, width: px(PAD.l - 6), textAlign: 'right' }}
         >{fmt(gridLabel[i])}</span>
       ))}
@@ -139,7 +139,7 @@ const Chart = ({ rounds }: { rounds: TraceRound[] }) => {
       {rounds.map((r, i) => (
         <span
           key={r.round}
-          className="absolute -translate-x-1/2 -translate-y-1/2 text-[11px] text-muted"
+          className="absolute -translate-x-1/2 -translate-y-1/2 text-2xs text-muted"
           style={{ top: py(H - 8), left: px(cx(i)) }}
         >第 {r.round} 轮</span>
       ))}
@@ -148,7 +148,7 @@ const Chart = ({ rounds }: { rounds: TraceRound[] }) => {
 }
 
 const Legend = () => (
-  <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-[11px] text-muted">
+  <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-2xs text-muted">
     <span className="inline-flex items-center gap-1">
       <span className="h-2 w-2 rounded-[1px]" style={{ background: C_HIT }} />命中
     </span>
@@ -204,7 +204,7 @@ export function RoundChart({ sid, refreshKey }: { sid: string; refreshKey: numbe
       >
         <span
           className={[
-            'shrink-0 text-[10px] text-muted transition-transform duration-200',
+            'shrink-0 text-2xs text-muted transition-transform duration-200',
             open ? 'rotate-90' : '',
           ].join(' ')}
         >▶</span>
@@ -223,7 +223,7 @@ export function RoundChart({ sid, refreshKey }: { sid: string; refreshKey: numbe
           </div>
 
           {/* 图给形状，这几行给准确数——图上读不出 77 和 58 的区别 */}
-          <table className="mt-2 w-full text-[11px] text-muted">
+          <table className="mt-2 w-full text-2xs text-muted">
             <thead>
               <tr className="text-left">
                 <th className="w-14 font-normal">轮次</th>
@@ -254,7 +254,7 @@ export function RoundChart({ sid, refreshKey }: { sid: string; refreshKey: numbe
 
           {/* 停止判据是**解释**，不是要用户决策，所以不用 ⚠️ */}
           {stop && (
-            <p className="mt-2 text-[11px] leading-5 text-muted">
+            <p className="mt-2 text-2xs leading-5 text-muted">
               停在第 {stop.round} 轮：{stop.stop_would_be}
               {stop.stop_layer && <span className="opacity-70">（判据来自 {stop.stop_layer} 层）</span>}
             </p>

@@ -119,12 +119,12 @@ function NameInput({
       <button
         onMouseDown={(e) => e.preventDefault()}
         onClick={commit}
-        className="shrink-0 rounded px-1 text-[10px] text-accent hover:bg-gray-100"
+        className="shrink-0 rounded px-1 text-2xs text-accent hover:bg-gray-100"
       >确定</button>
       <button
         onMouseDown={(e) => e.preventDefault()}
         onClick={onCancel}
-        className="shrink-0 rounded px-1 text-[10px] text-muted hover:bg-gray-100"
+        className="shrink-0 rounded px-1 text-2xs text-muted hover:bg-gray-100"
       >取消</button>
     </div>
   )
@@ -336,7 +336,7 @@ export function FolderTree({
             } : undefined}
             className={[
               'group/row flex items-center rounded pr-1 transition-colors',
-              isSel ? 'bg-white text-ink shadow-sm' : 'text-muted hover:bg-white',
+              isSel ? 'sel' : 'text-muted hover:bg-white',
               !isLoose ? 'cursor-grab active:cursor-grabbing' : '',
               isDragSource ? 'opacity-40' : '',
             ].join(' ')}
@@ -349,7 +349,7 @@ export function FolderTree({
                 onClick={() => toggle(n.id!)}
                 title={isOpen ? '折叠' : '展开'}
                 style={{ paddingLeft: pad + 3 }}
-                className="shrink-0 py-1 pr-0.5 text-[9px] leading-none text-muted hover:text-ink"
+                className="shrink-0 py-1 pr-0.5 text-2xs leading-none text-muted hover:text-ink"
               >{isOpen ? '▼' : '▶'}</button>
             ) : (
               <span style={{ width: pad + 13 }} className="shrink-0" />
@@ -360,12 +360,12 @@ export function FolderTree({
               className="flex min-w-0 flex-1 items-center gap-1 py-1 text-left"
               title={isSel ? '取消筛选' : `只看「${n.name}」里的会话（含子文件夹）`}
             >
-              <span className="shrink-0 text-[11px]">{isLoose ? '🗂' : '📁'}</span>
+              <span className="shrink-0 text-2xs">{isLoose ? '🗂' : '📁'}</span>
               <span className={[
                 'min-w-0 flex-1 truncate text-xs',
                 isSel ? 'font-medium' : '',
               ].join(' ')}>{n.name}</span>
-              <span className="shrink-0 text-[10px] opacity-60">
+              <span className="shrink-0 text-2xs opacity-60">
                 {n.total > 0 ? n.total : ''}
               </span>
             </button>
@@ -377,7 +377,7 @@ export function FolderTree({
                 title="文件夹操作"
                 onClick={(e) => setMenuAt(
                   menuAt?.id === n.id ? null : { id: n.id, anchor: e.currentTarget })}
-                className="hidden shrink-0 rounded px-1 text-[11px] text-muted hover:bg-gray-100 hover:text-ink group-hover/row:block group-focus-within/row:block"
+                className="hidden shrink-0 rounded px-1 text-2xs text-muted hover:bg-gray-100 hover:text-ink group-hover/row:block group-focus-within/row:block"
               >⋯</button>
             )}
           </div>,
@@ -391,10 +391,10 @@ export function FolderTree({
   return (
     <div className="px-2 pb-2">
       <div className="mb-0.5 flex items-center justify-between px-1">
-        <span className="text-[11px] text-muted">文件夹</span>
+        <span className="text-2xs text-muted">文件夹</span>
         <button
           onClick={() => setCreating({ parent: null })}
-          className="rounded px-1 text-[11px] text-muted hover:bg-white hover:text-ink"
+          className="rounded px-1 text-2xs text-muted hover:bg-white hover:text-ink"
           title="新建顶层文件夹"
         >+ 新建</button>
       </div>
@@ -404,7 +404,7 @@ export function FolderTree({
         onClick={() => onSelect(undefined)}
         className={[
           'mb-0.5 block w-full rounded px-2 py-1 text-left text-xs transition-colors',
-          selected === undefined ? 'bg-white font-medium text-ink shadow-sm' : 'text-muted hover:bg-white',
+          selected === undefined ? 'sel font-medium' : 'text-muted hover:bg-white',
         ].join(' ')}
       >全部会话</button>
 
@@ -422,7 +422,7 @@ export function FolderTree({
       <div className="mt-0.5">{rows(tree, 0)}</div>
 
       {err && (
-        <div className="mt-1 rounded bg-red-50 px-2 py-1 text-[10px] text-red-600">{err}</div>
+        <div className="mt-1 rounded bg-red-50 px-2 py-1 text-2xs text-red-600">{err}</div>
       )}
 
       {menuAt && menuAt.id !== null && (() => {

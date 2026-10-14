@@ -52,7 +52,7 @@ export function NewResearchDialog({
 
         {recent.length > 0 && (
           <div className="mt-3">
-            <div className="text-[11px] text-muted">最近问过</div>
+            <div className="text-2xs text-muted">最近问过</div>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {recent.map((r) => (
                 <button
@@ -60,7 +60,7 @@ export function NewResearchDialog({
                   onClick={() => setQ(r.question)}
                   title={r.question}
                   className="max-w-full truncate rounded-full border border-line px-2.5 py-1
-                             text-[11px] text-muted hover:bg-gray-50 hover:text-ink"
+                             text-2xs text-muted hover:bg-gray-50 hover:text-ink"
                 >{r.question}</button>
               ))}
             </div>
@@ -68,7 +68,7 @@ export function NewResearchDialog({
         )}
 
         <div className="mt-5 flex items-center justify-between">
-          <span className="text-[11px] text-muted">⌘ / Ctrl + Enter 开始</span>
+          <span className="text-2xs text-muted">⌘ / Ctrl + Enter 开始</span>
           <div className="flex gap-2">
             <button
               onClick={onCancel}
