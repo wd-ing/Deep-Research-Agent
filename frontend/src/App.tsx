@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSession, api } from './useSession'
 import type { Folder, SessionSummary, SourceLibrary, SourceDetailRow, SegPreviews } from './types'
 import { ApprovalView } from './views/ApprovalView'
@@ -148,6 +148,14 @@ export default function App() {
   const d = s.detail
   const report = d?.report ?? ''
 
+  // `buildPhases` 是纯函数，但每次渲染都重算会造出一个**新数组**——
+  // `WorkflowView` 的 `useEffect([phases])` 于是每次渲染都触发一次
+  // `scrollIntoView`，用户正在往上翻历史也会被拽回底部。
+  const phases = useMemo(
+    () => buildPhases(s.progress, s.node, s.view),
+    [s.progress, s.node, s.view]
+  )
+
   /** 切会话的过渡态：`sid` 有了、`detail` 还没到（`useSession` 里会先置空）。
    *  没有它的话这个窗口里主区域什么都不渲染——看着像点了没反应。 */
   const switching = !!sid && s.view === 'idle' && !d
@@ -262,10 +270,7 @@ export default function App() {
         {(s.view === 'running'
           || (s.view === 'idle' && sid && !report)) && (
           <div className="flex-1 overflow-auto">
-            <WorkflowView
-              phases={buildPhases(s.progress, s.node, s.view)}
-              running={s.view === 'running'}
-            />
+            <WorkflowView phases={phases} running={s.view === 'running'} />
           </div>
         )}
 

@@ -155,7 +155,32 @@ function toStep(e: ProgressEntry, seq: number): Step | null {
       }
     case 'write_audit_error':
       return { id, label: '审查', summary: '环节失败，未拿到审查结论', warn: true, detail: [s(e, 'error') ?? ''] }
-    case 'write':
+    case 'write': {
+      // ⚠️ **`kind:"write"` 有两个来源，语义完全不同**（2026-10-14 用真实录制
+      // 数据跑出来才发现）：
+      //   · `write.py:1250` —— 写作子图的产出（chars/tasks/drafts/failed/violations/…）
+      //   · `nodes.py:1262` —— 成稿之后的**证据闸门**（segments_total/kept/gate/degraded）
+      // 两者原来都走 `labelOfWrite`，于是**都叫「报告完成」**：界面上并排两行
+      // 同名、摘要几乎一样的条目（`13045 字 · 4 节` / `13045 字 · 29 节`），
+      // 用户根本看不出这是两步。第二条根本不是「报告完成」，是成稿后的证据质量检查。
+      // 判据用 `segments_kept`——只有闸门那条事件带这个字段。
+      if (e.segments_kept !== undefined) {
+        const kept = n(e, 'segments_kept')
+        const total = n(e, 'segments_total')
+        return {
+          id, label: '证据闸门',
+          summary: kept !== undefined && total !== undefined
+            ? `${kept}/${total} 段进入写作`
+            : `${n(e, 'chars') ?? '?'} 字`,
+          // ⚠️ `degraded` 的含义别猜：`nodes.py:1201` 里它是 `bool(head)`，
+          // head 来自 `probe_degraded` —— **轻量检索判定这个主题的公开信息稀薄**，
+          // 报告开头会被加上 DEGRADED_HEADER。不是运行失败，但值得说一句。
+          warn: e.degraded === true,
+          detail: e.degraded === true
+            ? ['轻量检索判定这个主题的公开信息稀薄，报告开头已加了说明']
+            : undefined,
+        }
+      }
       return {
         id, label: labelOfWrite(e),
         summary: `${n(e, 'chars') ?? '?'} 字 · ${n(e, 'sections_written') ?? n(e, 'sources') ?? '?'} 节`
@@ -165,6 +190,7 @@ function toStep(e: ProgressEntry, seq: number): Step | null {
           ...(s(e, 'spec_uncertainty') ? [`规约存疑：${s(e, 'spec_uncertainty')}`] : []),
         ],
       }
+    }
     case 'summary':
       // 摘要成功不占版面（4 秒的活儿，用户不需要盯着）；
       // `skipped`（没报告 / 已有摘要）也是正常的。
@@ -218,7 +244,9 @@ export function buildPhases(
     const last = phases[cur].steps[phases[cur].steps.length - 1]
     if (!last || last.state === 'running') {
       phases[cur].steps.push({
-        id: `run-${cur}`, label: phaseRunningLabel(cur), summary: '进行中…',
+        // ⚠️ 摘要**留空**：原来写「进行中…」，于是同一行里「进行中」出现了三次
+        // （大环节摘要 + 步骤摘要 + 右侧标签）。右侧那个标签已经够了。
+        id: `run-${cur}`, label: phaseRunningLabel(cur), summary: '',
         state: 'running',
       })
     }
@@ -235,8 +263,9 @@ function phaseRunningLabel(p: PhaseName): string {
 /** 大环节摘要：一句话说清这组干了什么。 */
 function summarize(name: string, steps: Step[]): string {
   const done = steps.filter((x) => x.state !== 'running')
-  const warn = done.filter((x) => x.warn).length
-  if (!done.length) return '进行中…'
+  // 全是这个环节还没开始的合成步骤 → 摘要留空。「进行中」在大环节标题
+  // （绿字 + 呼吸点）和步骤右侧标签各出现一次，已经够了。
+  if (!done.length) return ''
   let base = `${done.length} 步`
   if (name === '规划') {
     const rd = done.filter((x) => x.label.startsWith('检索')).length
@@ -248,6 +277,8 @@ function summarize(name: string, steps: Step[]): string {
     if (as) bits.push(`评估 ${as} 轮`)
     if (bits.length) base += ' · ' + bits.join(' · ')
   }
-  if (warn) base += ` · ${warn} 处需注意`
+  // ⚠️ 这里原来还追加 `· ${warn} 处需注意`，而标题行右侧已经挂了一个
+  // 琥珀色 badge 写同样的数 —— 同一行里同一句话说两遍。badge 留下（更显眼、
+  // 能扫读），摘要里去掉。
   return base
 }

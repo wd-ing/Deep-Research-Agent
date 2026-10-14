@@ -350,10 +350,14 @@ function mdComponents(
  *  报告不会被改写——所以用户必须知道，报告里有一部分材料的来源
  *  他后来标成了不可信。不提示就是让不可信结论悄悄留在那里。
  *
- *  报告有 2 万字，提示条若只挂在正文最上方，用户滚到中段读到那些
- *  段落时就看不见了——所以它常驻。**现在由外层的 sticky 容器统一负责**，
- *  原来这里自己带的 `sticky top-0 z-10` 已经去掉：进度条也占顶部，
- *  两块各自 sticky 会互相压住。
+ *  ⚠️ **2026-10-14 改成一次性，不再常驻**（用户定）。
+ *  原来它住在常驻区（和进度条、目录条同一个 `sticky` 容器），
+ *  理由是「报告有 2 万字，滚到中段就看不见了」。
+ *  但实测它有 6~7 行高，在窄窗口下吃掉**约 35% 的阅读高度**——
+ *  为一条不常出现的提示，长期让出三成屏幕不划算。
+ *  现在跟着正文流走，**滚过就没了**：打开报告时该看见的看见了，
+ *  真正在读正文时它不占地方。
+ *  要彻底删掉的话，就是把这个组件从 `ReportView` 里拿掉。
  */
 function IgnoredBanner({
   items, onOpenSource,
@@ -472,13 +476,13 @@ export function ReportView({
 
   return (
     <>
-      {/* 进度条 + 排除提示 + 目录，合成**一个**常驻区。
-          原来 IgnoredBanner 自己带 `sticky top-0`，现在进度条也占顶部，
-          两个各自 sticky 会叠在一起——所以收进同一个容器按顺序排。 */}
+      {/* 进度条 + 目录，合成**一个**常驻区。
+          原来 IgnoredBanner 也在里面——那是「常驻」的由来：
+          它有 6~7 行高，在窄窗口下吃掉约 35% 的阅读高度，
+          而报告有 2 万字、要读很久。2026-10-14 用户定：提示不常驻。 */}
       <div className="sticky top-0 z-20 bg-white/95 backdrop-blur">
         <ProgressBar pct={pct} />
         <div className="mx-auto max-w-3xl px-6">
-          <IgnoredBanner items={ignoredCitations} onOpenSource={onOpenSource ?? (() => {})} />
           <TocBar
             toc={toc} active={activeId} open={openToc}
             onToggle={() => setOpenToc((v) => !v)} onJump={jump}
@@ -487,6 +491,11 @@ export function ReportView({
       </div>
 
       <div className="mx-auto max-w-3xl px-6 pb-8 pt-4">
+        {/* 排除提示改成**一次性**：跟着正文流走，滚过去就没了。
+            仍然保留是因为它是唯一一处告诉用户「这份报告引用了你后来
+            标为不可信的材料」的地方，直接删掉等于让不可信结论悄悄留着。 */}
+        <IgnoredBanner items={ignoredCitations} onOpenSource={onOpenSource ?? (() => {})} />
+
         {/* ⚠️ 这里原来写的是 `prose-sm`——那个类从未生效，见 mdComponents 的说明 */}
         <article className="leading-7 text-ink">
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={bodyMd}>
