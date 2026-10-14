@@ -1,4 +1,4 @@
-import type { ProgressEvent } from '../types'
+import type { ProgressEntry } from '../types'
 
 /** 一个大环节。 */
 export interface Phase {
@@ -51,14 +51,21 @@ export interface Step {
 const PHASE_ORDER = ['规划', '审批', '写作', '收尾'] as const
 type PhaseName = (typeof PHASE_ORDER)[number]
 
-function n(e: ProgressEvent, k: string): number | undefined {
+// ⚠️ 这两个辅助函数的参数**必须写 `ProgressEntry` 而不是 `ProgressEvent`**——
+// 不 import 同名的 `ProgressEvent` 之后，裸写会解析到 DOM 内置的那个
+// （`ProgressEvent<EventTarget>`），tsc 会报一屏「缺 lengthComputable/total」。
+function n(e: ProgressEntry, k: string): number | undefined {
   return typeof e[k] === 'number' ? (e[k] as number) : undefined
 }
-function s(e: ProgressEvent, k: string): string | undefined {
+function s(e: ProgressEntry, k: string): string | undefined {
   return typeof e[k] === 'string' ? (e[k] as string) : undefined
 }
 
-/** 当前节点属于哪个大环节。`assess`/`apply_revision` 都算规划。 */
+/** 当前节点属于哪个大环节。`assess`/`apply_revision` 都算规划。
+ *
+ *  ⚠️ 这个函数**只该拿「事件自带的 node」或「此刻正在跑的 node」来调**，
+ *  绝不能用当前节点去回溯整段历史（那正是下面 `buildPhases` 原来的写法，
+ *  会让写作阶段把规划步骤全吞掉）。 */
 function phaseOf(node: string | null, view: string): PhaseName {
   if (view === 'awaiting') return '审批'
   // ⚠️ `summary` 必须跟 `finalize` 同属「收尾」——
@@ -69,7 +76,7 @@ function phaseOf(node: string | null, view: string): PhaseName {
 }
 
 /** 单个 progress 事件 → 一个子环节。没有就返回 null（不留空条目）。 */
-function toStep(e: ProgressEvent, seq: number): Step | null {
+function toStep(e: ProgressEntry, seq: number): Step | null {
   const id = `${e.kind}-${seq}`
   switch (e.kind) {
     case 'probe_light':
@@ -175,30 +182,31 @@ function toStep(e: ProgressEvent, seq: number): Step | null {
   }
 }
 
-function labelOfWrite(e: ProgressEvent): string {
+function labelOfWrite(e: ProgressEntry): string {
   return n(e, 'rework_rounds') ? '返修' : '报告完成'
 }
 
 /** 把事件流整理成四个大环节。 */
 export function buildPhases(
-  progress: ProgressEvent[],
+  progress: ProgressEntry[],
   currentNode: string | null,
   view: string,
 ): Phase[] {
   const phases: Record<string, Phase> = {}
   for (const p of PHASE_ORDER) phases[p] = { key: p, label: p, summary: '', steps: [] }
 
+  // ⚠️ **按事件自带的 `node` 归类，一个都不能用 `currentNode` 推。**
+  // 原来这里写的是
+  //   `/write|finalize/.test(e.node) || currentNode === 'write' ? currentNode : ''`
+  // ——但 `e.node` 当时根本不存在（`useSession` 只存了内层 `ev.event`，
+  // 把外层的 node 丢了），所以正则是**恒 false**，整个表达式退化成
+  // 「渲染那一刻的当前节点」。后果：一进 write，全部历史步骤塌进「写作」、
+  // 「规划」整个消失；一到 finalize 又全部弹回「规划」。
+  // （v5 里 write 占整轮 58%，所以这个错法全程可见。）
   progress.forEach((e, i) => {
     const st = toStep(e, i)
     if (!st) return
-    // 装配/审查/写作属于写作环节；其余归规划
-    const phase = phaseOf(
-      /write|finalize/.test(String((e as { node?: string }).node ?? '')) || currentNode === 'write'
-        ? (currentNode ?? '')
-        : '',
-      view,
-    )
-    phases[phase].steps.push(st)
+    phases[phaseOf(e.node, view)].steps.push(st)
   })
 
 

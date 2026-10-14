@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
-  ApprovalPayload, ProgressEvent, SegmentRow, SessionDetail,
+  ApprovalPayload, ProgressEntry, SegmentRow, SessionDetail,
   SseEvent, View,
 } from './types'
 
@@ -40,7 +40,7 @@ async function jpost<T>(url: string, body?: unknown): Promise<T> {
 export function useSession(sid: string | null) {
   const [view, setView] = useState<View>('idle')
   const [detail, setDetail] = useState<SessionDetail | null>(null)
-  const [progress, setProgress] = useState<ProgressEvent[]>([])
+  const [progress, setProgress] = useState<ProgressEntry[]>([])
   const [node, setNode] = useState<string | null>(null)
   const [approval, setApproval] = useState<ApprovalPayload | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -155,7 +155,11 @@ export function useSession(sid: string | null) {
             setNode(ev.node)
             break
           case 'progress':
-            setProgress((p) => [...p, ev.event])
+            // ⚠️ **`node` 必须一起存**（`server.py:832` 发的是 `{kind,node,event}`，
+            // node 在外层）。原来只 push `ev.event`，把 node 丢了——
+            // `buildPhases` 拿不到事件出自哪个节点，只能拿「当前节点」去猜，
+            // 结果写作阶段整个「规划」环节消失。端到端复现见 DECISIONS.md。
+            setProgress((p) => [...p, { ...ev.event, node: ev.node }])
             break
           case 'thinking':
             // 思考增量按 stage 累积（不是只留最后一段）。

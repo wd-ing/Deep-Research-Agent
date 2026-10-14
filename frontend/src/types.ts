@@ -73,6 +73,20 @@ export interface ProgressEvent {
   [k: string]: unknown
 }
 
+/** 前端**存下来**的一个 progress 事件 = 内层 event + 产出它的图节点。
+ *
+ *  ⚠️ `node` 必须一起存。服务端发的是 `{kind:"progress", node, event}`
+ *  （`server.py:832`），`node` 在**外层**——只把 `ev.event` 存进数组的话，
+ *  环节归类就只能靠「渲染那一刻正在跑哪个节点」去猜：
+ *  一进写作阶段，**全部历史步骤会塌进「写作」，「规划」整个消失**；
+ *  一到 finalize 又全部弹回「规划」（v5 里写作占整轮 58%，全程可见）。
+ *  端到端复现见 `DECISIONS.md`「环节归类」一节。 */
+export interface ProgressEntry extends ProgressEvent {
+  /** 产出这个事件的图节点：probe / outline / retrieve / extract / assess /
+   *  apply_revision / write / finalize / summary。 */
+  node: string
+}
+
 export type SseEvent =
   | { kind: 'connected'; session_id: string }
   | { kind: 'node'; node: string }
