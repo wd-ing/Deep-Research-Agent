@@ -223,26 +223,32 @@ export function RoundChart({ sid, refreshKey }: { sid: string; refreshKey: numbe
           </div>
 
           {/* 图给形状，这几行给准确数——图上读不出 77 和 58 的区别 */}
-          <table className="mt-2 w-full text-2xs text-muted">
+          {/* 和报告正文共用 `.rpt-table`（index.css）。原来这张表自己一套
+              `border-t border-line/70`，于是全项目两张表两种长相。
+              列宽/对齐靠第一行的 `w-*` + `text-right` 保留——
+              数字列必须右对齐，否则位数一变就在跳。
+              `is-compact` 是 2xs 档，写法与原因见 index.css 的注释
+              （这里**不能**直接写 `text-2xs`，会被 `.rpt-table` 的 text-sm 压掉）。 */}
+          <table className="rpt-table is-compact mt-3">
             <thead>
-              <tr className="text-left">
-                <th className="w-14 font-normal">轮次</th>
-                <th className="w-14 text-right font-normal">命中</th>
-                <th className="w-14 text-right font-normal">采用</th>
-                <th className="w-16 text-right font-normal">新增段</th>
-                <th className="w-16 text-right font-normal">累计段</th>
-                <th className="w-16 text-right font-normal">缺口</th>
+              <tr>
+                <th className="w-14">轮次</th>
+                <th className="w-14 text-right">命中</th>
+                <th className="w-14 text-right">采用</th>
+                <th className="w-16 text-right">新增段</th>
+                <th className="w-16 text-right">累计段</th>
+                <th className="w-16 text-right">缺口</th>
               </tr>
             </thead>
             <tbody>
               {rounds.map((r) => (
-                <tr key={r.round} className="border-t border-line/70">
+                <tr key={r.round}>
                   <td>第 {r.round} 轮</td>
-                  <td className="text-right tabular-nums">{r.hits ?? '—'}</td>
-                  <td className="text-right tabular-nums">{r.accepted ?? '—'}</td>
-                  <td className="text-right tabular-nums">{r.new_segments ?? '—'}</td>
-                  <td className="text-right tabular-nums">{r.segments_total ?? '—'}</td>
-                  <td className="text-right tabular-nums">
+                  <td className="text-right tabular-nums text-ink">{r.hits ?? '—'}</td>
+                  <td className="text-right tabular-nums text-ink">{r.accepted ?? '—'}</td>
+                  <td className="text-right tabular-nums text-ink">{r.new_segments ?? '—'}</td>
+                  <td className="text-right tabular-nums text-ink">{r.segments_total ?? '—'}</td>
+                  <td className="text-right tabular-nums text-ink">
                     {typeof r.gaps_by_urgency === 'object' && r.gaps_by_urgency
                       ? Object.values(r.gaps_by_urgency).reduce((a, b) => a + b, 0) || 0
                       : '—'}

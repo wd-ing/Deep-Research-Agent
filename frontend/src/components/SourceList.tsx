@@ -162,7 +162,11 @@ export function SourceList({
                     }}
                     title={s.ignored ? '取消排除' : '标记为无用来源'}
                     aria-label={s.ignored ? `取消排除 ${s.domain}` : `标记 ${s.domain} 为无用来源`}
-                    className="absolute right-1 top-1.5 hidden rounded px-1 text-2xs text-muted hover:bg-gray-200 hover:text-ink group-hover/src:block"
+                    // ⚠️ 原来只有 `group-hover/src:block`，**没有 focus-within**——
+                    // 显示靠 `hidden`（display:none），所以键盘用户根本 Tab 不到它，
+                    // 「标记排除」对他们等于不存在。SessionRow / FolderTree
+                    // 两处同类按钮都有 focus-within，这里是漏的。
+                    className="absolute right-1 top-1.5 hidden rounded px-1 text-2xs text-muted hover:bg-gray-200 hover:text-ink group-hover/src:block group-focus-within/src:block"
                   >
                     {s.ignored ? '↺' : '⊘'}
                   </button>

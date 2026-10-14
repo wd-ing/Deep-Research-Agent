@@ -3356,3 +3356,89 @@ Tailwind 用 sucrase 加载配置文件时报「Invalid or unexpected token」�
 最后是 `git checkout tailwind.config.js` 后构建立刻恢复才定位到。
 ⇒ 报错文件与真实原因不在一处时，**先二分，不要照着报错文件查**。
 键名加引号（`'2xs'`）即可。
+
+---
+
+## 2026-10-14 美化第二段：报告阅读区
+
+> 第一段（`79cc7e6`）做的是全局 tokens + 侧栏；这一段只动**读报告时眼睛停留的那块**：
+> 表格、引用块、列表，顺带把两处对话框和来源库的键盘可达补齐。
+
+### 表格：只用横线，不用竖线
+
+`.rpt-table`（`index.css`）一套四边规则，`ReportView` 正文表和 `RoundChart` 检索轮次表**共用**——
+之前是两张表两种长相（后者自己一套 `border-t border-line/70`）。
+
+原来 `th`/`td` 四边都画 `border`，每格一个小方框。v5 的核心结论就是
+「四、政策与产业实际进度的匹配度」那张 4 列的表，格子套格子把
+「读一行」变成了「找一格」。
+
+现在：表头一条 2px 的线（明确分隔）、行间一条 1px 发丝线（引导横向）、末行不画。
+竖向关系靠列间距表达。表头 `text-xs font-semibold text-muted`——
+它是列的标签，不该和单元格里的结论抢。
+
+### 引用块不是「引别人的话」，是作者自己的主张
+
+v5 里那个引用块是「**本文主张**：固态电池产业化正处于……」。
+它原来用 `border-line + text-muted`，和脚注长得一模一样——把作者自己的核心主张
+排版成了脚注。现在给回存在感：`border-l-2 border-accent/50 bg-accent/5` + 正文墨色。
+
+底色用 `bg-accent/5` 而**不是** `bg-accent/[0.035]`：后者 Tailwind **没生成**
+（任意透明度解析不了带前导零的值），**构建不报错、样式直接失效**。
+
+### 列表 marker 压暗
+
+`[&::marker]:text-gray-400`：marker 默认继承正文墨色，一屏 14 个黑点
+会盖过它们标注的句子。有序列表的 marker 再降一档（`text-xs`）。
+
+### 顺手补的两处（都是「看起来没问题、实际够不到」）
+
+- **`SourceList` 的「标记排除」按钮补 `group-focus-within/src:block`**。
+  它原来只有 `group-hover`，而显示靠 `hidden`（= `display:none`）——
+  **键盘用户根本 Tab 不到**，「标记排除」对他们等于不存在。
+  同项目的 `SessionRow` / `FolderTree` 两处同类按钮都有 focus-within，这里是漏的。
+- **`ConfirmDialog` / `NewResearchDialog` 补遮罩点击关闭 + `role="dialog"`**。
+  `SegDrawer` 早就有，这两处是不一致。注意面板必须 `stopPropagation`——
+  它是遮罩的子节点，不拦住就等于点了遮罩。
+
+### 踩坑：Tailwind 里 class 的**书写顺序不决定胜负**
+
+给 `RoundChart` 那张表写了 `className="rpt-table text-2xs"` 想让它留在 11px 档，
+结果渲染成 14px（`.rpt-table` 里的 `text-sm`）。
+
+原因：Tailwind 的工具类都在**同一个 layer**，同层之间按**生成顺序**决胜，
+**不看 class 属性里的书写顺序**。产物 CSS 里 `.text-sm`(15743) 排在
+`.text-2xs`(15538) 后面 → `text-sm` 赢，写在后面的 `text-2xs` 是死代码。
+
+⇒ 只有 `.sel` / `.rpt-table` 这种**不进 layer 的自定义类**能靠复合选择器稳压：
+新增 `.rpt-table.is-compact { @apply text-2xs }`（0,2,0 + 不进 layer）。
+（顺带：不进 layer 的自定义类还会**压过整个 utilities layer**，
+`index.css` 里那些类要当"基础规则"写，别拿它当工具类用。）
+
+### 踩坑：Vite dev server 会给**陈旧 CSS**，而且不报错
+
+这一段验收时我一度认定「`text-2xs` 全项目都没生效」，为此来回改口两次——
+**两次都不对**。真因是 dev server 吐的还是旧 CSS，
+`npx vite --force` 重启后立刻恢复（侧栏 meta 行 24px → 16px，
+`3 天前` 46px → 32px）。
+
+⇒ **改了 `tailwind.config.js` 或怀疑工具类没生效，先 `vite --force`，
+再看要不要查代码。** 别拿一个不报错的 dev server 当证据。
+
+⚠️ 配套的教训：**别用截图上的像素猜字号**。那张截图是裁剪+缩放过的
+（1048px 宽对应 535 CSS px，不是 728），我按它算出来的字号偏了一倍。
+判断字号只能看 `query(kind="semantic")` 返回的 `rect`——
+同一个元素改 CSS 前后 rect 会变（24→16），这才算数。
+
+⚠️ 另一条：`query(kind="semantic")` 返回的 `rect` 在 CSS 生效前是**旧值**，
+连续读几次会得到同样的过期数字。改完样式要 reload 再读。
+
+### 验收到什么程度
+
+浏览器实测（v5 `s_d047c6a91e56`，真实 44 节 / 162 处引用）：
+`.rpt-table` 与引用块类名都真实挂上、表格**只有横线没有格子框**、
+`text-2xs` 恢复 11px、引用气泡内联排版正常、目录跳转正常。
+
+**没验到的**：表格在**正常窗口宽度**下的样子。FilePanel 只有 728 CSS px 宽，
+正文可见区被常驻条（进度条+排除提示+目录）压到 ~120px，
+那张 4 列表被挤成一字一行。**这一项要在正常大小的窗口里再看一遍。**

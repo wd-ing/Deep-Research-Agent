@@ -289,19 +289,29 @@ function mdComponents(
     p: ({ children }: { children?: ReactNode }) => (
       <p className={compact ? 'my-2' : 'my-3'}>{R(children)}</p>
     ),
+    // `[&::marker]` 把项目符号压到灰：marker 默认继承正文墨色，
+    // 一屏 14 个黑点会盖过它们标注的句子。
     ul: ({ children }: { children?: ReactNode }) => (
-      <ul className={compact ? 'my-2 list-disc space-y-0.5 pl-5' : 'my-3 list-disc space-y-1 pl-5'}>
+      <ul className={[compact ? 'my-2 space-y-0.5 pl-5' : 'my-3 space-y-1.5 pl-5',
+                      'list-disc [&::marker]:text-gray-400'].join(' ')}>
         {children}
       </ul>
     ),
     ol: ({ children }: { children?: ReactNode }) => (
-      <ol className={compact ? 'my-2 list-decimal space-y-0.5 pl-5' : 'my-3 list-decimal space-y-1 pl-5'}>
+      <ol className={[compact ? 'my-2 space-y-0.5 pl-5' : 'my-3 space-y-1.5 pl-5',
+                      'list-decimal [&::marker]:text-gray-400 [&::marker]:text-xs'].join(' ')}>
         {children}
       </ol>
     ),
     li: ({ children }: { children?: ReactNode }) => <li>{R(children)}</li>,
+    // 引用块不是「引别人的话」，是作者自己的主张/前提（v5 里是「本文主张：…」）。
+    // 原来 `border-line + text-muted` 把它压成了脚注，这里给回存在感：
+    // 蓝色左规 + 极淡的底色 + 正文墨色。
+    // 底色用 `bg-accent/5` 而**不是** `bg-accent/[0.035]`——后者 Tailwind
+    // 没生成（任意透明度解析不了带前导零的值），构建不报错、样式直接失效。
     blockquote: ({ children }: { children?: ReactNode }) => (
-      <blockquote className="my-3 border-l-2 border-line pl-3 text-muted">{children}</blockquote>
+      <blockquote className="my-4 border-l-2 border-accent/50 bg-accent/5
+                          py-2.5 pl-4 pr-3 text-ink/90">{children}</blockquote>
     ),
     code: ({ children }: { children?: ReactNode }) => (
       <code className="rounded bg-gray-100 px-1 py-0.5 text-[0.9em]">{children}</code>
@@ -321,19 +331,16 @@ function mdComponents(
     /** 表格：preflight 不给任何边框和内边距，这四个必须成套接管。
      *  外层 `overflow-x-auto`——报告正文是 `max-w-3xl`，宽表硬撑会把
      *  整篇的排版挤变形。 */
+    // 四边的格子样式在 `index.css` 的 `.rpt-table` 里，检索轮次图共用。
     table: ({ children }: { children?: ReactNode }) => (
-      <div className="my-4 overflow-x-auto">
-        <table className="w-full border-collapse text-sm">{children}</table>
+      <div className="my-5 overflow-x-auto">
+        <table className="rpt-table">{children}</table>
       </div>
     ),
     thead: ({ children }: { children?: ReactNode }) => <thead>{children}</thead>,
     tr: ({ children }: { children?: ReactNode }) => <tr>{children}</tr>,
-    th: ({ children }: { children?: ReactNode }) => (
-      <th className="border border-line bg-gray-50 px-3 py-2 text-left font-medium">{children}</th>
-    ),
-    td: ({ children }: { children?: ReactNode }) => (
-      <td className="border border-line px-3 py-2 align-top">{R(children)}</td>
-    ),
+    th: ({ children }: { children?: ReactNode }) => <th>{children}</th>,
+    td: ({ children }: { children?: ReactNode }) => <td>{R(children)}</td>,
   }
 }
 

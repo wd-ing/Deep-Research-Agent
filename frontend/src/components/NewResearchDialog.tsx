@@ -26,9 +26,15 @@ export function NewResearchDialog({
   const submit = () => { if (ok) onSubmit(text) }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 p-4 pt-[10vh]">
+    // 遮罩点击关闭（和 SegDrawer / ConfirmDialog 统一）。
+    // 面板 stopPropagation —— 它是遮罩的子节点，不拦住就等于点了遮罩。
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 p-4 pt-[10vh]"
+      onClick={onCancel}
+    >
       <div
         className="w-full max-w-lg rounded-lg bg-white p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-label="新建研究"

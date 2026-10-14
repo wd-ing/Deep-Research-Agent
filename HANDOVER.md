@@ -614,6 +614,54 @@ P2 给段落抽屉加背景滚动锁，容器从 `overflow-auto` 切成 `overflo
 在那之前，**工作流视图的验证只能靠函数级探针**（`buildPhases` 是纯函数，
 esbuild 打个包就能在 node 里跑真实数据）。
 
+### 26. Tailwind 里 class 的书写顺序不决定胜负
+
+`className="rpt-table text-2xs"` 想压过 `.rpt-table` 自带的 `text-sm`，**压不住**。
+
+Tailwind 的工具类全在**同一个 layer**，同层之间按**生成顺序**决胜，
+**不看 class 属性里的书写顺序**。实测产物 CSS 里
+`.text-sm` 在偏移 15743、`.text-2xs` 在 15538 → `text-sm` 赢，
+写在后面的 `text-2xs` 是**死代码，而且不报任何错**。
+
+⇒ 要压过默认档只有两条路：
+① 用**不进 layer 的自定义类**做复合选择器（`.rpt-table.is-compact`，0,2:0），
+   这也是 `index.css` 里那些类的正确用法；
+② 改 `tailwind.config.js`，让那一档本身更小。
+
+⚠️ 推论：**不进 layer 的自定义类会压过整个 utilities layer**。
+`index.css` 里 `.sel` / `.rpt-table` / `.wf-*` 要当「基础规则」写，
+别拿它们当工具类使（那会让里面的 `@apply` 永远赢过组件上的工具类）。
+
+### 27. Vite dev server 会给陈旧 CSS，而且**不报错**
+
+2026-10-14 验收报告区时，我一度认定「`text-2xs` 全项目都没生效」，
+为此来回改口两次——**两次都不对**。真因是 dev server 还在吐旧 CSS，
+`npx vite --force` 重启后立刻恢复（侧栏 meta 行 24px→16px，
+`3 天前` 46px→32px，都是 `query(kind="semantic")` 的 `rect`）。
+
+⇒ **改了 `tailwind.config.js`、或怀疑某个工具类没生效时，
+先 `vite --force` 再决定要不要查代码。** 一个不报错的 dev server 不是证据。
+
+### 28. 内置 Browser 的三个测量陷阱（都让我下错过结论）
+
+① **截图是裁剪 + 缩放过的，不能拿像素量字号。**
+那张 1048px 宽的截图对应的其实是 535 CSS px（viewport 是 728），
+我按它算出来的字号偏了一倍，还据此怀疑 `text-2xs` 坏了。
+**判断字号只能看 `query(kind="semantic")` 的 `rect`**：
+改 CSS 前后 rect 会变（24→16），这才算数。
+
+② **`rect` 在 CSS 生效前是旧值。** 连续读几次会拿到同样过期的数字，
+改完样式要 reload 再读。
+
+③ **`scroll` 的选择器会命中错误的容器。**
+`.overflow-auto` 全项目有 6 处，第一个命中的是**侧栏**
+（`Sidebar.tsx:347`），不是报告容器（`App.tsx:282`）——
+滚了半天报告纹丝不动，还以为滚动坏了。报告容器要用 `main > .overflow-auto`。
+
+⚠️ 另：内置 Browser 的 **FilePanel 只有 728 CSS px 宽**，
+报告正文可见区被常驻条（进度条 + 排除提示 + 目录）压到 ~120px，
+**4 列的表在这个宽度下没法验收**。宽屏下的观感要另找窗口看。
+
 ---
 
 ## 八、待办
@@ -634,6 +682,7 @@ esbuild 打个包就能在 node 里跑真实数据）。
 | 引用 hover 预览 | ✅ **2026-10-13 已做**（原记录「⬜ 下轮」已过时）。新端点 `GET /api/sessions/{id}/seg_preview`，前端 `RefChip` 用 **portal + `position:fixed`** 出气泡（见 `DECISIONS.md`）。**原生 `title` 必须去掉**，留着会和气泡同时出现 |
 | **前端审计与修复** | ✅ **2026-10-14**。全量扫了 19 个文件/3950 行，修掉四条会骗人的缺陷：① 工作流视图环节归类错乱（写作阶段「规划」整个消失，根因是 `useSession` 丢掉了 SSE 外层的 `node`）② 侧栏写操作静默失败（`act()` 无 catch，删不掉看起来像删掉了）③ `jpatch`/`jdel` 错误信息还是老格式 ④ 新建/启动/审批/归档失败完全无声。另有 12 条一致性缺口 + 6 条清理项列在 `DECISIONS.md`，等美化时一并处理。**⚠️ 坑 25：回放只测得到审批为止，写作阶段从没被前端测过** |
 | **前端打磨三轮** | **✅ P0/P1/P2 全部完成（2026-10-13）**，都是只动前端、不动后端。**P0**（`27507bc`）：手写表格样式（`prose-sm` 原来是空类，typography 从未安装）、`notice` 通道、7 处静默吞错、来源库失败态、`ErrorBoundary`。**P1**（`fef594c`）：目录+进度条、新建研究对话框、加载态。**P2**：抽屉 Esc/遮罩/滚动锁、引用气泡键盘可达、引用按复用次数分三档、标题层级 |
+| **前端美化四段** | ① **✅ `79cc7e6`** 全局 tokens + 侧栏（`text-2xs` 补档、56 处任意值收编、`.sel` 统一选中态、`live` 绿专供「进行中」、「新建研究」降成描边）② **✅ 本轮** 报告阅读区（`.rpt-table` 只用横线、引用块给回存在感、列表 marker 压暗；顺带补 `SourceList` 的 `group-focus-within`——它原来键盘 Tab 不到）③ ⬜ 工作流视图（时间轴 / 状态点 / 空状态）④ ⬜ 来源库（分组 / 行密度 / 空状态）。**⚠️ 坑 26/27/28：Tailwind class 顺序、vite 陈旧 CSS、内置 Browser 三个测量陷阱** |
 | 存疑节高亮 | ✅ 已在 `ReportView` 里做了（琥珀色区块） |
 | ~~流式第二步：正文增量~~ | ✅ **2026-10-13 核实：早就做完了，原记录过时**。`server.py:723` 推 `{"kind": "draft"}`（`reasoning` 推成 `thinking`），带 40 字/0.25s 节流和收尾 flush；`types.ts:53` 有类型、`useSession.ts:108` 在消费。剩下的**已知限制**不是待办：正文增量无法归属到具体小节（`write_section` 是 4 并发，`run_tool_loop` 拿不到 task_id） |
 | `blocked` 分类的实测数据 | v5 跑出 `blocked=0`。**2026-10-11 两度核对，结论是「材料确实够」**：①判据在 `prompts.py:488-518` 写得很完整；②真实数据复核——143 段证据，报告里 **17 个数值断言全部能在证据中找到出处，零编造**（`tool_reads={read_segments:21}`，子 agent 确实调过工具）。**中间我一度用构造草稿得出相反结论，那是坏探针，已作废**（见坑 11）。真正材料稀缺的场景还没测到，`bad_assignment` / `spec_conflict` 两类仍无真实数据。 |

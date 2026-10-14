@@ -28,6 +28,42 @@ body { @apply bg-gray-50 text-ink antialiased; }
   box-shadow: inset 2px 0 0 0 #2563eb;
 }
 
+/* **表格**——只用横线，不用竖线。
+ *
+ *  原来 th/td 四边都画 `border`，每格一个小方框。v5 报告的核心结论就是
+ *  「四、政策与产业实际进度的匹配度」那张 4 列的表，格子套格子把
+ *  「读一行」变成了「找一格」。
+ *
+ *  改成：表头一条 2px 的线（明确分隔），行间一条 1px 发丝线（引导横向），
+ *  末行不画。竖向关系靠列间距表达，不再需要竖线。
+ *
+ *  **报告正文和检索轮次图共用这一套**——之前是两张表两种长相。 */
+.rpt-table {
+  @apply w-full border-collapse text-sm;
+}
+.rpt-table thead th {
+  /* 表头比正文小一号 + 灰色：它是列的标签，不该和单元格里的结论抢 */
+  @apply border-b-2 border-gray-300 px-3 py-2 text-left text-xs font-semibold text-muted;
+}
+.rpt-table tbody td {
+  @apply border-b border-line px-3 py-2.5 align-top;
+}
+.rpt-table tbody tr:last-child td {
+  @apply border-b-0;
+}
+/* 检索轮次那张表是 6 列数字，固定列宽 `w-14`/`w-16` 是按 11px 排的，
+ * 放到 14px 会被内容撑破（`累计段` 三字 42px + px-3 左右内边距 24px
+ * 就超了 56px 的列宽）。所以那一张要留在 2xs 档。
+ *
+ * ⚠️ **不能写成 `className="rpt-table text-2xs"`。** Tailwind 的工具类
+ * 都在同一个 layer，同层之间按**生成顺序**决胜，不看 class 属性里的书写
+ * 顺序：产物里 `.text-sm` 排在 `.text-2xs` 后面 → `text-sm` 赢，
+ * 写在后面的 `text-2xs` 是死代码。这里用复合选择器（0,2,0）+ 不进 layer，
+ * 才是稳的。 */
+.rpt-table.is-compact {
+  @apply text-2xs;
+}
+
 /* ============================================================
    工作流视图的视觉系统
    设计目标：**滚动时眼睛能落到某个点上**，而不是读一片文字。
