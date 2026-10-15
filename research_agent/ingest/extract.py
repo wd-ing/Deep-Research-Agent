@@ -189,19 +189,3 @@ class Fetcher:
                     title=title, published=published)
 
 
-def split_page(page: Page, splitter: RecursiveSplitter, source_id: str,
-               heading: str | None = None) -> list[dict]:
-    """把正文切成段落，产出可直接入库的 dict 列表。"""
-    if not page.ok or not page.text:
-        return []
-    out = []
-    for c in splitter.split(page.text, heading_path=heading):
-        out.append({
-            "source_id": source_id,
-            "origin": "web",
-            "content": c.content,
-            "heading_path": c.heading_path,
-            "token_count": c.token_count,
-            "source_date": page.published,
-        })
-    return out

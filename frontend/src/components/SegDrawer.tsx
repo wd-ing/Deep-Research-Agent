@@ -1,4 +1,5 @@
-import { useEffect } from 'react'
+import { useRef } from 'react'
+import { useDialog } from './useDialog'
 import type { SegmentRow, SourceMeta } from '../types'
 
 /** 引用详情用右侧抽屉而不是弹窗——弹窗会挡住读者正在看的位置。 */
@@ -8,16 +9,13 @@ export function SegDrawer({
   seg: SegmentRow | null
   onClose: () => void
 }) {
-  // ⚠️ effect 必须写在 `if (!seg) return null` **之前**——提前 return 会让
+  // ⚠️ hook 必须写在 `if (!seg) return null` **之前**——提前 return 会让
   //  这次渲染少调一个 hook，React 直接报「hook 调用次数不对」。
-  useEffect(() => {
-    if (!seg) return
-    // Esc 关闭。跟 ConfirmDialog / Menu 同一套：抽屉是这一层最深的浮层，
-    // 用户按 Esc 的预期是「收起眼前这个东西」。
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [seg, onClose])
+  // `useDialog` 里以 ref 取 `seg == null`：抽屉关着的时候不接管键盘，
+  // 打开的那一刻才装上 Esc / Tab 陷阱 / 锁滚。
+  const panel = useRef<HTMLElement>(null)
+  const isOpen = !!seg
+  useDialog(panel, onClose, isOpen)
 
   if (!seg) return null
   // 来源元数据由后端拼好（段落里的 `来源号` 是显示编号 S2，
@@ -29,9 +27,12 @@ export function SegDrawer({
           不然点它不会关抽屉、而且上半屏看着没被遮住。 */}
       <div className="fixed inset-0 z-30 bg-black/20" onClick={onClose} aria-hidden />
       <aside
+        ref={panel}
+        tabIndex={-1}
         role="dialog"
+        aria-modal="true"
         aria-label={`段落 ${seg.段号}`}
-        className="fixed right-0 top-0 z-40 flex h-full w-[420px] flex-col border-l border-line bg-white shadow-lg"
+        className="fixed right-0 top-0 z-40 flex h-full w-[420px] flex-col border-l border-line bg-white shadow-lg outline-none"
       >
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
           <span className="text-sm font-medium text-ink">段落 {seg.段号}</span>

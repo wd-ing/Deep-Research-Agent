@@ -33,10 +33,6 @@ def append_unique(a: list, b: list) -> list:
     return out
 
 
-def keep_last(a: list, b: list) -> list:
-    return b if b else (a or [])
-
-
 class ResearchState(TypedDict, total=False):
     # ---------- 输入 ----------
     session_id: str

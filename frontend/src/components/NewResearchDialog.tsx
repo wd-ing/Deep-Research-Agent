@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useRef, useState } from 'react'
+import { useDialog } from './useDialog'
 
 /** 新建研究。不是 `window.prompt()`——
  *  原生弹窗没法显示历史问题、不能多行、样式不可控，移动端更是难用。
@@ -15,11 +16,9 @@ export function NewResearchDialog({
 }) {
   const [q, setQ] = useState('')
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onCancel])
+  // Esc / Tab 陷阱 / 背景锁滚 / 关闭后归还焦点——三个对话框共用一套
+  const panel = useRef<HTMLDivElement>(null)
+  useDialog(panel, onCancel)
 
   const text = q.trim()
   const ok = text.length > 0 && !busy
@@ -33,7 +32,11 @@ export function NewResearchDialog({
       onClick={onCancel}
     >
       <div
-        className="w-full max-w-lg rounded-lg bg-white p-5 shadow-xl"
+        ref={panel}
+        // tabIndex=-1：面板本身要能被聚焦——万一里面一个可聚焦元素都没有，
+        // 焦点陷阱需要一个落点
+        tabIndex={-1}
+        className="w-full max-w-lg rounded-lg bg-white p-5 shadow-xl outline-none"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -42,7 +45,6 @@ export function NewResearchDialog({
         <h3 className="text-sm font-medium text-ink">要研究什么问题？</h3>
 
         <textarea
-          autoFocus
           rows={3}
           value={q}
           onChange={(e) => setQ(e.target.value)}

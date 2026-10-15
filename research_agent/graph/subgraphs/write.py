@@ -146,39 +146,6 @@ def _brief(state: WriteState) -> dict:
     }
 
 
-def _tool_results(calls: list[dict], ev: list[dict],
-                  seen: set) -> list[dict]:
-    """把 tool_use 转成 tool_result。
-
-    两个要点：
-      · 一轮可能有多个 tool_use，**每个都要回一个**，顺序一致，
-        少一个就 400 `tool call and result not match`。
-      · 单次取数有上限，但**不能静默截断**——没给的那些要在结果里
-        说清楚，否则模型不知道自己漏了什么（这正是 need_full 被否掉的原因）。
-    """
-    out: list[dict] = []
-    for c in calls:
-        idxs = [i for i in ((c.get("input") or {}).get("indices") or [])
-                if isinstance(i, int) and 0 <= i < len(ev)]
-        idxs = [i for i in idxs if i not in seen][:MAX_TOOL_INDICES]
-        fresh = [i for i in idxs if i not in seen]
-        seen.update(fresh)
-        payload = [{"编号": i, "全文": (ev[i].get("text") or ""),
-                    "来源": ev[i].get("source"), "性质": ev[i].get("nature"),
-                    "置信": ev[i].get("confidence"), "日期": ev[i].get("date")}
-                   for i in fresh]
-        note = ""
-        want = len([i for i in ((c.get("input") or {}).get("indices") or [])
-                    if isinstance(i, int) and 0 <= i < len(ev)])
-        if want > len(fresh):
-            note = (f"\n【注意】你这次要了 {want} 条，单次上限 {MAX_TOOL_INDICES} 条，"
-                    f"只返回了 {len(fresh)} 条，其余未取。"
-                    f"若确实需要，下一轮可以再调。")
-        out.append({"type": "tool_result", "tool_use_id": c.get("id"),
-                    "content": _dumps(payload) + note})
-    return out
-
-
 def _normalize_tasks(raw: list, outline: list, known: set) -> list:
     """清洗主 agent 的任务列表。脏数据在这里挡住，不让它流到子 agent。
 

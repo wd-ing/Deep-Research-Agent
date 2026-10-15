@@ -1,4 +1,5 @@
-import { useEffect } from 'react'
+import { useRef } from 'react'
+import { useDialog } from './useDialog'
 
 /** 确认对话框。不是 `window.confirm`——
  *  删一场研究连带删报告/来源/段，得说清楚，而且要能恢复。 */
@@ -19,11 +20,8 @@ export function ConfirmDialog({
     onChange: (v: string) => void
   }
 }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onCancel])
+  const panel = useRef<HTMLDivElement>(null)
+  useDialog(panel, onCancel)
 
   return (
     // 遮罩点击关闭。SegDrawer / NewResearchDialog 现在都有，这里是唯一不一致的一处。
@@ -33,9 +31,12 @@ export function ConfirmDialog({
       onClick={onCancel}
     >
       <div
-        className="w-full max-w-sm rounded-lg bg-white p-5 shadow-xl"
+        ref={panel}
+        tabIndex={-1}
+        className="w-full max-w-sm rounded-lg bg-white p-5 shadow-xl outline-none"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
+        aria-modal="true"
         aria-label={title}
       >
         <h3 className="text-sm font-medium text-ink">{title}</h3>

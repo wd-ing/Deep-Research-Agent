@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { api } from '../useSession'
 import type { Folder, SessionSummary, SourceLibrary } from '../types'
 import { FolderTree, buildTree, findNodeById, subtreeIds, folderChoices } from './FolderTree'
@@ -8,6 +8,23 @@ import { SourceList } from './SourceList'
 
 type Filter = 'all' | 'running' | 'archived' | 'trash'
 export type Pane = 'session' | 'source'
+
+/** 每 30 秒重渲染一次，让相对时间自己往前走。
+ *
+ *  `ago()` 是渲染期纯函数、读 `Date.now()`——不重渲染它就永远是那个值。
+ *  于是「59 分钟前」能卡上一整天，直到别的事件碰巧触发一次重渲染。
+ *  30 秒是「相对时间基本够新」和「别白烧」之间的折中：
+ *  一分钟级的显示精度，代价是每 30 秒重画一个侧栏。
+ *
+ *  ⚠️ 和 `WorkflowView` 里清掉的那个 `force` 空转**不是一回事**：
+ *  那个触发一次谁也不读的重渲染，这里是真的要把新时间画出来。 */
+function useTick(ms = 30_000) {
+  const [, tick] = useReducer((x: number) => x + 1, 0)
+  useEffect(() => {
+    const t = window.setInterval(tick, ms)
+    return () => window.clearInterval(t)
+  }, [ms])
+}
 
 /** 相对时间。列表里比绝对时间好用（「2 小时前」比「2026-10-11T05:39」）。 */
 function ago(iso: string): string {
@@ -40,6 +57,9 @@ function SessionRow({
   onDelete: () => void
   onMove: (folderId: string | null) => void
 }) {
+  // 心跳挂在**行**上而不是 Sidebar 上：只有行里有相对时间要刷新，
+  // 让整个侧栏每 30 秒重画一遍没有意义。
+  useTick()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(s.title ?? '')
   const [moveAt, setMoveAt] = useState<HTMLElement | null>(null)

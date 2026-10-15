@@ -72,18 +72,24 @@ export function useSession(sid: string | null) {
   const esRef = useRef<EventSource | null>(null)
   const timerRef = useRef<number | null>(null)
 
+  /** 返回后端看到的会话状态——SSE 断线时的兜底轮询靠它判断该不该停。
+   *  拉 `/api/sessions/{id}` 是 110 KB，每 4 秒一次太重，所以走 approval 这个
+   *  便宜端点（后端在那里顺带回了 status）。 */
   const loadApproval = useCallback(async (id: string) => {
     try {
-      const r = await jget<{ waiting: boolean; approval?: ApprovalPayload }>(
-        `/api/sessions/${id}/approval`)
+      const r = await jget<{
+        waiting: boolean; approval?: ApprovalPayload; status?: string | null
+      }>(`/api/sessions/${id}/approval`)
       if (r.waiting && r.approval) {
         setApproval(r.approval)
         setView('awaiting')
       } else {
         setApproval(null)
       }
+      return r.status ?? null
     } catch {
       // 轮询失败不是致命错误：网络抖一下不该把界面搞崩
+      return null
     }
   }, [])
 
@@ -194,8 +200,23 @@ export function useSession(sid: string | null) {
         if (!alive) return
         es.close()
         void loadApproval(sid)
+        // ⚠️ 原来这里有三个问题叠在一起：
+        // ① `onerror` 会连着来好几次，每次都 `setInterval` 覆盖 `timerRef.current`
+        //    ——**前一个 interval 变成没人管的孤儿，永远停不下来**；
+        // ② 轮询只在组件卸载时才停。可 SSE 已经断了，前端也就再也不会知道
+        //    「这场跑完了」，于是每 4 秒打一次接口、每次带一次 setState，
+        //    一场已经结束的研究也会这么转到天荒地老；
+        // ③ 拉详情来判状态是 110 KB，太重。
+        // 现在：已有一个就别再开；跑完了就地自停（后端在 approval 里回了 status）。
+        if (timerRef.current !== null) return
         timerRef.current = window.setInterval(() => {
-          void loadApproval(sid)
+          void loadApproval(sid).then((status) => {
+            if (status !== 'done') return
+            if (timerRef.current !== null) {
+              window.clearInterval(timerRef.current)
+              timerRef.current = null
+            }
+          })
         }, 4000)
       }
     })()
@@ -203,7 +224,11 @@ export function useSession(sid: string | null) {
     return () => {
       alive = false
       esRef.current?.close()
-      if (timerRef.current) window.clearInterval(timerRef.current)
+      // 清完要把 ref 置回 null，否则下次 onerror 看到它非空就不开新轮询了
+      if (timerRef.current !== null) {
+        window.clearInterval(timerRef.current)
+        timerRef.current = null
+      }
     }
   }, [sid, loadApproval, loadDetail, track])
 

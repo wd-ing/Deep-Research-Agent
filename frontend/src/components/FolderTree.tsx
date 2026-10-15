@@ -238,6 +238,22 @@ export function FolderTree({
    *  （写在 JSX 里靠 `!isLoose` 收窄是**不成立**的——
    *  那个布尔量是 `n.id === null` 的别名，TS 不会把别名条件带进属性访问。）
    */
+  /** 同级上移 / 下移。拖拽排序只能靠鼠标，键盘用户原本**没有任何**改顺序的路径。
+   *
+   *  走的是**同一个** `commitReorder`，所以两条路结果完全一致——
+   *  不会出现「鼠标拖出来的顺序和菜单里挪出来的不一样」。
+   *  兄弟关系的口径也复用 `siblingListOf` + 剔除「未分类」，与拖拽同一套。
+   */
+  const moveSibling = (id: string, dir: -1 | 1) => {
+    const sibs = siblingListOf(id)
+    if (!sibs) return
+    const real = sibs.filter((x): x is FolderNode & { id: string } => x.id !== null)
+    const at = real.findIndex((x) => x.id === id)
+    const to = at + dir
+    if (at < 0 || to < 0 || to >= real.length) return
+    void commitReorder(id, real[to].id, dir < 0 ? 'before' : 'after')
+  }
+
   const dragProps = (
     fid: string | null, dropHere: 'before' | 'after' | null,
   ): React.HTMLAttributes<HTMLDivElement> => {
@@ -427,21 +443,46 @@ export function FolderTree({
 
       {menuAt && menuAt.id !== null && (() => {
         const self = findNodeById(tree, menuAt.id)
-        if (!self) return null
+        // `self.id` 还得再判一次 null：`findNodeById` 返回的是 `FolderNode`，
+        // 它的 id 对「未分类」虚拟节点就是 null。菜单是按 menuAt.id 进来的，
+        // 但类型上不能拿这个当保证——下面要拿 self.id 改序，传 null 给后端会 400。
+        if (!self || self.id === null) return null
+        // 收窄后的值必须绑成局部 const：`self.id` 是**属性**，
+        // 它的类型收窄不会带进下面的闭包，一进闭包就退回 `string | null`。
+        const selfId = self.id
         // 不能移进自己的子孙——后端会拒（400），这里直接不列出来
         const banned = subtreeIds(self)
         const targets = all.filter((x) => !banned.has(x.n.id))
         return (
           <Menu anchor={menuAt.anchor} onClose={() => setMenuAt(null)}>
-            <MenuItem onClick={() => { setRenaming(self.id); setMenuAt(null) }}>重命名</MenuItem>
-            <MenuItem onClick={() => { setCreating({ parent: self.id }); setMenuAt(null) }}>
+            <MenuItem onClick={() => { setRenaming(selfId); setMenuAt(null) }}>重命名</MenuItem>
+            <MenuItem onClick={() => { setCreating({ parent: selfId }); setMenuAt(null) }}>
               新建子文件夹
             </MenuItem>
-            <MenuSep />
+            {(() => {
+              const sibs = (siblingListOf(selfId) ?? [])
+                .filter((x): x is FolderNode & { id: string } => x.id !== null)
+              const at = sibs.findIndex((x) => x.id === selfId)
+              return (
+                <>
+                  {/* 到头了就禁用而不是藏起来：藏了用户不知道还有这项，
+                      禁了才知道「已经是最上/最下」。 */}
+                  <MenuItem disabled={at <= 0}
+                    onClick={() => { moveSibling(selfId, -1); setMenuAt(null) }}>
+                    上移
+                  </MenuItem>
+                  <MenuItem disabled={at < 0 || at >= sibs.length - 1}
+                    onClick={() => { moveSibling(selfId, 1); setMenuAt(null) }}>
+                    下移
+                  </MenuItem>
+                  <MenuSep />
+                </>
+              )
+            })()}
             {targets.map(({ n, depth }) => (
               <MenuItem key={n.id ?? 'none'}
                 onClick={() => {
-                  void run(() => api.jpatch(`/api/folders/${self.id}`,
+                  void run(() => api.jpatch(`/api/folders/${selfId}`,
                     { parent_id: n.id }))
                   setMenuAt(null)
                 }}>

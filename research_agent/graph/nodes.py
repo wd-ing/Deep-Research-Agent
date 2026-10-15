@@ -790,6 +790,7 @@ def _assess_history(repo, sid: str, rnd: int) -> dict:
 
 
 @scoped
+@_timed_node("assess")
 def node_assess(state: ResearchState) -> dict:
     """判断每节证据够不够、下一轮搜什么。
 
@@ -1015,6 +1016,7 @@ def _action_hist(review: Any) -> dict:
     return hist
 
 
+@_timed_node("apply_revision")
 def node_apply_revision(state: ResearchState) -> dict:
     """把 LLM 自主提议的框架修订真正落到 outline 上。
 
@@ -1361,6 +1363,7 @@ def node_finalize(state: ResearchState) -> dict:
 # ---- 会话摘要（产品化阶段 3）----
 
 
+@_timed_node("summary")
 def node_summary(state: ResearchState) -> dict:
     """报告写完后生成一份结构化摘要，存进 `session.summary_json`。
 

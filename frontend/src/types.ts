@@ -260,15 +260,3 @@ export interface SourceDetailRow {
   }[]
 }
 
-/** 主图的 7 个节点，顺序取自 runner.py。
- *  ⚠️ 真实轨迹会走两遍检索（assess → apply_revision → retrieve），
- *  所以阶段条不能是单向进度。 */
-export const STAGES = [
-  { key: 'probe', label: '探测', nodes: ['probe'] },
-  { key: 'outline', label: '框架', nodes: ['outline'] },
-  { key: 'retrieve', label: '检索', nodes: ['retrieve'] },
-  { key: 'extract', label: '抽取', nodes: ['extract'] },
-  { key: 'assess', label: '评估', nodes: ['assess', 'apply_revision'] },
-  { key: 'write', label: '写作', nodes: ['write'] },
-  { key: 'finalize', label: '收尾', nodes: ['finalize'] },
-] as const

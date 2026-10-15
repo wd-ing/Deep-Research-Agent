@@ -97,15 +97,6 @@ _NO_DELTA_STAGES = {"relevance", "summarize", "extract",
 _NO_TEXT_DELTA_STAGES = {"outline", "write_plan", "write_audit"}
 
 
-def set_delta_hook(fn) -> Any:
-    """注册思考增量回调，返回 token（用 reset 还原）。"""
-    return _DELTA_HOOK.set(fn)
-
-
-def reset_delta_hook(token) -> None:
-    _DELTA_HOOK.reset(token)
-
-
 def _fire_delta(stage: str, kind: str, chunk: str) -> None:
     fn = _DELTA_HOOK.get()
     if fn:
