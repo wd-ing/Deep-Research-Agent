@@ -1,0 +1,204 @@
+[
+ {
+  "at": 442.9,
+  "event": {
+   "kind": "probe_light",
+   "attempt": 1,
+   "queries": {
+    "zh": [
+     "钠离子电池的商业化时间表，以及主要厂商的量产进度",
+     "钠离子电池的商业化时间表，以及主要厂商的量产进度 是什么",
+     "钠离子电池的商业化时间表，以及主要厂商的量产进度 最新"
+    ],
+    "en": [
+     "钠离子电池的商业化时间表，以及主要厂商的量产进度",
+     "what is 钠离子电池的商业化时间表，以及主要厂商的量产进度",
+     "钠离子电池的商业化时间表，以及主要厂商的量产进度 latest"
+    ]
+   },
+   "hits": 36,
+   "reused": false
+  }
+ },
+ {
+  "at": 442.9,
+  "event": {
+   "kind": "probe_judged",
+   "ambiguous": false,
+   "quality": "substantive",
+   "will_read": 3
+  }
+ },
+ {
+  "at": 442.9,
+  "event": {
+   "kind": "probe_quality",
+   "quality": "substantive",
+   "judged": true,
+   "deep_urls": 3
+  }
+ },
+ {
+  "at": 442.9,
+  "event": {
+   "kind": "probe_deep",
+   "read": 3,
+   "tried": 3,
+   "chars": 6244
+  }
+ },
+ {
+  "at": 442.9,
+  "event": {
+   "kind": "probe_outline",
+   "subtopics": 6,
+   "entities": 23,
+   "controversies": 0,
+   "degraded": false,
+   "fallback_to_titles": false
+  }
+ },
+ {
+  "at": 442.9,
+  "event": {
+   "kind": "outline",
+   "sections": 6,
+   "dropped": [],
+   "queries": {
+    "zh": 5,
+    "en": 5
+   },
+   "warnings": []
+  }
+ },
+ {
+  "at": 442.9,
+  "event": {
+   "kind": "retrieve",
+   "round": 1,
+   "queries": {
+    "zh": [
+     "钠离子电池 商业化 时间表 2026 量产",
+     "宁德时代 钠离子电池 量产 进度",
+     "钠离子电池 成本 下降 预测",
+     "钠离子电池 应用场景 储能 电动车",
+     "钠离子电池 产业链 公司 进展"
+    ],
+    "en": [
+     "sodium-ion battery commercialization timeline 2026",
+     "CATL sodium-ion battery mass production progress",
+     "sodium-ion battery cost reduction forecast",
+     "sodium-ion battery applications energy storage EV",
+     "sodium-ion battery supply chain companies progress"
+    ]
+   },
+   "hits": 20,
+   "repeat_queries": 0,
+   "accepted": 12,
+   "skipped": [
+    {
+     "url": "https://ai.so.com/search/so4582dec09664d3a8fc450b1da877c9c6?search=%E9%92%A0%E7%94%B5%E6%B1%A0%E5%8F%91%E5%B1%95%E8%BF%8E%E6%9D%A5%E5%85%B3%E9%94%AE%E8%8A%82%E7%82%B9%EF%BC%8C%E5%AE%81%E5%BE%B7%E6%97%B6%E4%BB%A3%E5%AE%A3%E5%B8%83%E4%BB%8A%E5%B9%B4%E9%87%8F%E4%BA%A7%EF%BC%8C2026%E5%B9%B4%E5%B0%86%E8%BF%9B%E5%85%A5%E8%A7%84%E6%A8%A1%E5%8C%96%E5%BA%94%E7%94%A8%E9%98%B6%E6%AE%B5&src=so_result_natural_ask&srcg=so_result_natural_ask",
+     "reason": "too_short"
+    },
+    {
+     "url": "https://www.ennews.com/news-135527.html",
+     "reason": "repost"
+    },
+    {
+     "url": "https://ai.so.com/search/so3b7a7082ea8367d800b461b2f26aef20?search=%E9%92%A0%E7%94%B5%E6%B1%A0%E6%88%90%E6%9C%AC%E5%8A%A0%E9%80%9F%E4%B8%8B%E9%99%8D%EF%BC%8C%E9%A2%84%E8%AE%A12026%E5%B9%B4%E4%B8%8E%E7%A3%B7%E9%85%B8%E9%93%81%E9%94%82%E6%88%90%E6%9C%AC%E6%8C%81%E5%B9%B3&src=so_result_natural_news&srcg=so_result_natural_news",
+     "reason": "too_short"
+    },
+    {
+     "url": "https://www.toutiao.com/article/7623714087544947234/",
+     "reason": "too_short"
+    },
+    {
+     "url": "https://www.toutiao.com/article/7589553936856515081/",
+     "reason": "too_short"
+    },
+    {
+     "url": "https://www.nbd.com.cn/articles/2023-01-16/2636967.html",
+     "reason": "repost"
+    },
+    {
+     "url": "https://xueqiu.com/2866092708/403087024",
+     "reason": "too_short"
+    },
+    {
+     "url": "https://xueqiu.com/9958052416/405466096",
+     "reason": "too_short"
+    }
+   ]
+  }
+ },
+ {
+  "at": 442.9,
+  "event": {
+   "kind": "segment_summary",
+   "segments": 30,
+   "batches": 3,
+   "done": 30,
+   "failed": 0
+  }
+ },
+ {
+  "at": 442.9,
+  "event": {
+   "kind": "extract",
+   "round": 1,
+   "sources": 12,
+   "ok": 12,
+   "errors": 0,
+   "segments": 30,
+   "summarized": 30,
+   "summarize_failed_batches": 0,
+   "unjudged_sources": 0,
+   "gate": {
+    "judged": 12,
+    "off_topic": 0,
+    "by_method": {
+     "rule": 3,
+     "llm": 9
+    }
+   }
+  }
+ },
+ {
+  "at": 442.9,
+  "event": {
+   "kind": "assess",
+   "round": 1,
+   "segments_total": 30,
+   "new_segments": 30,
+   "round_gain": 1.0,
+   "no_new_streak": 0,
+   "has_enough": false,
+   "thin_sections": [
+    "sec2",
+    "sec4",
+    "sec6"
+   ],
+   "gaps": 5,
+   "gaps_by_urgency": {
+    "high": 5
+   },
+   "queries_fresh": 9,
+   "queries_dropped_repeat": 1,
+   "queries_fallback": false,
+   "stop_would_be": "轮数到顶（1/1）",
+   "stop_layer": "mechanism",
+   "outline_actions": {
+    "收窄题面": 1,
+    "?": 1
+   },
+   "outline_given": true,
+   "gap_detail": [
+    "sec1[high]:缺从实验室到规模化应用的具体时间节点（如实验室阶段、中试、量产年份）以及2026年被视为商业化元年的具体依据（如成本、产",
+    "sec2[high]:缺宁德时代、比亚迪、国轩高科、亿纬锂能、中科海钠等厂商的具体量产进度和产能规划数据",
+    "sec4[high]:缺钠离子电池电芯成本当前水平及未来下降趋势的具体数据，以及各机构对全球市场份额和出货量的预测及依据",
+    "sec5[high]:缺对储能、电动车、商用车等应用场景的明确分类和当前商业化主要驱动力的直接论述，现有材料多为间接提及",
+    "sec6[high]:缺天赐材料、万润新能、华阳股份等产业链公司在材料、电解液、应急电源等方面的具体配套进展"
+   ]
+  }
+ }
+]

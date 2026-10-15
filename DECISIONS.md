@@ -3636,3 +3636,61 @@ probe → outline → (retrieve/extract/assess)×N → 审批 → write → fina
 
 分组标题圆点化、域名完整显示（`futuremarketinsights.com` 不再被截）均在图上确认。
 控制台 0 warn / 0 error。`tsc` + `build` + `smoke.t_db` + 探针全过。
+
+---
+
+## 2026-10-15 端到端验抽取修复（便宜版）
+
+函数级证据（完美桩）能证明 `_run_nature_batch` 自己的下标没分叉，
+但证不了**真实管线**里「12 个来源 → 2 批 → 全部判出」这条路真的通。
+
+### 怎么跑得便宜
+
+`tests/verify_nature_e2e.py`：真节点（`node_probe` / `node_outline` /
+`node_retrieve` / `node_extract` / `node_assess`）、真检索、真 LLM、真落库，
+只是**不往下接写作**——写作占 v5 输入 token 的 69%（write_section 428k），
+而要验的东西全在它前面。
+
+`HARD` 在**内存里**改小（`max_rounds=1`、`max_urls=20`），生产代码不动，
+也不需要跑完再还原。审批点本来就在第一次 assess **之后**
+（`runner.py:63`），所以跑到 assess 天然还没进审批。
+
+**实测**：12 个来源 / 442.9s / **58,012 token**（v5 是 ~900k，约 1/15）。
+
+### 结果
+
+| # | 域名 | 性质 |
+|---|---|---|
+| 9 | max.book118.com | **aggregator** |
+| 10 | jiemian.com | media |
+| 11 | k.sina.com.cn | media |
+| 12 | sohu.com | media |
+
+**第 9~12 条正是原来的第 2 批**（`NATURE_BATCH=8`），现在全部有性质和判定理由。
+`source_nature` 为空的：**0 个**。
+
+### 这次验收里我自己犯的两个错
+
+**① 把「模型判不出来」当成「代码丢了」。**
+检查写成 `COALESCE(source_nature,'') IN ('','unknown')`，于是 3 个
+`unknown` 被算成失败。真相比这重要得多：那 3 个是 **max.book118.com ×2、
+renrendoc.com**——付费文库站，模型看了材料确实判不出性质，这是**合法结论**。
+差点为一个没坏的东西去改代码。
+⇒ `NULL`（代码丢了）和 `'unknown'`（模型判不出）必须是两回事，
+这也正是这次修复要恢复的区分。顺带把 `it.get("source_nature", "unknown")`
+改成 `or "unknown"`：以前模型返回 `null` 会写成 `NULL`，现在写成 `'unknown'`。
+
+**② 用 `all([])` 冒充通过。**
+`--recheck` 模式拿不到事件（不落库，坑 25），`all([])` 恒为真，
+④ 那条检查什么都没查却顶着 ✅。已改成明说「⏭️ 跳过：事件不落库，
+空集合恒为真，不能算通过」。
+
+### 前端也验了
+
+真实事件存成 `tests/fixtures/verify_nature_e2e.json`，喂给 `frontend/probes/wf_view.tsx`
+当第 ④ 个用例。⚠️ 渲染的两个分支都验到：
+真实值 `unjudged_sources: 0` → 无 ⚠️；改成 3 → `⚠️ 抽取（第 1 轮）` + 明细 1 行。
+
+⚠️ `node` 字段是**实测**映射出来的，不是按事件 kind 猜的：
+`probe_outline` 是 **probe** 节点，不是 outline。猜就会错。
+（两次真实录制 + 本次实跑共 15 种事件 kind 的归属全对上了。）

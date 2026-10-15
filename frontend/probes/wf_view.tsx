@@ -53,6 +53,29 @@ const before = loadProgress('run_to_approval.json')          // 10 条，跑到�
 const after = loadProgress('run_after_approval.json')       // 7 条，审批后到写完
 const whole = [...before, ...after]                         // 17 条，整轮
 
+/** 2026-10-15 端到端验证跑采下来的**真实**事件（SSE 外层不在，
+ *  `node` 要按图节点名补上——映射是**实测**的，不是按 kind 猜的：
+ *  `probe_outline` 是 probe 节点，不是 outline，猜就会错）。
+ *  文件由 `tests/verify_nature_e2e.py` 写出。 */
+const NODE_OF: Record<string, string> = {
+  probe_light: 'probe', probe_judged: 'probe', probe_quality: 'probe',
+  probe_deep: 'probe', probe_outline: 'probe',
+  outline: 'outline',
+  retrieve: 'retrieve',
+  segment_summary: 'extract', extract: 'extract',
+  assess: 'assess',
+}
+function loadE2e(file: string): ProgressEntry[] {
+  const raw = JSON.parse(readFileSync(FIX + file, 'utf8')) as { event: Record<string, unknown> }[]
+  return raw.map((e) => {
+    const k = e.event.kind as string
+    const node = NODE_OF[k]
+    if (!node) throw new Error(`${file}: 事件 kind=${k} 不在实测映射表里`)
+    return { ...e.event, node } as ProgressEntry
+  })
+}
+const e2e = loadE2e('verify_nature_e2e.json')
+
 // ── 统计：先量清楚再动手 ────────────────────────────────────────────
 function stats(name: string, ps: Phase[]) {
   console.log(`\n===== ${name} =====`)
@@ -80,6 +103,8 @@ stats('跑到审批（view=awaiting，node=null）', buildPhases(before, null, '
 stats('整轮跑完（view=done，node=null）', buildPhases(whole, null, 'done'))
 stats('正在写作（view=running，node=write）', buildPhases(before, 'write', 'running'))
 stats('**空状态**（0 个事件，view=running）', buildPhases([], 'probe', 'running'))
+stats('端到端实跑（2026-10-15，跑到 assess 停，view=awaiting）',
+  buildPhases(e2e, null, 'awaiting'))
 
 // ── SSR 成能看的页面 ───────────────────────────────────────────────
 const cases: [string, Phase[], boolean][] = [
@@ -89,6 +114,8 @@ const cases: [string, Phase[], boolean][] = [
     buildPhases(whole, null, 'done'), false],
   ['③ 空状态 —— 0 个事件',
     buildPhases([], 'probe', 'running'), true],
+  ['④ **真实端到端跑**（2026-10-15，跑到 assess 停）',
+    buildPhases(e2e, null, 'awaiting'), false],
 ]
 
 // 先定 CSS 名再写页面：之前是反过来——从 OUT 里「已存在的」css 反推名字，
