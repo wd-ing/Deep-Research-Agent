@@ -15,7 +15,24 @@
 
   1. 给足输出预算，让思考吃掉的那部分不会挤掉内容
   2. 监控 reasoning 占比，超阈值记一条告警（占比过高说明任务不匹配该模型）
-  3. 返回空内容时自动重试并翻倍预算——这才是 M3.1 那个失效模式的直接补丁
+  3. 返回空内容时自动重试并翻倍预算——意外情况的兜底
+
+⚠️ **第 1 条和第 3 条曾经被搞反了因果（2026-10-15 实测纠正）。**
+当时的理解是「预算不够 → 多给」，于是把翻倍当成第 3 条的补丁。
+实测（`tests/probe_plan_tasks_empty.py`，真实 82 段摘要载荷）：
+
+  · write_plan 的 max_output_tokens=4,096 时，成功率 **1/14**
+  · 提到 16,384 时，成功率 **2/3**
+
+**抬预算是对的，而且效果接近 10 倍。** 但机制不是「给它空间它就多想」——
+同一预算下思考量能差 4.9 倍（16,384 连打三次：8,593 / 11,401 /
+41,771 字）。`max_tokens` 是**上限**，不是思考档位；真正管思考深度的是
+`reasoning_effort`（那个模型才感知得到）。
+
+⚠️ 反过来的推论同样重要：**翻倍重试是兜底，不该是常态路径。**
+v5 实测 write_plan 最大输出 7,654 = 旧上限 4,096 的 **187%** ——
+它一直在靠翻倍硬撑。既然次次都要触发，就该一开始设够。
+`tests/check_token_budget.py` 现在会盯这件事。
 
 所以 validate 从「必须有 thinking_budget: 0」改成「抽取类环节必须有 guard 策略」。
 """
@@ -671,6 +688,39 @@ class LLMClient:
         self._record(cfg, _msgs_chars(messages), text, usage)
         return {"blocks": blocks, "usage": usage}
 
+    # ---------- 可观测性 ----------
+
+    def _warn_reasoning_ratio(self, cfg: StageConfig, usage: dict,
+                              reasoning_text: str = "") -> None:
+        """防线二：思考占比超阈值就记一条告警。流式与非流式共用。
+
+        ⚠️ **这道防线以前等于没有**（2026-10-15 修），两个独立的原因叠加：
+          ① 它只写在**非流式**分支里，而所有需要真思考的环节
+             （write_plan / assess / write_section / probe_outline /
+             write_audit / outline）**全是 `stream: true`** —— 一次都没跑过；
+          ② 就算跑到，它读 `usage.completion_tokens_details.reasoning_tokens`，
+             而 xj189 这个字段是 `{}`（实测报文），于是 reasoning 恒为 0，
+             `0 > 0.7` 恒不成立。
+
+        两层都修了：抽成公共入口（①），数值改走 `_reasoning_tokens`
+        并用流式攒下来的思考正文兜底（②）。
+        """
+        completion = int((usage or {}).get("completion_tokens") or 0)
+        if not completion:
+            return
+        reasoning = _reasoning_tokens(usage, reasoning_text)
+        if reasoning / completion <= cfg.guard.max_reasoning_ratio:
+            return
+        # 数字是实测还是估算，必须说清楚——告警本身也会被当证据引用。
+        src = "平台报数" if _has_reasoning_field(usage) else "按思考正文估算"
+        msg_w = (
+            f"[{cfg.stage}] reasoning 占比 {reasoning}/{completion}（{src}）"
+            f"超过阈值 {cfg.guard.max_reasoning_ratio:.0%}，"
+            f"该环节可能不适合 {cfg.model}"
+        )
+        self.warnings.append(msg_w)
+        print(f"⚠️  {msg_w}", flush=True)
+
     # ---------- 记账（P7：只记不告警） ----------
 
     def _record_error(self, cfg: StageConfig, prompt: str, exc: BaseException,
@@ -814,6 +864,8 @@ class LLMClient:
                 txt = acc.text_only()
                 usage = dict(acc.usage or {})
                 usage["latency_ms"] = int((time.time() - t0) * 1000)
+                self._warn_reasoning_ratio(
+                    cfg, usage, "".join(acc.reasoning))
                 if not txt:
                     # 流式下空返回同样是真实失效模式，走同一套翻倍预算
                     last_reason = "empty"
@@ -900,21 +952,11 @@ class LLMClient:
             msg = data["choices"][0]["message"]
             text = (msg.get("content") or "").strip()
             usage = data.get("usage") or {}
-            reasoning = (
-                (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
-            )
-            completion = usage.get("completion_tokens") or 0
             usage["latency_ms"] = int((time.time() - t0) * 1000)
 
-            # 防线二：思考占比告警
-            if completion and reasoning / completion > cfg.guard.max_reasoning_ratio:
-                msg_w = (
-                    f"[{cfg.stage}] reasoning 占比 {reasoning}/{completion} "
-                    f"超过阈值 {cfg.guard.max_reasoning_ratio:.0%}，"
-                    f"该环节可能不适合 {cfg.model}"
-                )
-                self.warnings.append(msg_w)
-                print(f"⚠️  {msg_w}", flush=True)
+            # 防线二：思考占比告警（流式与非流式走同一个入口）
+            self._warn_reasoning_ratio(
+                cfg, usage, msg.get("reasoning_content") or "")
 
             # 防线一：内容为空则重试并翻倍预算（额度独立于传输断连）
             if not text:
@@ -930,11 +972,25 @@ class LLMClient:
                 continue
             return text, usage
 
+        # ⚠️ **只陈述观测到的事实，不下诊断。**
+        # 原来这里写死了一句「这正是 M3.1 Flash 那种 thinking 吃光预算的失效模式」——
+        # 2026-10-15 那轮失败的是 `deepseek-v4-flash-0731`，这句话指错了模型，
+        # 而且断言了一个代码并不知道成因的因果。
+        # （同一类错误在别处也犯过：告警只说「该环节可能不适合 X」，
+        #  证据只够说「相关」，不够说「不适合」。）
+        #
+        # 有把握的部分是「预算 vs 思考」：2026-10-15 实测 write_plan 在
+        # 4,096 下成功 1/14、16,384 下 2/3 —— 所以下面给的是**下一步该查什么**，
+        # 不是「原因就是 X」。
         raise EmptyOutput(
             f"环节 {cfg.stage} 的重试额度用尽仍未拿到内容"
             f"（模型 {cfg.model}，空返回 {cfg.guard.retry_on_empty} 次、"
             f"连接中断 {drops} 次，最后原因 {last_reason}）。"
-            f"这正是 M3.1 Flash 那种 thinking 吃光预算的失效模式。"
+            f"已知同环节把 max_output_tokens 提到 "
+            f"{cfg.guard.max_output_tokens} 仍失败时，"
+            f"可考虑抬基础预算或降 reasoning_effort（当前 "
+            f"{cfg.reasoning_effort or '未设'}）——"
+            f"这一条只是排查建议，本次并未观测到成因。"
         )
 
     # ---------- MiniMax（Anthropic Messages 格式） ----------
@@ -1291,6 +1347,59 @@ def _cache_read(usage: dict) -> int:
             except (TypeError, ValueError):
                 return 0
     return 0
+
+
+def _has_reasoning_field(usage: dict) -> bool:
+    """平台有没有**自己报**思考 token。
+
+    没有就只能靠我们自己攒的思考正文估算——告警里必须如实标出来，
+    否则一个粗估值会被当成实测值引用。
+    """
+    u = usage or {}
+    cur: object = u
+    for k in ("completion_tokens_details", "reasoning_tokens"):
+        if not isinstance(cur, dict):
+            return False
+        cur = cur.get(k)
+        if cur:
+            return True
+    return False
+
+
+def _reasoning_tokens(usage: dict, reasoning_text: str = "") -> int:
+    """从各家 usage 里取出「有多少输出 token 花在了思考上」。
+
+    和 `_cache_read` 同一个坑：**同一个概念放在不同位置，甚至根本不报。**
+      · OpenAI 标准：`completion_tokens_details.reasoning_tokens`
+      · 顶层 `reasoning_tokens`（部分聚合平台）
+      · **xj189 实测两者都没有**——`completion_tokens_details` 是 `{}`，
+        报文里也没有 `reasoning_content`
+
+    ⚠️ 最后一这条意味着**光读 usage 永远读到 0**，
+    于是「思考占比超过阈值」那道告警在 xj189 上恒不触发——
+    而它本来正是为抓「thinking 吃光预算」写的。
+    （见 `2026-10-15` 那轮全量跑：write_plan 空返回、告警一条没响。）
+
+    ⇒ 兜底改用**我们自己流式攒下来的思考正文**估算。
+    宁可给一个近似值，也不要让这道防线静默失效。
+    中英混排 3 字符/token 是粗估，重点是**量级**对不对，
+    不是小数点后几位。
+    """
+    u = usage or {}
+    for path in (("completion_tokens_details", "reasoning_tokens"),
+                 ("reasoning_tokens",)):
+        cur: object = u
+        for k in path:
+            if not isinstance(cur, dict):
+                cur = None
+                break
+            cur = cur.get(k)
+        if cur:
+            try:
+                return int(cur)
+            except (TypeError, ValueError):
+                pass
+    return (len(reasoning_text or "") + 2) // 3 if reasoning_text else 0
 
 
 def classify_limit(body: str, headers: dict | None = None) -> tuple[str, float]:

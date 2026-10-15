@@ -22,7 +22,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from ...llm.provider import LLMClient, parallel_labelled
+from ...llm.provider import LLMClient, _parse_json, parallel_labelled
 from ...llm.toolloop import run_tool_loop
 from .. import prompts
 from ..state import WriteState
@@ -90,9 +90,20 @@ def node_plan_spec(state: WriteState) -> dict:
 def node_plan_tasks(state: WriteState) -> dict:
     """主 agent 第二步：分派任务。
 
-    输入只有**段落概括**。原先这里还有一层 get_evidence 工具循环，让它
-    按需取断言全文——那是断言当证据单位时的补救。现在证据单位是段落，
-    概括与全文的落差本来就该由 write 阶段的三个工具解决，规划阶段不再重复一遍。
+    **工具循环在 2026-10-15 加回来**（此前被删掉，但删得只做了一半）：
+
+      · 代码不传工具了，`node_plan_tasks` 只调一次 `complete_json`
+      · ⚠️ **但 `prompts.WRITE_PLAN_TASKS` 一直写着「看不准的时候可以调用
+        工具取原文——取完再继续判断」**——在教模型去做一件它做不到的事
+      · ⚠️ `MAX_TOOL_ROUNDS` / `MAX_TOOL_INDICES` 两个常量定义了却零使用点，
+        和这轮清掉的 `keep_last` 是同一类残留
+
+    为什么加回来而不是把提示词那两句删掉：分派是**全局决策**——决定哪段证据
+    归哪一节、哪两节不能重复。只看 82 段概括做这个决定，粒度本来就不够；
+    概括说"讲了成本问题"的段，究竟能不能支撑 sec3，得看原文才知道。
+
+    ⚠️ **仍然只给 82 段概括做初始输入**——工具是"按需往下挖"，
+    不是把 119k token 正文一次塞进来（那正是 `dispatch` 里子 agent 的做法）。
     """
     spec = state.get("spec") or {}
     outline = state.get("outline") or []
@@ -101,10 +112,30 @@ def node_plan_tasks(state: WriteState) -> dict:
     prompt = _dumps({"研究问题": state.get("question", ""),
                      "写作规约（你上一轮定的，必须遵守）": spec,
                      "框架与轮廓": _brief(state)})
+    sid = state.get("session_id") or ""
+
+    text = ""
+    log: list[list[dict]] = []
+    if sid:
+        from ...db.repo import get_repo
+        from ...tools.evidence import EvidenceTools
+        tools = EvidenceTools(get_repo(), sid)
+        try:
+            text, _, log = run_tool_loop(
+                LLM, "write_plan", prompts.WRITE_PLAN_TASKS,
+                [{"role": "user", "content": _clip(prompt, 60000)}],
+                tools, max_rounds=MAX_TOOL_ROUNDS)
+            _record_tool_use(state, "plan_tasks", log)
+        except Exception as e:
+            # 工具循环挂了退回单次调用——**不能因此整步失败**：
+            # 分派本来就只是"照着概括分"，有工具是加分项不是必需项。
+            print(f"⚠️  分派环节工具循环失败，退回单次调用: {e}", flush=True)
+            text = ""
 
     try:
-        data = LLM.complete_json("write_plan", _clip(prompt, 60000),
-                                 system=prompts.WRITE_PLAN_TASKS)
+        data = (_parse_json(text) if text
+                else LLM.complete_json("write_plan", _clip(prompt, 60000),
+                                       system=prompts.WRITE_PLAN_TASKS))
     except Exception as e:
         return {"plan_failed": str(e)[:200],
                 "events": [{"kind": "write_plan_error", "stage": "tasks",
@@ -115,13 +146,15 @@ def node_plan_tasks(state: WriteState) -> dict:
     _trace(state.get("session_id"), spec=spec, tasks=tasks,
            stats={"raw_tasks": len(raw_tasks), "kept": len(tasks),
                   "capped": len(tasks) < len(raw_tasks),
-                  "segments_available": len(known)})
+                  "segments_available": len(known),
+                  "plan_tool_reads": sum(len(r) for r in log)})
     return {
         "spec": spec, "tasks": tasks,
         "spec_capped": len(tasks) < len(raw_tasks),
         "events": [{"kind": "write_plan_tasks", "tasks": len(tasks),
                     "raw_tasks": len(raw_tasks),
-                    "segments_available": len(known)}],
+                    "segments_available": len(known),
+                    "tool_reads": sum(len(r) for r in log)}],
     }
 
 

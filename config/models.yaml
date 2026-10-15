@@ -142,8 +142,11 @@ stages:
     stream: true
     reasoning_effort: high
     temperature: 0.0
-    max_output_tokens: 4096
-    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 8192 }
+    # ⚠️ 4096 → 8192（2026-10-15）。还没失败过，但 v5 实测 3,966 / v6 实测 3,386
+    # —— 分别是旧上限的 97% 和 83%，**已经贴在墙上**。探针要同时想
+    # 「搜什么 + 怎么框」，属于需要真思考的环节，先给它留够余量。
+    max_output_tokens: 8192
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 16384 }
 
   # 降级说明。只在探针判定稀薄时触发，写一句话，纯措辞工作。
   probe_degraded:
@@ -191,14 +194,20 @@ stages:
     guard: { max_reasoning_ratio: 0.5, retry_on_empty: 1, max_output_tokens: 8192 }
 
   # 缺口评估。决定还要不要继续搜、框架要不要改，驱动整个循环。
+  #
+  # ⚠️ 4096 → 8192（2026-10-15）。v5 实测最大输出 5,593 = 旧上限的 **137%**，
+  # 同样在靠翻倍硬撑；而 2026-10-15 那一轮它已经**真的空返回过一次**
+  # （同一天的全量跑日志：`[assess] 空返回 1 次`），只是没让整篇失败
+  # 所以没人注意。**和 write_plan 是同一个病。**
   assess:
     provider: xj189
     # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
     stream: true
     reasoning_effort: low
     temperature: 0.0
-    max_output_tokens: 4096
-    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 8192 }
+    max_output_tokens: 8192
+    # 兜底天花板，不是常规路径。
+    guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 16384 }
 
   # ⚠️ 这里原来还有一个 `assign`（证据分派：把断言映射到小节），
   # **2026-10-13 删掉**：它要映射的「断言」已经不存在了。
@@ -232,6 +241,22 @@ stages:
   # 档位只有两档，符合三档策略：主 agent high、子 agent low。
 
   # 主 agent 规划：产出写作规约 + 任务列表。看的是断言摘要不是全文。
+  #
+  # ⚠️ **max_output_tokens 从 4096 抬到 16384（2026-10-15 实测重定标）。**
+  # 起因：一轮全量跑里「任务分派」这步空返回，导致 tasks=0、整篇没正文。
+  # 复现实验（真实 82 段摘要 + 大纲，`tests/probe_plan_tasks_empty.py`）：
+  #   4,096  → 成功 1/14（~7%）
+  #   16,384 → 成功 2/3（~67%）
+  # v5 实测这个环节最大输出 7,654 token = 旧上限的 **187%** —— 说明它
+  # **一直在靠「空返回翻倍重试」活着**，而翻倍封顶 8192 也只是刚好够到
+  # 一次运气。翻倍应该是意外兜底，不是常态路径：次次都要触发，
+  # 那就该一开始设够。
+  #
+  # ⚠️ **别把这理解成「预算越大思考越多」。** 实测同一预算下思考量能差
+  # 4.9 倍（16,384 连打三次：8,593 / 11,401 / 41,771 字）——
+  # `max_tokens` 是**上限**，不是思考档位。真正管思考深度的是
+  # `reasoning_effort`（那是模型能感知的）。给够上限的作用是
+  # **让模型想完之后还有空间写正文**，不是让它多想。
   write_plan:
     # 流式：为绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测
     # 37.7s 擦线过，离 60 秒只差 22 秒；同参数流式跑过 245.5s）。**只为规避超时，不是为了提速**。
@@ -239,8 +264,9 @@ stages:
     provider: xj189
     reasoning_effort: high
     temperature: 0.0
-    max_output_tokens: 4096
-    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 8192 }
+    max_output_tokens: 16384
+    # 兜底天花板，不是常规路径。真撞上了才翻倍（8,192 → 32,768）。
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 32768 }
 
   # 独立审阅人：读全稿（12 节约 3 万字），判断是否返修、返修是否有效。
   #
@@ -264,6 +290,11 @@ stages:
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 16384 }
 
   # 子 agent 写一个任务。N 次调用，system prompt 与规约前缀固定以命中缓存。
+  #
+  # ⚠️ 4096 → 8192（2026-10-15）。v5 实测最大输出 5,035 = 旧上限的 **123%**。
+  # 它是调用最多的环节（一场 21–30 次），每次靠翻倍硬撑等于把
+  # 失败成本乘以一遍。**抬上限不花钱**（只按实际用量计费），
+  # 一次空返回浪费的是一整轮思考。
   write_section:
     provider: xj189
     # 流式：工具循环每轮带上一轮结果、输入更大，实测最长 48.9s
@@ -271,8 +302,8 @@ stages:
     stream: true
     reasoning_effort: low
     temperature: 0.2
-    max_output_tokens: 4096
-    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 8192 }
+    max_output_tokens: 8192
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 16384 }
 
   # 子 agent 定点返修。同角色，温度略低以免它把没问题的部分也重写。
   write_revise:
