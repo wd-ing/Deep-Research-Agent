@@ -64,6 +64,43 @@ providers:
     provider: opencode
     base_url: https://api.opencode.ai/v1
     api_key_env: OPENCODE_API_KEY
+  internai:
+    provider: internai
+    # 0731 而非 -vision：**所有预算/effort/思考字数数据都是在这个模型上测的**
+    # （write_plan 最大输出 7,654、思考 8,593~41,771 字等）。同一模型换平台，
+    # 才是「同实验换地点」，能直接对比；换变体等于拿旧配置开盲盒。
+    # 纯文本流水线用不到视觉能力。清单里三个 DeepSeek：0731 / -vision / pro-0813。
+    model: deepseek-v4-flash-0731
+    base_url: https://discovery-api.intern-ai.org.cn/v1
+    api_key_env: INTERN_AI_API_KEY
+    # ⚠️ **这个平台的 reasoning_effort 语义与 xj189 完全相反（2026-10-16 实测 n=3）**
+    #
+    #              xj189            internai
+    #   省略        关思考            **开思考**
+    #   none        开思考            **关思考**
+    #
+    #   省略  思考 70 字 [59~71]  tokens 44
+    #   none  思考  0 字 [0~0]    tokens 0   ← 组内方差为零，rc 字段都不返回
+    #
+    # 所以**要关思考必须显式写 `reasoning_effort: none`，省略反而会打开**。
+    # 7 个靠「省略 = 关思考」的环节已全部显式补上 none（见 stages）。
+    #
+    # ⚠️ **low/medium/high 之间在这道题上分不出差别**（中位 58~70 字，
+    # 组内范围完全交叠）。**但这不能推出「effort 无效」** —— 这题是
+    # 「找 7 的倍数」，思考只用 60 字，天花板效应。xj189 当初也是在这类
+    # 简单题上得出「旋钮疑似无效」的，那个结论同样不成立。
+    # 档位到底有没有用，**要在 write_plan 那种真需要规划的活上实测**。
+    # 现阶段保持原来的档位分配不动（那份分配本身就是按调用量推的、
+    # config 里已注明「质量全部未验证」）。
+    #
+    # usage 形状与 xj189 不同（2026-10-16 实测）：
+    #   · 缓存在 `prompt_tokens_details.cached_tokens`（xj189 是**顶层** cached_tokens）
+    #   · `completion_tokens_details.reasoning_tokens` **有真数字**（xj189 是 `{}`）
+    #   · **返回 `reasoning_content`**（xj189 不返回）→ 防线二在这里第一次能真正工作，
+    #     上一轮为它写的「按思考正文估算」兜底路径在这边不会被触发
+    timeout_s: 300
+    max_output_tokens: 8192
+
   xj189:
     provider: xj189
     model: deepseek-v4-flash-0731
@@ -129,7 +166,10 @@ defaults:
 stages:
   # ---- 探针 ----
   probe_light:
-    provider: xj189
+    provider: internai
+    # 显式关思考：internai 上**省略 effort = 开思考**（与 xj189 相反）。
+    # 这个环节是纯机械任务，开思考只会白吃预算。
+    reasoning_effort: none
     temperature: 0.0
     max_output_tokens: 4096
     guard: { max_reasoning_ratio: 0.6, retry_on_empty: 2, max_output_tokens: 8192 }
@@ -137,7 +177,7 @@ stages:
   # 读 2-3 篇正文归纳领域轮廓。整场研究的地基——大纲的 grounded_in
   # 全部指回这里，所以给最高档。
   probe_outline:
-    provider: xj189
+    provider: internai
     # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
     stream: true
     reasoning_effort: high
@@ -150,7 +190,10 @@ stages:
 
   # 降级说明。只在探针判定稀薄时触发，写一句话，纯措辞工作。
   probe_degraded:
-    provider: xj189
+    provider: internai
+    # 显式关思考：internai 上**省略 effort = 开思考**（与 xj189 相反）。
+    # 这个环节是纯机械任务，开思考只会白吃预算。
+    reasoning_effort: none
     # 输出极轻（relevance 实测均 36 token），8192 是浪费；
     # 而且 guard 上限也是 8192 会让「空返回翻倍」无处可翻。
     # 4096 留出翻倍空间，且这两档都是**关思考**的，不碰窄窗口。
@@ -163,7 +206,7 @@ stages:
   # 研究框架生成。原先挂在 write 上，用了 0.3 的散文温度，
   # 但框架是结构规划任务，输出是 JSON 而不是文章。
   outline:
-    provider: xj189
+    provider: internai
     # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
     stream: true
     reasoning_effort: high
@@ -176,7 +219,10 @@ stages:
   # 批量抽取断言 + 判来源性质。报告的每一句事实都来自这里，
   # 量大所以用 T1 而不是 T2：抽取本质是仔细读，不是综合。
   extract:
-    provider: xj189
+    provider: internai
+    # 显式关思考：internai 上**省略 effort = 开思考**（与 xj189 相反）。
+    # 这个环节是纯机械任务，开思考只会白吃预算。
+    reasoning_effort: none
     temperature: 0.0
     max_output_tokens: 4096
     guard: { max_reasoning_ratio: 0.6, retry_on_empty: 2, max_output_tokens: 8192 }
@@ -185,7 +231,10 @@ stages:
   # 上一轮实测挂在 assess 上时触发过「reasoning 102/131 超阈值 60%」的告警，
   # 那个信号就是混用的证据。
   relevance:
-    provider: xj189
+    provider: internai
+    # 显式关思考：internai 上**省略 effort = 开思考**（与 xj189 相反）。
+    # 这个环节是纯机械任务，开思考只会白吃预算。
+    reasoning_effort: none
     # 输出极轻（relevance 实测均 36 token），8192 是浪费；
     # 而且 guard 上限也是 8192 会让「空返回翻倍」无处可翻。
     # 4096 留出翻倍空间，且这两档都是**关思考**的，不碰窄窗口。
@@ -200,7 +249,7 @@ stages:
   # （同一天的全量跑日志：`[assess] 空返回 1 次`），只是没让整篇失败
   # 所以没人注意。**和 write_plan 是同一个病。**
   assess:
-    provider: xj189
+    provider: internai
     # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
     stream: true
     reasoning_effort: low
@@ -217,7 +266,10 @@ stages:
 
   # 段落概括。批量 12 段，每段一句话，机械生成。
   summarize:
-    provider: xj189
+    provider: internai
+    # 显式关思考：internai 上**省略 effort = 开思考**（与 xj189 相反）。
+    # 这个环节是纯机械任务，开思考只会白吃预算。
+    reasoning_effort: none
     temperature: 0.0
     batch_size: 12
     max_output_tokens: 4096
@@ -227,7 +279,10 @@ stages:
   # 去重：合并内容相同或高度重复的断言。当前抽取阶段没有去重，
   # 同一事实可能由多个来源重复进入报告。后期补齐。
   dedupe:
-    provider: xj189
+    provider: internai
+    # 显式关思考：internai 上**省略 effort = 开思考**（与 xj189 相反）。
+    # 这个环节是纯机械任务，开思考只会白吃预算。
+    reasoning_effort: none
     # 输出极轻（relevance 实测均 36 token），8192 是浪费；
     # 而且 guard 上限也是 8192 会让「空返回翻倍」无处可翻。
     # 4096 留出翻倍空间，且这两档都是**关思考**的，不碰窄窗口。
@@ -261,7 +316,7 @@ stages:
     # 流式：为绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测
     # 37.7s 擦线过，离 60 秒只差 22 秒；同参数流式跑过 245.5s）。**只为规避超时，不是为了提速**。
     stream: true
-    provider: xj189
+    provider: internai
     reasoning_effort: high
     temperature: 0.0
     max_output_tokens: 16384
@@ -283,7 +338,7 @@ stages:
     # 流式：为绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测
     # 已连撞三次 504、环节判定不可用；同参数流式跑过 245.5s）。**只为规避超时，不是为了提速**。
     stream: true
-    provider: xj189
+    provider: internai
     reasoning_effort: high
     temperature: 0.0
     max_output_tokens: 8192
@@ -296,7 +351,7 @@ stages:
   # 失败成本乘以一遍。**抬上限不花钱**（只按实际用量计费），
   # 一次空返回浪费的是一整轮思考。
   write_section:
-    provider: xj189
+    provider: internai
     # 流式：工具循环每轮带上一轮结果、输入更大，实测最长 48.9s
     # 已贴 60 秒墙（工具那一轮直接 504 且**静默降级**，不报错）
     stream: true
@@ -307,7 +362,7 @@ stages:
 
   # 子 agent 定点返修。同角色，温度略低以免它把没问题的部分也重写。
   write_revise:
-    provider: xj189
+    provider: internai
     # 流式：工具循环每轮带上一轮结果、输入更大，实测最长 48.9s
     # 已贴 60 秒墙（工具那一轮直接 504 且**静默降级**，不报错）
     stream: true
@@ -330,10 +385,14 @@ stages:
   # 一是 guard 的 `max_output_tokens` 是「空返回时翻倍的**目标**」，
   # 给小了无处可翻；二是与其它关思考的轻量档（relevance / summarize）保持一致。
   session_summary:
-    provider: xj189
+    provider: internai
+    # 显式关思考：internai 上**省略 effort = 开思考**（与 xj189 相反）。
+    # 这个环节是纯机械任务，开思考只会白吃预算。
+    reasoning_effort: none
     temperature: 0.0
     max_output_tokens: 4096
     guard: { max_reasoning_ratio: 0.5, retry_on_empty: 1, max_output_tokens: 8192 }
+
 
 # 候选池与历史结论
 alternatives:

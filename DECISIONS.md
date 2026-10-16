@@ -4127,3 +4127,129 @@ v6 里 write_plan 空返回 → `tasks=0` → 5 个小节全空。
 每格记成功率**和**思考字数分布 —— 上一轮的教训是失败形态双峰
 （思考 2,871–3,176 字就停 / 思考 22,000–41,771 字烧光预算），
 只看成功率会把两个完全不同的病因混成一个。
+
+---
+
+## 2026-10-16 换平台：xj189 → 中国信通院 discovery-api
+
+**起因**：xj189 从 2026-10-15 深夜维护到 10-16 深夜，连续四次复查
+（09:28 / 11:31 / 14:33 / 19:34）**形态一字不差**：真实 IP 未变、
+TLS 握手一直超时、对照站点一直正常。故障约 19 小时且无恢复迹象，
+用户决定换第二套方案。
+
+**新平台**：OpenAI 协议 `https://discovery-api.intern-ai.org.cn/v1`，
+DeepSeek 系（清单里三个：`flash-0731` / `flash-vision` / `pro-0813`）。
+密钥入 `.env` 的 `INTERN_AI_API_KEY`（已 gitignore，全程不回显）。
+
+### 模型选 `0731` 而不是 `-vision`（用户拍板）
+
+用户最初给的是 `-vision`，但 **`0731` 正是 xj189 提供的那个**，
+而我们**所有**预算 / effort / 思考字数数据都是在它上面测的
+（write_plan 最大输出 7,654、思考 8,593~41,771 字等）。
+
+同一个模型换平台 = 「同实验换地点」，结论能直接接上；
+换变体 = 拿旧配置开盲盒，第一次全量跑什么都证明不了。
+纯文本流水线用不到视觉能力，所以 `-vision` 没有任何好处。
+
+⚠️ 但**这个"同模型"只是同一个模型 id**，不代表行为相同 ——
+下面这条就是反例。
+
+### ⚠️ 坑 A：`reasoning_effort` 的语义在两个平台上**完全相反**
+
+| | xj189 | internai（n=3 实测） |
+|---|---|---|
+| 省略该字段 | **关**思考 | **开**思考 |
+| `none` | **开**思考 | **关**思考 |
+| `low` / `medium` / `high` | 长度几乎不变 | **本轮分不出差别**（见下） |
+
+internai 的 n=3 原始数据（`tests/probe_intern_ai_effort.py`）：
+
+```
+档位        思考字数中位(组内范围)   reasoning tokens   耗时中位
+省略        70 [59~71]               44                4.9s
+none         0 [0~0]                  0                2.1s   ← 方差为零
+low         64 [55~72]               41                2.3s
+medium      65 [54~66]               44                4.7s
+high        58 [53~78]               38                2.2s
+```
+
+**后果**：当前 14 个环节里有 **7 个故意省略** `reasoning_effort`
+（probe_light / probe_degraded / extract / relevance / summarize /
+dedupe / session_summary），靠的就是「省略 = 关思考」。
+直接换平台会把**这 7 个全部反向打开** —— 而它们正是调用量最大、
+输出最短的一档（relevance 197 次均 74 token）。已全部显式补 `none`。
+
+**`none` 是不是可靠的"关"**：`n=3` 思考字数与 reasoning tokens
+**全为 0、组内方差为零**、`reasoning_content` 字段干脆不返回。
+这是干净的开关。
+
+⚠️ **但"分不出档位差别"不等于"effort 无效"。**
+测试题是「找出 1 到 30 里 7 的倍数」—— 思考只用 60 字，**天花板效应**。
+xj189 当初也是在这类简单题上得出「旋钮疑似无效」的，
+那个结论同样不成立。**档位到底有没有用，要在 write_plan 那种
+真需要规划的活上实测**（这一条本轮仍未测，见待办）。
+
+### ⚠️ 坑 B：预检验过了，生产照样可能挂（第二次形态）
+
+预检 9 项全过，其中「工具调用」两项都拿到了 `tool_call`。
+但走生产 `complete_with_tools` 的第一次冒烟，**拿到 0 个 tool_use**。
+
+`to_openai_tools` 的 docstring 里已经记过一次同款坑：
+「预检里我是**手搓标准格式**去测的，测通了就写『工具调用 ✓』——
+**测的不是项目真正会发的那种**」。这次不一样（我确实复用了
+`to_openai_tools` 的输出），但结论一样：**预检不算数，
+只有走 `LLMClient` 的真实结果算数。**
+
+于是做了**逐变量隔离**（`tests/probe_intern_ai_toolcall_diff.py`），
+从预检形态逐个加上生产才有的东西：
+
+```
+A 基线（= 预检形态）      tool_use 1 个
+B +temperature=0.2        tool_use 1 个
+C +reasoning_effort=low   tool_use 1 个
+D +stream                 tool_use 1 个
+E +system 消息            tool_use 1 个
+F 生产全量                tool_use 1 个   ← 六个变量全加上，照样正常
+```
+
+六个变量逐个加、逐个单独测，再全上 —— **payload 本身没问题**。
+再测生产路径的真实调用率（`tests/probe_intern_ai_toolloop_rate.py`）：
+
+```
+明确要求调工具    5/5
+真实写作场景      5/5        → 合计 10/10
+```
+
+⚠️ **那一次的 0 个 tool_use，成因不明。**
+payload 一致、变量全隔离、后续 10 次全部正常 —— 排除掉配置与接线，
+只能归为模型当次的选择差异（`complete_with_tools` **故意不加**
+`tool_choice`，它要的就是「模型自己决定要不要读原文」，
+所以「没调工具」在这条路径上**可能是合法结果**）。
+**但我没有证据断定它合法**，如实记为未解释。
+
+### 附带的两个好消息
+
+1. **`completion_tokens_details.reasoning_tokens` 有真数字**
+   （xj189 是 `{}`）。防线二在这个平台上**第一次能真正工作** ——
+   上一轮为它写的「按思考正文估算」兜底路径在这边不会被触发。
+2. **返回 `reasoning_content`**（xj189 不返回），前端「展示思考」有数据源。
+
+缓存字段位置又不一样（`prompt_tokens_details.cached_tokens`，
+xj189 是顶层），但 `provider.py` 的 `_cached_tokens()` 早就同时兼容两条路径，
+**代码一行没改**。
+
+### 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `.env` | 加 `INTERN_AI_API_KEY`（gitignore，不回显） |
+| `config/models.yaml` | 加 `internai` 档案；14 个环节换 provider；7 个补 `reasoning_effort: none` |
+| `research_agent/llm/provider.py` | `OPENAI_COMPAT` 加 `"internai"`（一个词） |
+| `tests/preflight_intern_ai.py` | 新增，接入预检 9 项 |
+| `tests/probe_intern_ai_effort.py` | 新增，effort 语义 n≥3 |
+| `tests/probe_intern_ai_toolcall_diff.py` | 新增，逐变量隔离 |
+| `tests/probe_intern_ai_toolloop_rate.py` | 新增，生产路径调用率 |
+| `tests/smoke_intern_ai.py` | 新增，走 `LLMClient` 的四种调用形态 |
+
+**换平台本身零代码改动** —— 档案式的 `providers:` 设计接住了，
+只有 `OPENAI_COMPAT` 那个枚举加了一个词。

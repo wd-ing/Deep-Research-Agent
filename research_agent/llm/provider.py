@@ -77,7 +77,7 @@ THINKING_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 # 全部从 `config/models.yaml` 读。换平台只改配置，不动这里。
 #   · opencode —— 已有，接过 write 板块
 #   · xj189    —— 2026-10-09 加，DeepSeek 系（deepseek-v4-flash-0731）
-OPENAI_COMPAT = {"opencode", "xj189"}
+OPENAI_COMPAT = {"opencode", "xj189", "internai"}
 
 
 # ---------- 当前会话 ----------
