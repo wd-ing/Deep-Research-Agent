@@ -103,6 +103,16 @@ class Fake:
     def complete_with_tools(self, stage: str, system, messages, tools):
         """模拟子 agent：第一轮要 2 段全文，第二轮直接给正文。"""
         self.calls.append((stage + ":tools", len(messages)))
+        # ⚠️ `write_plan` 走的是**分派**那一步，2026-10-15 起它也走工具循环
+        # （`node_plan_tasks` 加回了 `run_tool_loop`，见 write.py:124）。
+        # 桩以前只在 `complete_json` 里认这个 stage，于是分派拿到的是子 agent 的
+        # 正文垃圾 → `write_plan_error` → `by_task` 为空 → `targets` 为空 →
+        # `need_rework` 恒 False → **场景 2 的返修路径整条测不到**。
+        # 而且症状极隐蔽：场景 1（不返修）照样过，只有场景 2 才炸。
+        if stage == "write_plan":
+            return {"blocks": [{"type": "text",
+                                "text": json.dumps(self.plan, ensure_ascii=False)}],
+                    "usage": {}}
         n = len([m for m in messages if m.get("role") == "user"])
         if n == 1:
             return {"blocks": [
@@ -594,6 +604,33 @@ RN.update({"stripped": 0, "leads": 0})
 W._renumber_headings("### 一、甲\n正文。", 1)
 assert RN["stripped"] == 1, f"剥掉几个编号应该上报，实际 {RN['stripped']}"
 print(f"  ✓ 剥编号的数量进统计：{RN['stripped']}")
+
+# ---------- 2026-10-17：一节多个任务时，编号必须跨任务连续 ----------
+#
+# 症状（internai 全量跑的产物）：sec1 由 t1/t2 两块拼成，结果是
+#     ### 1.1 … ### 1.8   然后又是   ### 1.1 … ### 1.5
+# sec2 同理：`2.1…2.10` 之后又是 `2.1…2.6`。**号重复了。**
+#
+# ⚠️ 事件里 `headings_renumbered: 37` 显示重排确实跑过，
+# 所以从事件计数上看不出问题 —— 只有看产物才看得见。
+RN.update({"stripped": 0, "leads": 0})
+shared = [1]
+b1 = W._renumber_headings("### 甲\n#### 甲一\n正文。", 1, shared)
+b2 = W._renumber_headings("### 乙\n#### 乙一\n正文。", 1, shared)   # 同一节的第二块
+b3 = W._renumber_headings("### 丙\n正文。", 2, shared)             # 换节
+nums = [h.split(" ", 1)[1].split(" ", 1)[0] for h in
+        (re.search(r"^###+ .*$", x, re.M).group(0)
+         for x in (b1 + "\n" + b2).splitlines() if re.match(r"^###+ ", x))]
+want = ["1.1", "1.1.1", "1.2", "1.2.1"]
+assert nums == want, f"同一节内编号应跨任务连续：期望 {want}，实际 {nums}"
+print(f"  ✓ 同一节跨任务连续编号：{nums}")
+assert "### 2.1 丙" in b3, f"换节要从 2.1 重新数，实际 {b3!r}"
+print("  ✓ 换节重新从 1 开始")
+
+# 不传共享计数器时保持原行为（老调用点不能被这次改动打断）
+solo = W._renumber_headings("### 甲\n### 乙", 3)
+assert solo == "### 3.1 甲\n### 3.2 乙", solo
+print("  ✓ 不传计数器时行为不变")
 
 for name, src in [("独占一行", "<!-- lead -->\n### 甲\n正文。"),
                   ("标记+文本", "<!-- lead --> 甲\n正文。"),

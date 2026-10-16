@@ -561,8 +561,11 @@ def node_assemble(state: WriteState) -> dict:
     for sec_no, sec in enumerate(state.get("outline") or [], 1):
         sid = sec.get("id")
         chunks = []
+        # 一节可能由**多个任务**拼成，标题编号必须跨任务连续，
+        # 所以计数器由本节持有、逐任务传进去（换节换新 list，见 `_renumber_headings`）
+        sec_counters = [sec_no]
         for tid in task_of_section.get(sid, []):
-            body = _section_body(drafts.get(tid), sid, sec_no)
+            body = _section_body(drafts.get(tid), sid, sec_no, sec_counters)
             if body:
                 demoted += _count_demoted(_raw_body(drafts.get(tid), sid))
                 mark = f"<!-- task:{tid} section:{sid} -->"
@@ -625,13 +628,18 @@ def _raw_body(draft: Any, sid: str) -> str:
     return (draft or "").strip()
 
 
-def _section_body(draft: Any, sid: str, sec_no: int = 1) -> str:
+def _section_body(draft: Any, sid: str, sec_no: int = 1,
+                  counters: list[int] | None = None) -> str:
     """取某个任务在某一节的正文（标题已降级并重编号）。旧格式（裸字符串）兜底兼容。
 
     `sec_no` 是本节在大纲里的序号，从 1 起。`node_assemble` 按大纲顺序遍历，
     序号现成；给不出它就没法编「节.节内」这种号，只能退回 1。
+
+    `counters` 由调用方持有并在**同一节的任务之间复用** ——
+    一节可能由多个任务拼成，编号要跨任务连续（见 `_renumber_headings`）。
     """
-    return _renumber_headings(_demote_headings(_raw_body(draft, sid)), sec_no)
+    return _renumber_headings(_demote_headings(_raw_body(draft, sid)),
+                              sec_no, counters)
 
 
 def _demote_headings(body: str) -> str:
@@ -658,7 +666,8 @@ def _demote_headings(body: str) -> str:
     return "\n".join(out)
 
 
-def _renumber_headings(body: str, sec_no: int) -> str:
+def _renumber_headings(body: str, sec_no: int,
+                       counters: list[int] | None = None) -> str:
     """剥掉子 agent 自造的编号，按「节.节内」重编；带 `lead` 标记的降成正文段落。
 
     **为什么用程序而不是提示词。** 两重原因，第二重是决定性的：
@@ -670,6 +679,16 @@ def _renumber_headings(body: str, sec_no: int) -> str:
     v5 实测的四种自造编号全被剥掉：`一、` / `4.` / `1.1` / `sec3`。
     剥完再重编，所以模型不写、写成什么样都不影响最终编号。
 
+    **`counters` 是跨任务共享的计数器（2026-10-17 补）**：
+    一节可以有**多个任务**（实测 sec1 来了 t1/t2 两块）。调用方必须把同一个
+    list 传进来，编号才会**跨任务连续**。
+    以前每个任务各拿一个新计数器，于是每个任务都从 `节.1` 重新数 ——
+    实测产物：sec1 先出 `1.1…1.8`，紧接着又是 `1.1…1.5`，**号重复了**；
+    sec2 同样是 `2.1…2.10` 然后 `2.1…2.6`。
+    ⚠️ 事件里 `headings_renumbered: 37` 显示重排确实跑了，
+    所以从事件计数上看不出这个问题——**得看产物**。
+    换节时调用方要自己换一个新 list（节序号在第 0 位）。
+
     **`lead` 标记**：引言标题和节标题讲同一件事，编了号会在目录里留下两条
     近似条目。判据只用标记、不碰语义——v5 试过相似度启发式，7 个里只删对 3 个，
     而「界面问题的物理本质」这类真子标题会被误删（它和节标题共享关键词）。
@@ -677,7 +696,14 @@ def _renumber_headings(body: str, sec_no: int) -> str:
     """
     if not body:
         return body
-    counters: list[int] = [sec_no]   # 第 0 位就是节序号
+    if counters is None:
+        counters = [sec_no]   # 第 0 位就是节序号
+    elif counters[0] != sec_no:
+        # 换节：**整份重置**。只把第 0 位换成新节序号的话，上一节的层级计数
+        # 会被带过来（[1,2,1] 换到第 2 节就变成 [2,2,1]，编出 `2.3`）。
+        counters[:] = [sec_no]
+    else:
+        counters[0] = sec_no   # 调用方复用同一个 list，节序号对齐
     in_fence = False
     out: list[str] = []
     stripped = 0
