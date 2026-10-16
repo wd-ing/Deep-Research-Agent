@@ -73,6 +73,10 @@ providers:
     model: deepseek-v4-flash-0731
     base_url: https://discovery-api.intern-ai.org.cn/v1
     api_key_env: INTERN_AI_API_KEY
+    # `reasoning_effort: disabled` 在**这个**平台上翻译成什么（2026-10-17 加）。
+    # 环节只写平台中性的 `off`，具体怎么关由档案决定 ——
+    # 两个平台的语义是反的，写死字面量的话切平台会静默改变含义。
+    effort_off: none
     # ⚠️ **这个平台的 reasoning_effort 语义与 xj189 完全相反（2026-10-16 实测 n=3）**
     #
     #              xj189            internai
@@ -106,6 +110,21 @@ providers:
     model: deepseek-v4-flash-0731
     base_url: https://ai.xj.189.cn/api/v1
     api_key_env: XJ189_API_KEY
+    # ⚠️ **这里故意不写 `effort_off`。**（2026-10-17）
+    #
+    # 环节写 `reasoning_effort: disabled` 时，档案没声明 `effort_off` 就翻译成
+    # 「**不发这个字段**」—— 因为 xj189 上省略 = 关思考。
+    #
+    # ⚠️ 这和 internai **正好相反**（那边省略 = 开思考，得显式发 none）。
+    # 写死 `none` 字面量的话，切回这个平台会让 7 个本该关思考的环节
+    # （relevance / summarize / extract …，占全部调用的 68%）**反向打开思考**，
+    # 而且不报错 —— 正是「换个平台静默多烧 token」这类坑。
+    #
+    # 原实测（2026-10-09，3/3 复验）：
+    #   不传        reasoning_content = [0, 0, 0]     1.5~3.0s
+    #   none        [140, 121, 399]                   2.3~3.6s
+    #   low         [432, 213, 374]                   2.6~7.1s
+    #   high        [485, 456, 382]                   3.8~10.5s
     # ⚠️ **这里不要写 reasoning_effort。**（2026-10-09 实测，3/3 复验）
     #
     # 该平台**省略该字段 = 关思考**，传**任何**值（含 none）= 开思考——
@@ -129,6 +148,13 @@ providers:
     timeout_s: 300
 
 defaults:
+  # ⚠️ **换平台只改这一行。**（2026-10-17）
+  #
+  # 以前 14 个环节各自硬写 `provider: internai`，切换要改 14 行；
+  # 而 `ModelRegistry.stage()` 本来就是 `s.get("provider") or d.get("provider")`
+  # —— **单点机制一直都在，只是被硬写绕过了**。现在环节一律不写 provider，
+  # 由这里统一决定，档案（模型名 / 地址 / 密钥 / 关思考怎么表达）随之继承。
+  provider: internai
   temperature: 0.0
   # 180 秒不够。实测（2026-10-05，R6 三轮真实数据）：
   #   write_audit 平均 132 秒、最长 170 秒 —— 已经贴着天花板
@@ -166,10 +192,15 @@ defaults:
 stages:
   # ---- 探针 ----
   probe_light:
-    provider: internai
-    # 显式关思考：internai 上**省略 effort = 开思考**（与 xj189 相反）。
+    # `disabled` 是**平台中性的语义值**，不是字面量：这个环节要「关思考」，
+    # 至于怎么关由平台档案声明（internai 发 none、xj189 干脆不发该字段）。
+    # 写死 none 的话，切到 xj189 会**反向打开思考** —— 那是个静默多烧 token 的陷阱。
+    #
+    # ⚠️ **刻意不用 `off` 当这个值**：YAML 1.1 把裸 `off` 解析成布尔 false，
+    # 于是 `== "off"` 判不成立、翻译不发生、字段不发 ⇒ 思考反而默认打开。
+    # 那个坑真踩过一次（tests/test_platform_switch.py 抓出来的）。
     # 这个环节是纯机械任务，开思考只会白吃预算。
-    reasoning_effort: none
+    reasoning_effort: disabled
     temperature: 0.0
     max_output_tokens: 4096
     guard: { max_reasoning_ratio: 0.6, retry_on_empty: 2, max_output_tokens: 8192 }
@@ -177,23 +208,34 @@ stages:
   # 读 2-3 篇正文归纳领域轮廓。整场研究的地基——大纲的 grounded_in
   # 全部指回这里，所以给最高档。
   probe_outline:
-    provider: internai
     # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
     stream: true
     reasoning_effort: high
     temperature: 0.0
-    # ⚠️ 4096 → 8192（2026-10-15）。还没失败过，但 v5 实测 3,966 / v6 实测 3,386
-    # —— 分别是旧上限的 97% 和 83%，**已经贴在墙上**。探针要同时想
-    # 「搜什么 + 怎么框」，属于需要真思考的环节，先给它留够余量。
-    max_output_tokens: 8192
+    # ⚠️ 4096 → 8192 → **16384（2026-10-17）**。两次都是被实测逼的：
+    #   · 2026-10-15：v5 实测 3,966 = 旧上限 4,096 的 97%，贴墙
+    #   · 2026-10-17：换到信通院后输出 **8,192 = 上限 8,192（100%）**，
+    #     而提示词要的四组信号只交了三组 —— `subtopics` 5 条正常，
+    #     `entities` / `jargon` / `controversies` **全是 0**，
+    #     `degraded: false`、`quality: substantive`，**没有任何降级标记**。
+    #     根因：guard 只判 `if not txt`（空），而 `_parse_json` 会把
+    #     写了一半的 JSON 抢救回来 ⇒ **截断被当成成功**。
+    #     同一轮已给 guard 补上截断检测（`_is_truncated`），
+    #     但基础预算该给够还是得给够 —— 靠翻倍重试是兜底，不是常态路径。
+    max_output_tokens: 16384
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 16384 }
 
   # 降级说明。只在探针判定稀薄时触发，写一句话，纯措辞工作。
   probe_degraded:
-    provider: internai
-    # 显式关思考：internai 上**省略 effort = 开思考**（与 xj189 相反）。
+    # `disabled` 是**平台中性的语义值**，不是字面量：这个环节要「关思考」，
+    # 至于怎么关由平台档案声明（internai 发 none、xj189 干脆不发该字段）。
+    # 写死 none 的话，切到 xj189 会**反向打开思考** —— 那是个静默多烧 token 的陷阱。
+    #
+    # ⚠️ **刻意不用 `off` 当这个值**：YAML 1.1 把裸 `off` 解析成布尔 false，
+    # 于是 `== "off"` 判不成立、翻译不发生、字段不发 ⇒ 思考反而默认打开。
+    # 那个坑真踩过一次（tests/test_platform_switch.py 抓出来的）。
     # 这个环节是纯机械任务，开思考只会白吃预算。
-    reasoning_effort: none
+    reasoning_effort: disabled
     # 输出极轻（relevance 实测均 36 token），8192 是浪费；
     # 而且 guard 上限也是 8192 会让「空返回翻倍」无处可翻。
     # 4096 留出翻倍空间，且这两档都是**关思考**的，不碰窄窗口。
@@ -206,7 +248,6 @@ stages:
   # 研究框架生成。原先挂在 write 上，用了 0.3 的散文温度，
   # 但框架是结构规划任务，输出是 JSON 而不是文章。
   outline:
-    provider: internai
     # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
     stream: true
     reasoning_effort: high
@@ -219,10 +260,15 @@ stages:
   # 批量抽取断言 + 判来源性质。报告的每一句事实都来自这里，
   # 量大所以用 T1 而不是 T2：抽取本质是仔细读，不是综合。
   extract:
-    provider: internai
-    # 显式关思考：internai 上**省略 effort = 开思考**（与 xj189 相反）。
+    # `disabled` 是**平台中性的语义值**，不是字面量：这个环节要「关思考」，
+    # 至于怎么关由平台档案声明（internai 发 none、xj189 干脆不发该字段）。
+    # 写死 none 的话，切到 xj189 会**反向打开思考** —— 那是个静默多烧 token 的陷阱。
+    #
+    # ⚠️ **刻意不用 `off` 当这个值**：YAML 1.1 把裸 `off` 解析成布尔 false，
+    # 于是 `== "off"` 判不成立、翻译不发生、字段不发 ⇒ 思考反而默认打开。
+    # 那个坑真踩过一次（tests/test_platform_switch.py 抓出来的）。
     # 这个环节是纯机械任务，开思考只会白吃预算。
-    reasoning_effort: none
+    reasoning_effort: disabled
     temperature: 0.0
     max_output_tokens: 4096
     guard: { max_reasoning_ratio: 0.6, retry_on_empty: 2, max_output_tokens: 8192 }
@@ -231,10 +277,15 @@ stages:
   # 上一轮实测挂在 assess 上时触发过「reasoning 102/131 超阈值 60%」的告警，
   # 那个信号就是混用的证据。
   relevance:
-    provider: internai
-    # 显式关思考：internai 上**省略 effort = 开思考**（与 xj189 相反）。
+    # `disabled` 是**平台中性的语义值**，不是字面量：这个环节要「关思考」，
+    # 至于怎么关由平台档案声明（internai 发 none、xj189 干脆不发该字段）。
+    # 写死 none 的话，切到 xj189 会**反向打开思考** —— 那是个静默多烧 token 的陷阱。
+    #
+    # ⚠️ **刻意不用 `off` 当这个值**：YAML 1.1 把裸 `off` 解析成布尔 false，
+    # 于是 `== "off"` 判不成立、翻译不发生、字段不发 ⇒ 思考反而默认打开。
+    # 那个坑真踩过一次（tests/test_platform_switch.py 抓出来的）。
     # 这个环节是纯机械任务，开思考只会白吃预算。
-    reasoning_effort: none
+    reasoning_effort: disabled
     # 输出极轻（relevance 实测均 36 token），8192 是浪费；
     # 而且 guard 上限也是 8192 会让「空返回翻倍」无处可翻。
     # 4096 留出翻倍空间，且这两档都是**关思考**的，不碰窄窗口。
@@ -249,7 +300,6 @@ stages:
   # （同一天的全量跑日志：`[assess] 空返回 1 次`），只是没让整篇失败
   # 所以没人注意。**和 write_plan 是同一个病。**
   assess:
-    provider: internai
     # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
     stream: true
     reasoning_effort: low
@@ -266,10 +316,15 @@ stages:
 
   # 段落概括。批量 12 段，每段一句话，机械生成。
   summarize:
-    provider: internai
-    # 显式关思考：internai 上**省略 effort = 开思考**（与 xj189 相反）。
+    # `disabled` 是**平台中性的语义值**，不是字面量：这个环节要「关思考」，
+    # 至于怎么关由平台档案声明（internai 发 none、xj189 干脆不发该字段）。
+    # 写死 none 的话，切到 xj189 会**反向打开思考** —— 那是个静默多烧 token 的陷阱。
+    #
+    # ⚠️ **刻意不用 `off` 当这个值**：YAML 1.1 把裸 `off` 解析成布尔 false，
+    # 于是 `== "off"` 判不成立、翻译不发生、字段不发 ⇒ 思考反而默认打开。
+    # 那个坑真踩过一次（tests/test_platform_switch.py 抓出来的）。
     # 这个环节是纯机械任务，开思考只会白吃预算。
-    reasoning_effort: none
+    reasoning_effort: disabled
     temperature: 0.0
     batch_size: 12
     max_output_tokens: 4096
@@ -279,10 +334,15 @@ stages:
   # 去重：合并内容相同或高度重复的断言。当前抽取阶段没有去重，
   # 同一事实可能由多个来源重复进入报告。后期补齐。
   dedupe:
-    provider: internai
-    # 显式关思考：internai 上**省略 effort = 开思考**（与 xj189 相反）。
+    # `disabled` 是**平台中性的语义值**，不是字面量：这个环节要「关思考」，
+    # 至于怎么关由平台档案声明（internai 发 none、xj189 干脆不发该字段）。
+    # 写死 none 的话，切到 xj189 会**反向打开思考** —— 那是个静默多烧 token 的陷阱。
+    #
+    # ⚠️ **刻意不用 `off` 当这个值**：YAML 1.1 把裸 `off` 解析成布尔 false，
+    # 于是 `== "off"` 判不成立、翻译不发生、字段不发 ⇒ 思考反而默认打开。
+    # 那个坑真踩过一次（tests/test_platform_switch.py 抓出来的）。
     # 这个环节是纯机械任务，开思考只会白吃预算。
-    reasoning_effort: none
+    reasoning_effort: disabled
     # 输出极轻（relevance 实测均 36 token），8192 是浪费；
     # 而且 guard 上限也是 8192 会让「空返回翻倍」无处可翻。
     # 4096 留出翻倍空间，且这两档都是**关思考**的，不碰窄窗口。
@@ -316,7 +376,6 @@ stages:
     # 流式：为绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测
     # 37.7s 擦线过，离 60 秒只差 22 秒；同参数流式跑过 245.5s）。**只为规避超时，不是为了提速**。
     stream: true
-    provider: internai
     reasoning_effort: high
     temperature: 0.0
     max_output_tokens: 16384
@@ -338,7 +397,6 @@ stages:
     # 流式：为绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测
     # 已连撞三次 504、环节判定不可用；同参数流式跑过 245.5s）。**只为规避超时，不是为了提速**。
     stream: true
-    provider: internai
     reasoning_effort: high
     temperature: 0.0
     max_output_tokens: 8192
@@ -351,7 +409,6 @@ stages:
   # 失败成本乘以一遍。**抬上限不花钱**（只按实际用量计费），
   # 一次空返回浪费的是一整轮思考。
   write_section:
-    provider: internai
     # 流式：工具循环每轮带上一轮结果、输入更大，实测最长 48.9s
     # 已贴 60 秒墙（工具那一轮直接 504 且**静默降级**，不报错）
     stream: true
@@ -362,7 +419,6 @@ stages:
 
   # 子 agent 定点返修。同角色，温度略低以免它把没问题的部分也重写。
   write_revise:
-    provider: internai
     # 流式：工具循环每轮带上一轮结果、输入更大，实测最长 48.9s
     # 已贴 60 秒墙（工具那一轮直接 504 且**静默降级**，不报错）
     stream: true
@@ -385,10 +441,15 @@ stages:
   # 一是 guard 的 `max_output_tokens` 是「空返回时翻倍的**目标**」，
   # 给小了无处可翻；二是与其它关思考的轻量档（relevance / summarize）保持一致。
   session_summary:
-    provider: internai
-    # 显式关思考：internai 上**省略 effort = 开思考**（与 xj189 相反）。
+    # `disabled` 是**平台中性的语义值**，不是字面量：这个环节要「关思考」，
+    # 至于怎么关由平台档案声明（internai 发 none、xj189 干脆不发该字段）。
+    # 写死 none 的话，切到 xj189 会**反向打开思考** —— 那是个静默多烧 token 的陷阱。
+    #
+    # ⚠️ **刻意不用 `off` 当这个值**：YAML 1.1 把裸 `off` 解析成布尔 false，
+    # 于是 `== "off"` 判不成立、翻译不发生、字段不发 ⇒ 思考反而默认打开。
+    # 那个坑真踩过一次（tests/test_platform_switch.py 抓出来的）。
     # 这个环节是纯机械任务，开思考只会白吃预算。
-    reasoning_effort: none
+    reasoning_effort: disabled
     temperature: 0.0
     max_output_tokens: 4096
     guard: { max_reasoning_ratio: 0.5, retry_on_empty: 1, max_output_tokens: 8192 }

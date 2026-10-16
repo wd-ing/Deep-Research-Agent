@@ -4253,3 +4253,111 @@ xj189 是顶层），但 `provider.py` 的 `_cached_tokens()` 早就同时兼容
 
 **换平台本身零代码改动** —— 档案式的 `providers:` 设计接住了，
 只有 `OPENAI_COMPAT` 那个枚举加了一个词。
+
+---
+
+## 2026-10-17 换平台之后挖出的四个问题
+
+全量复跑（internai）暴露的。**前三个 xj189 上都藏着**，只是那边不校验。
+
+### 一、工具循环第二轮 400：Anthropic 对话被直接塞进 OpenAI 端点 🔴 最重
+
+**实测**：`write_section` 10 次调用里 **5 次** 报
+
+```
+internai 400 upstream_request_rejected
+  "4 validation errors for ValidatorIterator
+   0.ChatCompletionContentPartTextParam.text  Field required
+   [input_value={'id': 'chatcmpl-tool-a03…', 'type': 'tool_use'}]"
+```
+
+**根因**：`run_tool_loop` 按 Anthropic Messages 协议攒对话
+（assistant 带 `tool_use` 块、user 带 `tool_result` 块），
+而 `_opencode_tools` 之前是**原样透传**给 OpenAI 兼容端点。
+xj189 **不校验内容块形状**，照单全收，所以一直藏着。
+
+**为什么症状是静默的**：400 被 `_run_task` 的兜底吃掉，降级成单次调用、
+**不报错** —— 于是「子 agent 拿不到证据全文」这件事完全没人知道。
+5/10 的降级率意味着报告有一半小节是在**没读过原文**的情况下写的。
+
+**修法**：新增 `_anthropic_msgs_to_openai()`，在 `_opencode_tools` 里转换。
+三个要点，缺一个就还是 400：
+  1. `tool_use` → assistant 消息上的 `tool_calls[]`，`input` 要序列化成 **JSON 字符串**
+  2. `tool_result` → **独立的** `{"role":"tool","tool_call_id":…}` 消息
+     （OpenAI 不接受内容块数组，它把工具结果拆成单独消息）
+  3. assistant 只有 `tool_use` 没有正文时 `content` 必须是 **`None`**，
+     给 `""` 会被当成「有正文但是空的」
+
+⚠️ **预检为什么没发现**：我的预检只测了**第一轮**（模型发工具调用），
+第二轮（我们回传工具结果）根本没跑。而 `complete_with_tools` 的 docstring
+早就写着「一轮可能发多个 tool_use，每个都要回一个 tool_result，少一个就 400」。
+**凡是涉及多轮协议的，预检必须自己把对话拼出来跑第二轮** ——
+这是本轮第二次栽在「预检只测了最简单的那一步」。
+
+### 二、截断被 `_parse_json` 抢救成成功，静默丢字段
+
+`probe_outline` 输出 **8,192 = 上限 8,192（100%）**，
+提示词要的四组信号只交了三组：`subtopics` 5 条正常，
+`entities` / `jargon` / `controversies` **全是 0**，
+而 `degraded: false`、`quality: substantive` —— 没有任何降级标记。
+
+**根因**：guard 只判 `if not txt`（空），
+而 `_parse_json` 会「截到最后一个字符层面完整的位置，再补齐未闭合的括号」，
+于是**截断的 JSON 解析成功**，代码拿到一份缺字段的对象，还当成正常结果。
+
+**修法**：
+  · `SSEAccum` 记 `finish_reason`（流式增量里本来就带着，之前没读）
+  · 新增 `_is_truncated(usage, finish_reason, budget)`：
+    主信号 `finish_reason == "length"`，兜底信号 `completion_tokens >= budget`
+  · `_opencode` 流式与非流式**两条路都**接上，与空返回**共用额度与翻倍逻辑**
+  · `probe_outline` 基础预算 8,192 → **16,384**
+
+⚠️ 第 2 个信号是**推断不是事实**（理论上平台可能把用量算多），
+所以只在「正好顶到上限」时触发，宁可多重试一次，
+也不要把残缺结果当成功放过去。
+
+**同类 bug 还波及 `write_plan`**：这一轮三次调用输出 12,307 / 20,029 / **16,384**。
+第三次正好等于上限 —— **在旧代码下那是一次「成功」的残缺结果**，
+现在会被判成截断并翻倍重试。
+
+### 三、`reasoning_effort: off` 会被 YAML 解析成布尔 —— 我自己埋的雷
+
+给「关思考」设计了一个平台中性的语义值 `off`，
+测试立刻报 7 个环节的 `reasoning_effort` 全是 `False`。
+
+**YAML 1.1 把裸 `off` / `on` / `yes` / `no` 解析成布尔。**
+于是链条是：`== "off"` 判不成立 → 翻译不发生 →
+`if cfg.reasoning_effort:` 是假 → payload 不带该字段 →
+**平台按默认开思考**。全程不报错，只是静默多烧 token。
+
+**改用 `disabled`**，并在 `validate()` 加形状校验：
+非字符串直接报错（点名「多半是 YAML 布尔」），
+未知档位也报错。**这类坑必须让它响，不能让它安静地走默认值。**
+
+### 四、切换平台本身：单点化 + effort 语义化
+
+用户要求「189 恢复后要做好切回去的准备」。两处要处理：
+
+**① 单点切换**：`ModelRegistry.stage()` 本来就是
+`s.get("provider") or d.get("provider")` —— **单点机制一直都在，
+只是 14 个环节各自硬写 `provider:` 把它绕过了**。
+现在环节一律不写，由 `defaults.provider` 统一决定。
+**换平台 = 改一行。**
+
+**② effort 语义化**：光单点化**不够**，因为那 7 个环节的「关思考」在两个平台
+写法**正好相反**。写死字面量 `none`，切回 xj189 就会让它们
+**反向打开思考**（xj189 实测 `none` = 开，140~456 字 reasoning），
+占全部调用的 68% —— 不报错，只是静默多烧 token。
+
+所以环节写平台中性的 `disabled`，**由档案声明怎么关**：
+
+```yaml
+internai:
+  effort_off: none     # 实测省略=开思考 ⇒ 要关得显式发 none
+xj189:
+  # 不声明             # 实测省略=关思考 ⇒ 不声明即「不发字段」
+```
+
+翻译收口在 `ModelRegistry.stage()` **一处**（不是三个 payload 现场）。
+`tests/test_platform_switch.py` 会真的把两个平台各跑一遍注册表，
+断言 7 个环节在两边都确实是关思考 —— **不是看配置写对没有，是看行为**。

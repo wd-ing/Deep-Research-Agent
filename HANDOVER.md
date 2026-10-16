@@ -943,6 +943,83 @@ A~F 六组**全过** ⇒ payload 没问题。再测生产路径真实调用率 *
 **规则**：预检只用来发现能力边界，**验收必须走 `LLMClient`**。
 探针脚本 `tests/smoke_intern_ai.py` 才是有效的验收。
 
+### 41. 🔴 工具循环第二轮 400：Anthropic 对话被直接塞进 OpenAI 端点
+
+2026-10-17 全量复跑实测，`write_section` **10 次里 5 次** 400：
+
+```
+internai 400 upstream_request_rejected
+  "4 validation errors for ValidatorIterator
+   0.ChatCompletionContentPartTextParam.text  Field required
+   [input_value={'id': 'chatcmpl-tool-a03…', 'type': 'tool_use'}]"
+```
+
+`run_tool_loop` 按 Anthropic 协议攒对话（assistant 带 `tool_use` 块、
+user 带 `tool_result` 块），`_opencode_tools` 之前**原样透传**。
+**xj189 不校验内容块形状**，所以一直藏着；信通院严格校验就炸。
+
+⚠️ **症状完全静默**：400 被 `_run_task` 的兜底吃掉，降级成单次调用、不报错 ——
+「子 agent 拿不到证据全文」没人知道。5/10 降级率意味着
+**报告有一半小节是在没读过原文的情况下写的**。
+
+修法见 `_anthropic_msgs_to_openai()`，三个要点缺一个还是 400：
+`tool_use` → `tool_calls[]` 且 `arguments` 要 JSON **字符串**；
+`tool_result` → **独立的** `role:"tool"` 消息；
+只有 tool_use 没正文时 `content` 必须是 **`None`** 而不是 `""`。
+
+⚠️ **预检为什么没发现**：只测了**第一轮**（模型发工具调用），
+第二轮（我们回传结果）根本没跑。
+**凡是涉及多轮协议的，预检必须自己把对话拼出来跑第二轮。**
+守门测试 `tests/test_toolloop_protocol.py`（离线 8 种形状 + **在线真跑两轮**）。
+
+### 42. 截断被 `_parse_json` 抢救成成功，静默丢字段
+
+`probe_outline` 输出 **8,192 = 上限（100%）**，四组信号只交三组：
+`subtopics` 5 条正常，`entities` / `jargon` / `controversies` **全是 0**，
+而 `degraded: false`、`quality: substantive`。
+
+guard 原来只判 `if not txt`（空），而 `_parse_json` 会把写了一半的 JSON
+**抢救成合法对象** ⇒ 缺字段的结果被当成正常返回。
+
+⚠️ **这一类**：只要某环节顶到上限，任何 JSON 环节都可能静默丢字段。
+xj189 上被掩盖（那个环节最大输出 3,966，从没撞过 8,192）。
+
+已修：`SSEAccum` 记 `finish_reason`；新增 `_is_truncated()`
+（主信号 `finish_reason=="length"`，兜底 `completion_tokens >= budget`）；
+`_opencode` 流式非流式两条路都接上，与空返回共用翻倍逻辑。
+`probe_outline` 8,192 → 16,384。
+**第 2 个信号是推断不是事实**，所以只在「正好顶到上限」时触发。
+
+### 43. YAML 里裸 `off` 是布尔 —— 自己设计语义值时踩的
+
+给「关思考」设计平台中性的语义值 `off`，测试立刻报 7 个环节全是 `False`。
+
+**YAML 1.1 把裸 `off` / `on` / `yes` / `no` 解析成布尔。** 链条：
+`== "off"` 判不成立 → 翻译不发生 → `if cfg.reasoning_effort:` 是假 →
+payload 不带该字段 → **平台按默认开思考**。不报错，静默多烧 token。
+
+改用 `disabled`，并在 `validate()` 加形状校验：
+非字符串直接报错（点名「多半是 YAML 布尔」），未知档位也报错。
+
+⚠️ **规则：新增任何「关键字」配置值前，先确认它不是 YAML 1.1 的布尔/空值字面量**
+（`y|Y|yes|Yes|YES|n|N|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF`）。
+**这类坑必须让它响，不能让它安静地走默认值。**
+
+### 44. 换平台是**改一行**，不是改 14 行
+
+`ModelRegistry.stage()` 本来就是 `s.get("provider") or d.get("provider")` ——
+**单点机制一直都在**，只是 14 个环节各自硬写 `provider:` 把它绕过了。
+现在环节一律不写，由 `defaults.provider` 决定。
+
+⚠️ **光单点化不够**：那 7 个「关思考」环节在两个平台写法**正好相反**
+（internai 发 `none` / xj189 不发字段）。写死字面量的话，
+切回 xj189 会让它们**反向打开思考**（占全部调用的 68%），不报错只烧钱。
+
+所以环节写 `disabled`，**由档案声明怎么关**
+（`internai.effort_off: none`；xj189 不声明 = 不发字段），
+翻译收口在 `ModelRegistry.stage()` **一处**。
+守门测试 `tests/test_platform_switch.py` **真跑两遍注册表**断言行为，不看配置。
+
 ---
 
 ## 八、待办

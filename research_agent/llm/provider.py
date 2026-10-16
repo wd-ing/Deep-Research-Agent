@@ -71,6 +71,13 @@ NEEDS_GUARD = {
 # 注意 none 不是关闭思考——那个值会返回 400。
 THINKING_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
+# `reasoning_effort` 的合法取值（OpenAI 兼容平台）。
+# ⚠️ 里面**没有** `off`：YAML 1.1 会把裸 `off` 解析成布尔 false，
+# 而 `False` 在 `if cfg.reasoning_effort:` 眼里是「没配」⇒ 字段不发
+# ⇒ 平台按默认**开**思考，且全程不报错。关思考请写 `disabled`
+# （平台中性的语义值，由 providers 档案翻译成 `none` 或「不发字段」）。
+REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "disabled"}
+
 # 走 `/chat/completions` 的 OpenAI 兼容平台，共用同一份实现。
 #
 # **模型不写死在代码里**：具体模型名、base_url、api_key_env、思考档位
@@ -324,6 +331,30 @@ class StageConfig:
                 "reasoning_effort 是 OpenAI 兼容平台的参数，MiniMax 用 "
                 "output_config.effort —— 配错会被静默忽略。"
             )
+        # 形状校验（2026-10-17 加）：**挡住 YAML 布尔值这个坑**。
+        #
+        # YAML 1.1 把裸 `off` / `on` / `yes` / `no` 全解析成布尔。
+        # 有人写 `reasoning_effort: off` 想表达「关思考」时，
+        # 拿到的是 Python 的 `False` —— 于是
+        #   `== "disabled"` 判不成立 → 翻译不发生
+        #   → 翻译后的值仍是 False → `if cfg.reasoning_effort:` 是假
+        #   → payload 里**根本不带这个字段** → 平台按默认开思考。
+        # 全程**不报错**，只是安静地多烧 token。必须在这里拦住。
+        if self.reasoning_effort is not None:
+            if not isinstance(self.reasoning_effort, str):
+                raise ConfigError(
+                    f"环节 {self.stage} 的 reasoning_effort="
+                    f"{self.reasoning_effort!r} 不是字符串。"
+                    "多半是 YAML 把 off/on/yes/no 解析成了布尔 —— "
+                    "请写 `disabled`（关思考）或 `none`/`low`/`high`（字面量档位）。"
+                )
+            if self.reasoning_effort not in REASONING_EFFORTS:
+                raise ConfigError(
+                    f"环节 {self.stage} 的 reasoning_effort="
+                    f"{self.reasoning_effort!r} 非法，"
+                    f"只接受 {sorted(REASONING_EFFORTS)}。"
+                    "「关思考」请写 `disabled`（平台中立，由档案翻译成 none 或不发）。"
+                )
 
 
 class ModelRegistry:
@@ -355,6 +386,24 @@ class ModelRegistry:
             # 档案补齐缺失项，阶段自己写的优先
             s = {**{k: v for k, v in prof.items() if k != "provider"}, **s}
             s["provider"] = prov_name
+
+        # `reasoning_effort: disabled` 是**平台中性的语义值**，翻译在这里收口
+        # （2026-10-17 加）。三个 payload 现场（_opencode 流式/非流式、
+        # _opencode_tools）都只认最终值，不参与翻译 —— 收在一处才不会漏。
+        #
+        # 为什么需要它：两个平台的「关思考」写法**正好相反**。
+        #   internai：省略 = 开思考 ⇒ 要关就得显式发 `none`
+        #   xj189  ：省略 = 关思考 ⇒ 要关就干脆不发这个字段
+        # 环节若写死字面量 `none`，切回 xj189 就会让 7 个本该关思考的环节
+        # （占全部调用的 68%）**反向打开思考** —— 不报错，只是静默多烧 token。
+        #
+        # 档案没声明 `effort_off` 就翻译成 None（不发该字段）。
+        #
+        # ⚠️ **这个值刻意不叫 `off`**：YAML 1.1 把裸 `off` 解析成布尔 false，
+        # 于是 `== "off"` 判不成立、翻译不发生、字段不发 ⇒ 思考反而默认打开。
+        # 真踩过一次（`tests/test_platform_switch.py` 抓出来的）。
+        if s.get("reasoning_effort") == "disabled":
+            s["reasoning_effort"] = prof.get("effort_off") or None
 
         if name in NEEDS_GUARD and s.get("guard") is None:
             # 之前这里默默用 GuardPolicy 的默认值，配置被删或拼错都不报错，
@@ -455,6 +504,10 @@ class SSEAccum:
         # index -> {"id", "name", "args": [片段…]}
         self._calls: dict[int, dict] = {}
         self.role: str | None = None
+        # finish_reason（2026-10-17 加）：截断检测的唯一可靠信号。
+        # `length` = 模型自己撞到 max_tokens 上限被切断，
+        # **内容非空但残缺**，比空返回更难发现。
+        self.finish_reason: str | None = None
         # 增量回调（2026-10-11 加，给前端展示思考过程用）。
         # **默认 None = 完全保持原行为**——现有 7 个开流式的环节都没传。
         self._on_delta = on_delta
@@ -472,6 +525,8 @@ class SSEAccum:
         if obj.get("usage"):
             self.usage = obj["usage"]
         for ch in obj.get("choices") or []:
+            if ch.get("finish_reason"):
+                self.finish_reason = ch["finish_reason"]
             d = ch.get("delta") or {}
             if d.get("role"):
                 self.role = d["role"]
@@ -548,6 +603,137 @@ def _sse_lines(resp) -> Iterator[dict]:
             yield _json.loads(data)
         except Exception:
             continue
+
+
+def _is_truncated(usage: dict | None, finish_reason: str | None,
+                  budget: int) -> bool:
+    """输出是不是被 `max_tokens` 上限**切断**了（2026-10-17 加）。
+
+    为什么必须单独判 —— **截断比空返回隐蔽得多**：
+
+      · 空返回：`text` 为空 → 现有 guard 的 `if not txt` 直接抓到，翻倍重试
+      · 截断：`text` 非空但**只写了一半**，看起来是成功返回
+
+    而 JSON 环节会把截断的结果**抢救成合法 JSON** ——
+    `_parse_json` 会「截到最后一个字符层面完整的位置，再补齐未闭合的括号」。
+    于是模型少交了几组字段，代码照样拿到一份能 `json.loads` 的结果，
+    **不报错、不降级、看不出异常**。
+
+    实测（2026-10-17，信通院 discovery-api，`probe_outline`）：
+    输出 8,192 token = 上限 8,192，提示词要的四组信号只交了三组 ——
+    `subtopics` 5 条正常，`entities` / `jargon` / `controversies` **全是 0**，
+    而 `degraded: false`、`quality: substantive`。
+    在 xj189 上被掩盖了：那边这个环节最大输出 3,966，从没撞过上限。
+
+    判定用两个信号，主次分明：
+      1. `finish_reason == "length"` —— 平台明说被截断，**最可靠**
+      2. `completion_tokens >= budget` —— 没用 `stream_options.include_usage`
+         或平台不报 finish_reason 时的兜底
+
+    ⚠️ 第 2 条是**推断**不是事实：理论上存在平台把用量算得比实际多的可能。
+    所以它只在「正好顶到上限」时触发（`>=` 而非接近即触发），
+    宁可多重试一次，也不要把残缺结果当成功放过去。
+    """
+    if finish_reason and str(finish_reason).lower() == "length":
+        return True
+    used = (usage or {}).get("completion_tokens")
+    try:
+        used_i = int(used)
+    except (TypeError, ValueError):
+        return False
+    return budget > 0 and used_i >= budget
+
+
+def _anthropic_msgs_to_openai(messages: list[dict]) -> list[dict]:
+    """把工具循环攒下的 **Anthropic 形状**对话转成 OpenAI 形状。
+
+    ⚠️ **这是 2026-10-17 在信通院 discovery-api 上实测暴露的 bug。**
+
+    `run_tool_loop` 按 Anthropic Messages 协议攒对话：
+        assistant: [{"type":"tool_use","id":...,"name":...,"input":{…}}]
+        user     : [{"type":"tool_result","tool_use_id":...,"content":"…"}]
+    而 `_opencode_tools` 之前是**原样透传**给 OpenAI 兼容端点的。
+
+    为什么以前没炸：xj189 **不校验**内容块形状，照单全收。
+    信通院会严格校验，第二轮直接 400：
+
+        internai 400 upstream_request_rejected
+        "4 validation errors for ValidatorIterator
+         0.ChatCompletionContentPartTextParam.text  Field required
+         [input_value={'id': 'chatcmpl-tool-…', 'type': 'tool_use'}]"
+
+    **症状是静默的**：400 被 `_run_task` 的兜底吃掉，降级成单次调用、
+    不报错 —— 于是「子 agent 拿不到证据全文」这件事完全没人知道。
+    实测那一轮 write_section **10 次里 4 次**走的都是降级路径。
+
+    对应关系（OpenAI 把「工具结果」拆成**独立消息**，不是一个内容块数组）：
+        tool_use 块   → assistant 消息上的 `tool_calls[]`
+                        `input`（对象）要序列化成 **JSON 字符串**
+        tool_result 块 → **独立的** `{"role":"tool","tool_call_id":…}` 消息
+        user 轮里的 text 块 → 跟在所有 tool 消息**之后**的普通 user 消息
+                        （顺序不能提前：tool 消息必须紧邻 assistant）
+
+    ⚠️ assistant 只有 tool_use 没有正文时，`content` 必须是 `None`
+    而不是 `""` —— 空串会被当成「有正文但是空的」。
+    """
+    out: list[dict] = []
+    for m in messages or []:
+        role = m.get("role")
+        content = m.get("content")
+        # 纯字符串的轮次两边协议一致，原样带走
+        if isinstance(content, str) or content is None:
+            out.append({"role": role, "content": content})
+            continue
+        if not isinstance(content, list):
+            out.append({"role": role, "content": str(content)})
+            continue
+
+        if role == "assistant":
+            texts = [b.get("text", "") for b in content
+                     if b.get("type") == "text"]
+            calls = []
+            for b in content:
+                if b.get("type") != "tool_use":
+                    continue
+                inp = b.get("input")
+                calls.append({
+                    "id": b.get("id"),
+                    "type": "function",
+                    "function": {
+                        "name": b.get("name") or "",
+                        "arguments": inp if isinstance(inp, str)
+                        else json.dumps(inp or {}, ensure_ascii=False),
+                    },
+                })
+            joined = "".join(texts)
+            msg = {"role": "assistant",
+                   # 只有 tool_use 没有正文时必须给 None，给 "" 会被当成空正文
+                   "content": joined if (joined or not calls) else None}
+            if calls:
+                msg["tool_calls"] = calls
+            out.append(msg)
+            continue
+
+        # user 轮：每个 tool_result 拆成一条独立消息，正文块排在它们之后
+        trailing_text: list[str] = []
+        for b in content:
+            t = b.get("type")
+            if t == "tool_result":
+                c = b.get("content")
+                if isinstance(c, list):          # Anthropic 允许内容块数组
+                    c = "".join(x.get("text", "") for x in c
+                                if isinstance(x, dict))
+                out.append({"role": "tool",
+                            "tool_call_id": b.get("tool_use_id"),
+                            "content": c if isinstance(c, str)
+                            else json.dumps(c, ensure_ascii=False)})
+            elif t == "text":
+                trailing_text.append(b.get("text", ""))
+            else:
+                trailing_text.append(json.dumps(b, ensure_ascii=False))
+        if trailing_text:
+            out.append({"role": "user", "content": "\n".join(trailing_text)})
+    return out
 
 
 class LLMClient:
@@ -866,16 +1052,20 @@ class LLMClient:
                 usage["latency_ms"] = int((time.time() - t0) * 1000)
                 self._warn_reasoning_ratio(
                     cfg, usage, "".join(acc.reasoning))
-                if not txt:
-                    # 流式下空返回同样是真实失效模式，走同一套翻倍预算
-                    last_reason = "empty"
+                # 截断与空返回**共用额度与翻倍逻辑**（2026-10-17 加）。
+                # 截断比空返回更隐蔽：内容非空，但 JSON 只写了一半 ——
+                # `_parse_json` 会把残缺 JSON 抢救回来，于是**静默丢字段**。
+                if not txt or _is_truncated(usage, acc.finish_reason, budget):
+                    truncated = bool(txt)
+                    last_reason = "truncated" if truncated else "empty"
                     if empty_left <= 0:
                         break
                     empty_left -= 1
                     budget = min(cfg.guard.max_output_tokens, budget * 2)
                     self.warnings.append(
-                        f"[{cfg.stage}] 流式返回空内容，预算翻倍至 {budget} "
-                        f"后重试（空返回额度还剩 {empty_left}）")
+                        f"[{cfg.stage}] 流式{'输出被上限截断' if truncated else '返回空内容'}"
+                        f"（finish_reason={acc.finish_reason}），预算翻倍至 {budget} "
+                        f"后重试（额度还剩 {empty_left}）")
                     continue
                 return txt, usage
 
@@ -949,7 +1139,8 @@ class LLMClient:
                     continue
                 raise RuntimeError(f"{cfg.provider} {r.status_code}: {r.text[:300]}")
             data = r.json()
-            msg = data["choices"][0]["message"]
+            choice0 = (data.get("choices") or [{}])[0]
+            msg = choice0.get("message") or {}
             text = (msg.get("content") or "").strip()
             usage = data.get("usage") or {}
             usage["latency_ms"] = int((time.time() - t0) * 1000)
@@ -958,16 +1149,20 @@ class LLMClient:
             self._warn_reasoning_ratio(
                 cfg, usage, msg.get("reasoning_content") or "")
 
-            # 防线一：内容为空则重试并翻倍预算（额度独立于传输断连）
-            if not text:
-                last_reason = "empty"
+            # 防线一：内容为空**或被上限截断**则重试并翻倍预算
+            #（额度独立于传输断连；截断检测见 `_is_truncated`）
+            if not text or _is_truncated(usage, choice0.get("finish_reason"), budget):
+                truncated = bool(text)
+                last_reason = "truncated" if truncated else "empty"
                 if empty_left <= 0:
                     break
                 empty_left -= 1
                 budget = min(cfg.guard.max_output_tokens, budget * 2)
                 self.warnings.append(
-                    f"[{cfg.stage}] 第 {attempt+1} 次返回空内容，"
-                    f"预算翻倍至 {budget} 后重试（空返回额度还剩 {empty_left}）"
+                    f"[{cfg.stage}] 第 {attempt+1} 次"
+                    f"{'输出被上限截断' if truncated else '返回空内容'}"
+                    f"（finish_reason={choice0.get('finish_reason')}），"
+                    f"预算翻倍至 {budget} 后重试（额度还剩 {empty_left}）"
                 )
                 continue
             return text, usage
@@ -1166,8 +1361,14 @@ class LLMClient:
         if not key:
             raise ConfigError(
                 f"未设置 {cfg.api_key_env or '(该阶段未配置 api_key_env)'}")
-        msgs = ([{"role": "system", "content": system}] if system else []) + [
-            {"role": m["role"], "content": m["content"]} for m in messages]
+        # 工具循环第二轮起，对话里会带上 tool_use / tool_result **内容块**，
+        # 那是 Anthropic 形状 —— OpenAI 端点要的是 tool_calls + 独立的
+        # role:"tool" 消息。不转的话信通院直接 400（见
+        # `_anthropic_msgs_to_openai` 的实测记录）。第一轮全是纯字符串，
+        # 转换是恒等的。
+        msgs = _anthropic_msgs_to_openai(messages)
+        if system:
+            msgs = [{"role": "system", "content": system}] + msgs
         payload: dict[str, Any] = {
             "model": cfg.model, "messages": msgs,
             "tools": to_openai_tools(tools),
