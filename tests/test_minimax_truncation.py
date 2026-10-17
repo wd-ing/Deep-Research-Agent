@@ -95,11 +95,19 @@ def mm_truncated(text: str, out_tokens: int = 8192) -> dict:
 
 
 def pin_minimax(llm: LLMClient, stage: str):
-    """把这个 stage 钉在 minimax 上——不依赖环境默认 provider。"""
+    """把这个 stage 钉在 minimax 上——不依赖环境默认 provider。
+
+    `stream` **显式关掉**：本文件测的是截断判断，而 `write_section` /
+    `relevance` 在配置里是 `stream: true`，接上流式后 `_minimax` 会走
+    `.stream()` —— 本文件的桩只有 `.post`，会直接 AssertionError。
+    流式路径的截断检测由 `tests/test_minimax_stream.py` ③ 覆盖
+    （同样的判定，走的是同一段代码）。
+    """
     cfg = copy.copy(llm.registry.stage(stage))
     cfg.provider = "minimax"
     cfg.base_url = "https://api.minimaxi.com/anthropic"
     cfg.api_key_env = "MINIMAX_API_KEY"
+    cfg.stream = False
     llm.registry._cache[stage] = cfg
     return cfg
 

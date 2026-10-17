@@ -5212,3 +5212,62 @@ JSON 永远合法，截断只表现为「少几个字段」—— 抛 `EmptyOutp
 
 顺带：三次都打 `completion None`，因为 MiniMax 报的是 `output_tokens`
 （Anthropic 形状）。已查明并记档，且正是它把截断检测的洞带出来的。
+
+---
+
+## 2026-10-18 · 补 MiniMax 流式（用户拍板）
+
+`_minimax` 以前只实现非流式，配置里 **8 个** `stream: true` 的环节全部静默降级。
+与坑 47（限流器 key 不匹配）同一形态：**装上了、看着在用、其实从没跑过**。
+
+### 做法：分支集中到一层
+
+新增 `AnthropicSSEAccum`（Anthropic 形状）+ `_minimax_once()`
+（按 `payload["stream"]` 选路，并把**流式结果归一成非流式那套字段**）：
+`{"content": [...], "stop_reason": ..., "usage": {...}}`。
+
+上层（重试 / 截断 / 思考占比）**一个字没改**。`_minimax_tools`
+也走同一个入口 —— 它以前和 `_minimax` 各写各的，只补一边的话
+工具那一半会继续静默走非流式。
+
+### 实测事件序列（`/v1/messages` + `stream: true`）
+
+    message_start → ping → content_block_start{text|thinking|tool_use}
+    → content_block_delta{text_delta|thinking_delta|input_json_delta}
+    → content_block_stop → message_delta{stop_reason, usage} → message_stop
+
+⚠️ **最容易错的地方：thinking 和 text 不在同一个 `index` 上。**
+实测「开思考 + 工具」是 index 0 = thinking、index 1 = tool_use。
+按 index 取 text 会拿到空串，而且**不报错**。
+
+### 顺带接上的两道防线
+
+- `_minimax_tools` 现在也调 `_reject_broken_args` ——
+  流式下工具参数是**拼出来的字符串**，拼坏了就是坏了。
+- 流式下 `stop_reason=max_tokens` 且工具调用存在时出告警
+  （JSON 完整但字段少 ⇒ 只告警不硬失败，理由见上一节）。
+
+### 线上验证（生产路径，`preflight_model.py MiniMax-M3`）
+
+    ✅ ① 非流式  29 字 / 1.1s      ✅ ② 流式  44 字 / 1.3s
+    ✅ ③ 普通工具调用  ['lookup']    ✅ ④ 强制 tool_choice  ['submit_tasks']
+
+### 🔴 顺手发现：预检脚本自己在说谎
+
+`tests/preflight_model.py` 硬编码 `provider="internai"`（为信通院那次写的），
+而 `BASE_URL` 取自默认 stage —— 默认切到 minimax 之后**两边各取一半**，
+拿 MiniMax 的模型名去打信通院端点，**每个检查都 404**。
+
+更糟的是 ⑤⑥⑦ 把 `report(..., "✅", ...)` **写死**，永远不会失败 ——
+于是这份输出会**主动告诉人「没问题」**。第一次跑就是这样：
+5 项报错、2 项报 ✅，看着像一次正经预检。
+
+**「测不到」必须算「不通过」**，否则探针是在替配置背书。三处都改了：
+⑤⑦ 用 `ok_count` 判定、⑥ 补 `status_code` 检查（原来直接 `r.json()`
+解析 404 的 HTML，抛出的是 `Extra data: line 1 column 5` 这种
+跟真实原因无关的错）。
+
+另外这三项是**手搓 OpenAI 形状**的探针（`{base}/chat/completions` +
+`reasoning_effort`），对 Anthropic 协议的平台**结构上不适用**。
+现在报 `➖ 不适用`（既不算通过也不算失败），不再混进 ❌ 里。
+—— 讽刺的是那个文件自己的文件头就写着「本项目不手搓」。

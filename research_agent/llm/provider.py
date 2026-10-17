@@ -717,6 +717,149 @@ class SSEAccum:
         return "".join(self.text)
 
 
+class AnthropicSSEAccum:
+    """把 **Anthropic Messages 形状**的 SSE 增量攒成一次完整响应。
+
+    为什么需要它（2026-10-17）：`_minimax` 打的是
+    `https://api.minimaxi.com/anthropic/v1/messages`，**协议是 Anthropic**，
+    而上面的 `SSEAccum` 是 OpenAI 形状（`choices[].delta`）。
+    以前 `_minimax` 直接走非流式，于是 **8 个声明 `stream: true` 的环节
+    全部静默降级** —— 配置说有流式，实际没有，不报错、不告警。
+
+    ## 实测的事件序列（`stream: true`，MiniMax-M3）
+
+        message_start        → message.usage（input_tokens 等）
+        ping                 → 忽略
+        content_block_start  → index + {type: text|thinking|tool_use, id, name}
+        content_block_delta  → delta.type = text_delta | thinking_delta
+                                        | input_json_delta（partial_json 分片）
+        content_block_stop   → 结束该块
+        message_delta        → delta.stop_reason（end_turn / max_tokens / tool_use）
+                               usage.output_tokens
+                               usage.output_tokens_details.thinking_tokens
+        message_stop
+
+    ⚠️ **最容易错的地方：thinking 和 text 不在同一个 `index` 上。**
+    实测三条对照：
+
+        关思考         → index 0 = text
+        开思考         → index 0 = thinking
+        开思考 + 工具  → index 0 = thinking，**index 1 = tool_use**
+
+    所以「取 index 0 的 text」在这里会拿到空字符串，而且**不报错**。
+
+    ## 输出形状
+
+    `blocks()` 返回的**就是 Anthropic 形状的块**（`text` / `thinking` /
+    `tool_use` + `input`），和非流式路径的返回值完全一致 ——
+    调用方不必分支。工具参数拼不成合法 JSON 时打 `_args_broken`，
+    与 `SSEAccum` 同一套约定，`_reject_broken_args` 照样接得住。
+    """
+
+    def __init__(self, on_delta: Optional[Callable[[str, str], None]] = None,
+                 stage: str = "") -> None:
+        # index -> {"type","id","name","text","args"}
+        # `_order` 保留到达顺序：Anthropic 不保证 index 单调递增，
+        # 靠 sorted(index) 排序会在「先 thinking 后 text」时被反过来。
+        self._blocks: dict[int, dict] = {}
+        self._order: list[int] = []
+        self.usage: dict = {}
+        self.stop_reason: str | None = None
+        self.error: dict | None = None
+        self._on_delta = on_delta
+        self.stage = stage
+
+    def _fire(self, kind: str, chunk: str) -> None:
+        if self._on_delta:
+            try:
+                self._on_delta(kind, chunk)
+            except Exception:
+                # 展示是锦上添花，不能因为展示失败拖垮调用
+                pass
+
+    def _slot(self, index: int) -> dict:
+        slot = self._blocks.get(index)
+        if slot is None:
+            slot = {"type": "text", "id": None, "name": None,
+                    "text": "", "args": []}
+            self._blocks[index] = slot
+            self._order.append(index)
+        return slot
+
+    def feed(self, obj: dict) -> None:
+        t = obj.get("type")
+        if t == "message_start":
+            u = (obj.get("message") or {}).get("usage") or {}
+            self.usage.update({k: v for k, v in u.items() if v is not None})
+        elif t == "content_block_start":
+            i = int(obj.get("index") or 0)
+            cb = obj.get("content_block") or {}
+            slot = self._slot(i)
+            slot["type"] = cb.get("type") or "text"
+            slot["id"] = cb.get("id")
+            slot["name"] = cb.get("name")
+            # `text` 允许非空（少数平台第一块就带内容）
+            if cb.get("text"):
+                slot["text"] += cb["text"]
+            if cb.get("thinking"):
+                slot["text"] += cb["thinking"]
+        elif t == "content_block_delta":
+            slot = self._slot(int(obj.get("index") or 0))
+            d = obj.get("delta") or {}
+            dt = d.get("type")
+            if dt == "text_delta" and d.get("text"):
+                slot["text"] += d["text"]
+                self._fire("text", d["text"])
+            elif dt == "thinking_delta" and d.get("thinking"):
+                slot["text"] += d["thinking"]
+                self._fire("reasoning", d["thinking"])
+            elif dt == "input_json_delta" and d.get("partial_json"):
+                # 工具参数是**分片到达**的（与 OpenAI 形状同理），
+                # 必须按块累积再拼，一次 json.loads 必然炸
+                slot["args"].append(d["partial_json"])
+        elif t == "message_delta":
+            stop = (obj.get("delta") or {}).get("stop_reason")
+            if stop:
+                self.stop_reason = stop
+            u = obj.get("usage") or {}
+            # 后到的覆盖先到的：message_start 里 output_tokens 是个小数
+            self.usage.update({k: v for k, v in u.items() if v is not None})
+        elif t == "error":
+            # `event: error` + data。**不能吞** —— 吞了就变成
+            # 「流到一半没下文」，而空返回是下面能查到的失败模式
+            self.error = obj.get("error") or {"raw": obj}
+
+    def blocks(self) -> list[dict]:
+        """攒成 Anthropic 形状的块，和非流式路径的返回保持一致。"""
+        out: list[dict] = []
+        for i in self._order:
+            slot = self._blocks[i]
+            kind = slot["type"]
+            if kind == "tool_use":
+                raw = "".join(slot["args"])
+                try:
+                    args = json.loads(raw) if raw.strip() else {}
+                except Exception:
+                    # 同 `SSEAccum`：给 `{}` 但**必须打标记**，
+                    # 让 `_reject_broken_args` 把它变成一次显式失败
+                    out.append({"type": "tool_use", "id": slot["id"],
+                                "name": slot["name"], "input": {},
+                                "_args_broken": True})
+                    continue
+                out.append({"type": "tool_use", "id": slot["id"],
+                            "name": slot["name"], "input": args})
+            elif kind == "thinking":
+                if slot["text"]:
+                    out.append({"type": "thinking", "thinking": slot["text"]})
+            elif slot["text"]:
+                out.append({"type": "text", "text": slot["text"]})
+        return out
+
+    def text_only(self) -> str:
+        return "".join(b["text"] for b in self.blocks()
+                       if b.get("type") == "text")
+
+
 def _hook_for(stage: str) -> Optional[Callable[[str, str], None]]:
     """当前阶段要不要开增量推送。
 
@@ -1512,6 +1655,55 @@ class LLMClient:
 
     # ---------- MiniMax（Anthropic Messages 格式） ----------
 
+    def _minimax_once(self, cfg: StageConfig, url: str, headers: dict,
+                      payload: dict) -> tuple[int, str, dict | None]:
+        """发**一次** MiniMax 请求（流式或非流式），返回 `(状态码, 错误正文, 解析结果)`。
+
+        ## 为什么要这一层
+
+        `payload["stream"]` 为真时走 SSE，否则走普通 POST。两种返回的
+        **原始形状完全不同**（SSE 是一串事件，非流式是一个 JSON 对象），
+        但只要在这里把它**归一成非流式那套**：
+
+            {"content": [Anthropic 形状的块], "stop_reason": ..., "usage": {...}}
+
+        上层的重试、截断判断、思考占比就**一个字都不用分支**。
+        分支集中在这里一处 —— 与 `_minimax_tools` 也共用，
+        两边不会走岔（它们以前就各写各的，很容易一边改了另一边没改）。
+
+        ## 为什么要真的走流式
+
+        1. **绕开空闲超时**：nginx / 网关测的是「两次读到数据之间的间隔」，
+           流式持续推块就永不空闲。xj189 那边实测同参数流式跑过 245.5 秒、
+           非流式 61.0 秒就 504。MiniMax 侧**没测过超时阈值**，
+           但 `write_plan_tasks` 非流式实测跑到过 228.5 秒 ——
+           已经和 xj189 那堵墙同一量级，不能靠运气。
+        2. **拿到 `stop_reason`**：截断判断要靠它（`_is_truncated`）。
+           非流式也报，但流式能**在流到一半时就看出被切断**。
+        3. 中途有进度可展示（`_hook_for` 那条增量推送链）。
+        """
+        if not payload.get("stream"):
+            r = self._client.post(url, headers=headers, json=payload,
+                                  timeout=cfg.timeout_s)
+            if r.status_code != 200:
+                return r.status_code, r.text, None
+            return 200, "", r.json()
+
+        with self._client.stream("POST", url, headers=headers, json=payload,
+                                 timeout=cfg.timeout_s) as resp:
+            if resp.status_code != 200:
+                return resp.status_code, resp.read().decode("utf-8", "replace"), None
+            acc = AnthropicSSEAccum(_hook_for(cfg.stage), cfg.stage)
+            for obj in _sse_lines(resp):
+                acc.feed(obj)
+        if acc.error:
+            # `event: error` 必须响：吞掉就变成「流到一半没下文」，
+            # 而下面能查到的失败模式（空 / 截断）都不是它
+            raise RuntimeError(f"MiniMax 流式错误: {str(acc.error)[:300]}")
+        return 200, "", {"content": acc.blocks(),
+                         "stop_reason": acc.stop_reason,
+                         "usage": acc.usage}
+
     def _minimax(
         self, cfg: StageConfig, prompt: str, system: str | None, json_mode: bool
     ) -> tuple[str, dict]:
@@ -1566,6 +1758,15 @@ class LLMClient:
             }]
 
         budget = cfg.max_output_tokens
+        headers = {"Authorization": f"Bearer {key}",
+                   "Content-Type": "application/json",
+                   "x-api-key": key}
+        if cfg.stream:
+            # ⚠️ **这里以前是静默降级的**（2026-10-17 修）：
+            # 配置里 8 个环节写着 `stream: true`，而 `_minimax` 只实现 `.post`
+            # ⇒ 全部走非流式，**不报错、不告警**。与坑 47（限流器 key 不匹配）
+            # 是同一形态：装上了、看着在用、其实从没跑过。
+            payload["stream"] = True
         # 传输断连与空返回的额度分开算，理由见 GuardPolicy.retry_on_transport。
         guarded = cfg.stage in NEEDS_GUARD
         empty_left = cfg.guard.retry_on_empty if guarded else 0
@@ -1579,14 +1780,8 @@ class LLMClient:
 
             t0 = time.time()
             try:
-                r = self._client.post(
-                    url,
-                    headers={"Authorization": f"Bearer {key}",
-                             "Content-Type": "application/json",
-                             "x-api-key": key},
-                    json=payload,
-                    timeout=cfg.timeout_s,
-                )
+                status, body, parsed = self._minimax_once(
+                    cfg, url, headers, payload)
             except httpx.TransportError as e:
                 # 吸收偶发抖动，不解决长生成的确定性失败。理由见 _opencode 同一处。
                 drops += 1
@@ -1608,21 +1803,24 @@ class LLMClient:
             if drops:
                 print(f"✅ [{cfg.stage}] 第 {attempt+1} 次重试成功"
                       f"（此前中断 {drops} 次）", flush=True)
-            if r.status_code != 200:
-                retry, why = _retryable_http(r.status_code, r.text)
+            if status != 200:
+                retry, why = _retryable_http(status, body)
                 if retry and net_left > 0:
                     net_left -= 1
                     self.warnings.append(
-                        f"[{cfg.stage}] HTTP {r.status_code} {why}，退避重试（额度剩 {net_left}）")
-                    print(f"⚠️  [{cfg.stage}] HTTP {r.status_code} {why}，退避重试（额度剩 {net_left}）", flush=True)
+                        f"[{cfg.stage}] HTTP {status} {why}，退避重试（额度剩 {net_left}）")
+                    print(f"⚠️  [{cfg.stage}] HTTP {status} {why}，退避重试（额度剩 {net_left}）", flush=True)
                     time.sleep(3.0 * (attempt + 1))
                     continue
-                raise RuntimeError(f"MiniMax {r.status_code}: {r.text[:300]}")
-            blocks = r.json().get("content") or []
-            stop_reason = r.json().get("stop_reason")
+                raise RuntimeError(f"MiniMax {status}: {body[:300]}")
+            # `parsed` 的形状**与非流式完全一致**（`content` / `stop_reason` / `usage`），
+            # 所以下面这些判断一个字都没改 —— 这是把流式接进来的关键：
+            # 分支只留在 `_minimax_once` 一层。
+            blocks = parsed.get("content") or []
+            stop_reason = parsed.get("stop_reason")
             text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
             think = "".join(b.get("thinking", "") for b in blocks if b.get("type") == "thinking")
-            usage = r.json().get("usage") or {}
+            usage = parsed.get("usage") or {}
             out_tok = usage.get("output_tokens") or 0
             usage["latency_ms"] = int((time.time() - t0) * 1000)
 
@@ -1676,6 +1874,9 @@ class LLMClient:
             raise ConfigError(f"未设置 {cfg.api_key_env or 'MINIMAX_API_KEY'}")
         base = cfg.base_url or "https://api.minimaxi.com/anthropic"
         url = f"{base.rstrip('/')}/v1/messages"
+        headers = {"Authorization": f"Bearer {key}",
+                   "Content-Type": "application/json",
+                   "x-api-key": key}
         payload: dict[str, Any] = {
             "model": cfg.model,
             "max_tokens": cfg.max_output_tokens,
@@ -1730,21 +1931,17 @@ class LLMClient:
         else:
             payload["thinking"] = {"type": "disabled"}
         # tools 参与缓存前缀且排在 system 之前，所以循环里 tools 必须始终一致
+        if cfg.stream:
+            payload["stream"] = True
         t0 = time.time()
-        r = self._client.post(
-            url,
-            headers={"Authorization": f"Bearer {key}",
-                     "Content-Type": "application/json",
-                     "x-api-key": key},
-            json=payload,
-            timeout=cfg.timeout_s,
-        )
-        if r.status_code != 200:
-            raise RuntimeError(f"MiniMax {r.status_code}: {r.text[:300]}")
-        j = r.json()
-        usage = j.get("usage") or {}
+        # 与 `_minimax` 共用同一个发送入口 —— 这两条路以前各写各的，
+        # 流式支持只补一边的话，工具那一半会继续静默走非流式
+        status, body, parsed = self._minimax_once(cfg, url, headers, payload)
+        if status != 200:
+            raise RuntimeError(f"MiniMax {status}: {body[:300]}")
+        usage = (parsed or {}).get("usage") or {}
         usage["latency_ms"] = int((time.time() - t0) * 1000)
-        blocks_out = j.get("content") or []
+        blocks_out = (parsed or {}).get("content") or []
         # ⚠️ **工具参数被截断，这里只告警不失败**（2026-10-17）。
         # `_openai_compat_forced` 那条路靠 `_reject_broken_args` 硬失败，
         # 因为 SSEAccum 拼出来的是**字符串**，坏了就是坏了。
@@ -1753,7 +1950,12 @@ class LLMClient:
         # 那时抛异常会把一份可用的任务表变成整环节失败，
         # 代价大于收益，所以这里选择**说出来**而不是**炸掉**。
         # ⚠️ 这个缺口是真实存在的：工具侧截断目前只有告警，没有硬防线。
-        if str(j.get("stop_reason") or "") == "max_tokens" and any(
+        stop_reason = (parsed or {}).get("stop_reason")
+        # 流式下 `input_json` 是**拼出来的字符串**，拼坏了就是坏了 ——
+        # 与 `_openai_compat_forced` 同一套处理，不许 `{}` 蒙混过关。
+        # （非流式下平台返回的已经是解析好的对象，这一层不会触发。）
+        _reject_broken_args(blocks_out, cfg.stage, stop_reason)
+        if str(stop_reason or "") == "max_tokens" and any(
                 b.get("type") == "tool_use" for b in blocks_out):
             msg_w = (f"[{cfg.stage}] 工具参数被 max_tokens={cfg.max_output_tokens} "
                      f"截断，任务表可能不完整（stop_reason=max_tokens）")
