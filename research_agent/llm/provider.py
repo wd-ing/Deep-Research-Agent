@@ -42,8 +42,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 import uuid
+from collections import deque
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -135,6 +137,117 @@ def _fire_delta(stage: str, kind: str, chunk: str) -> None:
         except Exception:
             # 展示是锦上添花，绝不能因为展示失败拖垮研究
             pass
+
+
+# ================================================================ 主动限流
+
+class SendRateLimiter:
+    """按**发送时刻**限速的滑动窗口（每分钟 N 次）。
+
+    为什么不是并发闸门：`tests/probes/probe_agnes_rpm_window.py` 实测过，
+    平台限的是**发送时刻的滚动窗口**，慢请求不占后续窗口的槽位。
+    写成「最多 N 个在途」会错——那会把 100~300 秒的长请求算成占用，
+    于是实际发送速率被压到远低于平台允许值，白等。
+
+    为什么用滑动窗口而不是「按自然分钟」：自然分钟边界会让跨界的两批
+    在两秒内各发 N 次。滑动窗口保守，而保守正是这里要的。
+
+    ⚠️ **线程安全是硬要求**：`parallel_labelled` / `node_dispatch` 用的是
+    真 `ThreadPoolExecutor`，不共享锁的话每个 worker 各有一个窗口，
+    等于限流器没装。
+    """
+
+    def __init__(self, per_minute: int, window_s: float = 60.0) -> None:
+        self.per_minute = max(0, int(per_minute))
+        # 窗口长度可注入，**只为了测试**。写死 60 秒的话，
+        # 守门测试会真的睡满一分钟——测不出来就只能不测，或者让测试变慢到没人跑。
+        # 生产路径永远用默认值。
+        self.window_s = float(window_s)
+        self._stamps: deque[float] = deque()
+        self._lock = threading.Lock()
+        # 可观测：限流是「让人等」，等太久必须看得见，不能变成静默变慢
+        self.waits = 0
+        self.waited_s = 0.0
+        self.max_wait_s = 0.0
+
+    def acquire(self) -> float:
+        """必要时阻塞，返回本次等了多久（秒）。"""
+        if self.per_minute <= 0:
+            return 0.0
+        waited = 0.0
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                while self._stamps and now - self._stamps[0] >= self.window_s:
+                    self._stamps.popleft()
+                if len(self._stamps) < self.per_minute:
+                    self._stamps.append(now)
+                    break
+                # 睡在锁外面：否则一个线程的等待会把其余全锁死。
+                nap = self.window_s - (now - self._stamps[0]) + 0.02
+            time.sleep(nap)
+            waited += nap
+        if waited > 0:
+            with self._lock:
+                self.waits += 1
+                self.waited_s += waited
+                self.max_wait_s = max(self.max_wait_s, waited)
+        return waited
+
+    def stats(self) -> dict:
+        with self._lock:
+            return {"per_minute": self.per_minute, "waits": self.waits,
+                    "waited_s": round(self.waited_s, 1),
+                    "max_wait_s": round(self.max_wait_s, 1),
+                    "in_window": len(self._stamps)}
+
+
+def _limiter_key(base_url: str) -> str:
+    """端点标识：**只取 host[:port]**，scheme 和路径一律忽略。
+
+    ⚠️ 这行是限流能不能工作的要害（2026-10-17，`test_rate_limiter` 抓出来的）。
+
+    注册侧拿到的是 `registry` 里的 `base_url`（带 `https://` 和 `/v1`），
+    发送侧拿到的只有 `httpx.URL` 对象。**两边各算各的 key 就会永远对不上**，
+    于是 `_LIMITERS.get(host)` 永远是 `None` —— 限流器装上了、一行日志都没有、
+    一次请求都没限住，**而且什么都不报错**。
+
+    所以两边必须走同一个规范化函数，不许各自实现。
+    """
+    from urllib.parse import urlsplit
+    raw = (base_url or "").strip()
+    if "//" not in raw:
+        raw = "//" + raw          # 传进来可能只是 host
+    s = urlsplit(raw)
+    host = (s.hostname or "").lower()
+    if s.port:
+        host = f"{host}:{s.port}"
+    return host or raw.lower()
+
+
+# 按端点共享：`LLMClient` 会被多处 `import` 成不同实例，
+# 而限额是**按账号/端点**算的，不是按 client 实例算的。
+_LIMITERS: dict[str, SendRateLimiter] = {}
+_LIMITERS_LOCK = threading.Lock()
+
+
+def get_limiter(base_url: str, per_minute: int) -> SendRateLimiter:
+    key = _limiter_key(base_url)
+    with _LIMITERS_LOCK:
+        lim = _LIMITERS.get(key)
+        if lim is None:
+            lim = SendRateLimiter(per_minute)
+            _LIMITERS[key] = lim
+        elif per_minute > 0 and lim.per_minute != per_minute:
+            # 配置改了要跟着改，否则改了配置没生效还不报错
+            lim.per_minute = per_minute
+        return lim
+
+
+def reset_limiters() -> None:
+    """只给测试用。"""
+    with _LIMITERS_LOCK:
+        _LIMITERS.clear()
 
 
 @contextmanager
@@ -437,6 +550,16 @@ class ModelRegistry:
         )
         cfg.validate()
         self._cache[name] = cfg
+        # 限流限额挂在**建 stage 的时候**登记，而不是每次发送时读配置：
+        # 读配置会让「限流行为」依赖调用顺序，而且多一次字典查找在热路径上。
+        #
+        # ⚠️ 限额是**按端点**的，取各档案里的最大值：同一个端点上不同阶段
+        # 可能写不同的值，取 max 才是这个端点真正的约束。
+        rpm = max(int((self.raw.get("providers") or {}).get(prov_name, {})
+                      .get("rate_limit_per_min", 0) or 0),
+                  int(s.get("rate_limit_per_min", 0) or 0))
+        if rpm > 0 and cfg.base_url:
+            get_limiter(cfg.base_url, rpm)
         return cfg
 
     def alternatives(self) -> list[dict]:
@@ -804,12 +927,51 @@ class LLMClient:
 
     def __init__(self, registry: ModelRegistry | None = None) -> None:
         self.registry = registry or ModelRegistry()
-        self._client = httpx.Client(timeout=180.0)
+        # 限流挂在 httpx 的 **request event hook** 上（2026-10-17 加）。
+        #
+        # 为什么是它而不是在 `_opencode` / `_opencode_tools` /
+        # `_openai_compat_forced` 各埋一次：
+        #   · 那是 6~8 个发送点，改一处漏一处就会**静默失效**
+        #     （限流器最坏的失败模式就是「装上了但不生效」——它只会让一切变慢，
+        #      不报错，没有人看得出它没在工作）
+        #   · `_opencode` 内部还有自己的重试循环（空返回 / 断连 / 429），
+        #     在外层埋**数不到重试**，一撞限流就被连着打
+        #   · event hook 是**每一次真实发送**，包括重试和流式，一处覆盖全部
+        self._limit_notice_at = 0.0
+        self._client = httpx.Client(timeout=180.0,
+                                    event_hooks={"request": [self._throttle]})
         self.warnings: list[str] = []
         # 排队超时的累计次数。**不是重试能解决的问题**——并发降不下来它还会来，
         # 所以单独记一个计数：`cost_report.py` 读它来判断该不该调 GATE_WORKERS。
         # （2026-10-10 补：之前只写不读，是个死变量，等于白记。）
         self._queue_pressure = 0
+
+    def _throttle(self, request) -> None:
+        """每发一个请求前过一次滑动窗口。
+
+        `request` 是 httpx.Request，能拿到 URL —— 于是**按端点**而不是按
+        client 实例取限额（限额是按账号算的，多个 `LLMClient` 共用一个桶）。
+        """
+        lim = _LIMITERS.get(_limiter_key(str(request.url)))
+        if lim is None or lim.per_minute <= 0:
+            return
+        waited = lim.acquire()
+        if waited > 0.5:
+            # 等超过半秒才说一句，且一分钟最多一句 —— 限流是常态，
+            # 每等一次就打印会把日志淹掉，而没人看的告警等于没有。
+            now = time.monotonic()
+            if now - self._limit_notice_at > 60.0:
+                self._limit_notice_at = now
+                msg = (f"[限流] {request.url.host} {lim.per_minute}/分钟，"
+                       f"本次等待 {waited:.1f}s"
+                       f"（累计 {lim.waits} 次 / {lim.waited_s:.0f}s）")
+                self.warnings.append(msg)
+                print(f"⚠️  {msg}", flush=True)
+
+    def limiter_stats(self) -> dict:
+        """限流统计。**限流是主动引入的等待，必须能被查**，否则
+        「一轮变慢了」永远查不出是不是它。"""
+        return {k: v.stats() for k, v in _LIMITERS.items()}
 
     def close(self) -> None:
         self._client.close()

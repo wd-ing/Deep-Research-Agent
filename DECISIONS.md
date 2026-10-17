@@ -4824,3 +4824,86 @@ or omit the field entirely.
 
 但它至少**推翻了我上一轮的一个担心**：「B 的任务比 A 粗」那句是在
 「强制路径没测过」的前提下说的，现在强制路径测过了，粒度并不粗。
+
+---
+
+## 2026-10-17 主动限流 + 换模型试行
+
+### 限流：挂在 httpx 的 request event hook 上
+
+平台限 **50 次/分钟**，上一轮实测峰值 49/min 贴着天花板，reliability 阶段
+挨了 20+ 次 429。`classify_limit` 的退避是**被动**的——撞了才退，退避期间
+还在烧时间。这一项是**主动**的：发之前就把速率压下去。
+
+**限的是「发送速率」不是「并发数」**：`tests/probes/probe_agnes_rpm_window.py`
+已实测出平台按**发送时刻的滚动窗口**计，慢请求不占后续窗口的槽位。
+写成「最多 N 个在途」会把 100~300 秒的长请求算成占用，发送速率被压到
+远低于平台允许值，白等。
+
+**为什么挂在 event hook 而不是各个发送方法**：
+`_opencode` / `_opencode_tools` / `_openai_compat_forced` 一共 6~8 个发送点，
+埋一次漏一次就**静默失效**；而且 `_opencode` 内部还有自己的重试循环
+（空返回 / 断连 / 429），在外层埋**数不到重试**，一撞限流就被连着打。
+event hook 是**每一次真实发送**，一处覆盖全部。
+
+配置项 `rate_limit_per_min: 45`（不是 50）。窗口是滑动的，留 10% 余量，
+不去赌「服务端到底按自然分钟还是滚动窗口算」。
+
+**可观测**：等待超 0.5 秒才提示，且一分钟最多一句（限流是常态，
+每等一次就打印会把日志淹掉）。`LLMClient.limiter_stats()` 可读累计。
+
+### 🔴 守门测试抓到一个会让限流**完全失效**的 bug
+
+`get_limiter()` 用完整 `base_url` 做键（`https://host/v1`），
+而钩子里只有 `httpx.URL` → 拿 `request.url.host`（`host`）。
+**两边永远对不上**，`_LIMITERS.get()` 恒为 `None` ——
+限流器装上了、一行日志都没有、一次请求都没限住，**而且完全不报错**。
+
+修法：两边必须走同一个 `_limiter_key()`（只取 host[:port]），不许各自实现。
+
+这正是本项目反复消灭的那类失败：**「装上了但不生效」比「抛异常」危险得多**，
+因为抛异常至少会有人看见。
+
+### 换模型：Atria-Dawn 能不能顶替 DeepSeek
+
+信通院 DeepSeek 额度将尽，`Atria-Dawn` 限时免费。**先核对再说能不能用**：
+
+`GET /models` 确认 ID 精确存在（另有 `Atria-Dawn-Preview`）。
+
+走 `LLMClient` 生产路径的预检（`tests/preflight_model.py`，**不手搓 payload**），
+与 deepseek-v4-flash-0731 同题对照：
+
+| 项 | deepseek-v4-flash-0731 | Atria-Dawn |
+|---|---|---|
+| 非流式 / 流式 | ✅ 2.8s / 0.9s | ✅ **24.6s / 23.6s** |
+| 普通工具调用 | ✅ | ✅ |
+| 强制 `tool_choice` | ✅ | ✅ |
+| 大预算 131072 | ✅ | ✅ |
+| `reasoning_effort` 取值 | none/low/med/high | 同上 |
+
+**两个红灯**：
+
+1. **慢约 9~25 倍**：同一条「2+2 等于几」，0.9s → 23.6s。
+   单纯模型开销。write 段 30+ 次调用的话，这是**分钟级**的成本。
+2. **预检里强制交卷给的 `covers` 是空数组** ——
+   而 `_normalize_tasks` 对 `covers` 为空的条目是 `continue` 直接丢，
+   **任务会变 0 条**。预检提示词太短，不能就此下结论，
+   **必须用真实载荷验**（`probe_forced_choice.py 2 Atria-Dawn`）。
+
+#### ⚠️ 差点踩的一个坑：单次 422 不能当结论
+
+预检里 `reasoning_effort: none` 报了一次 **HTTP 422**，看起来是致命不兼容
+（`effort_off: none` 靠它关思考，7 个环节会全挂）。
+逐值复测才发现是**偶发**：
+
+| effort | HTTP | reasoning |
+|---|---|---|
+| 省略 | 200 | 102 |
+| **`none`** | **200** | **0** ✅ |
+| minimal / low / medium / high | 200 | 98 / 102 / 113 / 127 |
+| off / 0 / false / disabled | **422** | — |
+
+即：**只接受 none/minimal/low/medium/high 这几个枚举值**，
+枚举外一律 422。`effort_off: none` 对它同样成立。
+
+⇒ **n=1 的一次异常不构成「不支持」的结论。** 差点就改了配置。

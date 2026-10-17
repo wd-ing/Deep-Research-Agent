@@ -73,6 +73,15 @@ providers:
     model: deepseek-v4-flash-0731
     base_url: https://discovery-api.intern-ai.org.cn/v1
     api_key_env: INTERN_AI_API_KEY
+    # 主动限流（2026-10-17 加）。平台限 **50 次/分钟**，上一轮实测峰值 49/min
+    # 贴着天花板，reliability 阶段挨了 20+ 次 429。
+    #
+    # 退避逻辑（`classify_limit`）是**被动**的：撞了才退，退避期间还在烧时间。
+    # 这一项是**主动**的：发之前就把速率压下去。
+    #
+    # 45 而不是 50：窗口是滑动的（`SendRateLimiter`），留 10% 余量，
+    # 不去赌「服务端到底按自然分钟还是滚动窗口算」。
+    rate_limit_per_min: 45
     # `reasoning_effort: disabled` 在**这个**平台上翻译成什么（2026-10-17 加）。
     # 环节只写平台中性的 `off`，具体怎么关由档案决定 ——
     # 两个平台的语义是反的，写死字面量的话切平台会静默改变含义。

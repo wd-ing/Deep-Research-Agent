@@ -23,7 +23,9 @@ Phase B（`tool_choice` 强制）一次都没执行，于是
 4. `finish_reason` 会不会又撞 `length`
 
 用法：
-    .venv/bin/python tests/probe_forced_choice.py [次数]
+    .venv/bin/python tests/probe_forced_choice.py [次数] [模型]
+    # 指定模型（换模型对比时用，注入 registry，走同一条生产路径）：
+    .venv/bin/python tests/probe_forced_choice.py 2 Atria-Dawn
 """
 
 from __future__ import annotations
@@ -84,7 +86,15 @@ def main() -> int:
     messages = [{"role": "user", "content": W._clip(prompt, 60000)}]
 
     llm = LLMClient()
-    cfg = llm.registry.stage("write_plan_tasks")
+    # 换模型对比时只换 `model`，**其余配置与生产一字不改**
+    # （预算 / effort / stream / timeout 都照旧）——这样比的才是模型本身。
+    if len(sys.argv) > 2 and sys.argv[2]:
+        import copy
+        alt = copy.copy(llm.registry.stage(BASE_STAGE))
+        alt.model = sys.argv[2]
+        llm.registry._cache[BASE_STAGE] = alt
+        print(f"⚠️  模型换成 {sys.argv[2]}（其余配置照旧）")
+    cfg = llm.registry.stage(BASE_STAGE)
     print(f"载荷 {len(state['on_topic'])} 段 / {len(state['outline'])} 小节")
     print(f"{cfg.provider} / {cfg.model} / effort={cfg.reasoning_effort} / "
           f"max_tokens={cfg.max_output_tokens} / timeout={cfg.timeout_s:.0f} / "
