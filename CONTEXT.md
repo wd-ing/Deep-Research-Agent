@@ -1,24 +1,21 @@
-# 交接文档
+# CONTEXT · 交接文档
 
-> 面向接手这个项目的人（包括未来的我）。**新窗口先读这一份。**
-> 优化轮结论在 `OPTIMIZATION_LOG.md`；架构设计在 `DESIGN_R4~R9_*.md`；
-> 逐条决策的时间线在 `DECISIONS.md`（历史档案，只在追溯「当时为什么那么想」时才翻）；
-> **产品蓝图与实际实现的差距在 `GAP_CHECK.md`（2026-10-11 实测核对）**。
+> 这份文档的定位：**接手这个项目前必须先读的东西**。
+> 架构、仍然有效的决策、踩过的坑（56 条）、工作约定、已知缺口。
 >
-> 最近更新：2026-10-10
+> ⚠️ **它取代了曾经的三份大文档**：`DECISIONS.md`（305 KB 决策流水）、
+> `HANDOVER.md`（48 KB，含大量已过期的待办）、8 份 `DESIGN_R*.md` 设计稿。
+> 那些文件里的绝大多数结论**已经被后续实测推翻或取代**，留着会误导后续决策 ——
+> 这正是它们被删掉的原因。仍然成立的部分已经折进本文。
 
 ---
 
 ## 一、这是什么
 
-一个**本地优先的单人深度研究 Agent**。给定问题，它多轮检索、抓取、抽取证据、
-搭框架、分块写作、交叉审查，最后产出一份带段级引用的报告。
+一个**本地优先、单人自用**的深度研究 Agent：
+多轮检索 → 抓取 → 证据处理 → 框架 → 分块写作 → 交叉审查 → 带段级引用的报告。
 
-**不做**：多用户、权限、团队协作、移动端、代码沙箱、向量数据库、表格/PDF 解析。
-这些在 `DECISIONS.md` 里明确排除过，别重新提议。
-
-**技术栈**：纯 Python 单栈。FastAPI（`server.py`）+ LangGraph（只用 StateGraph /
-SQLite checkpointer / interrupt，不用它的 agent 抽象）+ Vite/React（**前端一行没写**）。
+代码规模：后端 `research_agent/` 约 10,900 行 Python；前端 `frontend/src` 约 4,400 行 TS/TSX。
 
 ---
 
@@ -38,9 +35,9 @@ START → probe(子图) → outline → retrieve → extract(子图) → assess
                      write(子图) → finalize → END
 ```
 
-**审批点在第一次 `assess` 之后**，不在 `outline` 之后——
+**审批点在第一次 `assess` 之后**，不在 `outline` 之后 ——
 大纲是在只有探针轮廓时写的，让用户审批一份未经材料检验的框架没有意义。
-assess 顺带输出 `outline_review` 把框架校准到材料撑得住的粒度。
+`assess` 顺带输出 `outline_review` 把框架校准到材料撑得住的粒度。
 
 ### 三个子图
 
@@ -50,166 +47,106 @@ assess 顺带输出 `outline_review` 把框架校准到材料撑得住的粒度�
 | `extract_batch` | 段落概括 + 来源性质判定（+ 段级相关性闸门）|
 | `write` | 主 agent 规划 → 并行子 agent 写作 → 审查 → 定点返修 |
 
-### 平台
-
-`config/models.yaml` 的 `providers:` 档案管理，**阶段一行 `provider: xj189` 就切平台**。
-模型名 / 地址 / 密钥 / 预算 / 思考档位全在配置里，**代码零硬编码**。
-
-当前主用 **minimax（MiniMax-M3）**——xj189 未恢复前的临时默认；
-`internai` / `opencode` 保留备用。切回 xj189 只改 `defaults.provider` 一行。
-
-⚠️ 换 provider **不只是改一行**：协议形状不同，防线要逐条核对。
-已踩的：截断检测认不出 Anthropic 形状的 `usage` / `stop_reason`
-（坑 51）。下次换平台前先读坑 51 和坑 52。
-
-⚠️ **xj189 前面有 nginx 的 60 秒读超时墙**。开了流式的环节已绕过
-（实测跑过 245 秒），流式状态见 `config/models.yaml` 的 `stream:` 字段。
-
-### 模型分档
-
-xj189 的思考旋钮是 `reasoning_effort`，**省略该字段才是关思考**，
-传任何值（含 `none`）都是开——**与平台文档相反**。
-
-档 0（关）：`relevance` / `summarize` / `extract` / `probe_light` / `probe_degraded`
-档 1（low）：`assess` / `outline` / `write_section` / `write_revise`
-档 2（high）：`probe_outline` / `write_plan` / `write_audit`
-
 ### 证据流转
 
-```
-网页正文 → 切段（累积到 1000 token，段落边界落刀）
-        → chunk（约 700 token）落库
-        → extract 阶段写概括（约 38 字）← 写作的证据入口
-        → 段级闸门（relevance）筛出 on_topic
-        → write 子图：主 agent 规划 → 子 agent 拿证据清单写
-                     → 不够时自己调工具往下挖：
-                       read_segments（看某段全文）
-                       read_context（某段 + 邻段）
-                       read_source（整篇正文）
-```
-
-**段号方案**：来源按 `rowid` 编 `S1 S2`，段按来源内 `rowid` 编 `S1·5`。
-引用写成 `[S1·5]`。`node_write` 与 `tools/evidence.py` **必须用同一套编号**。
+来源 → 分块 → 段落（写作取材的最小单位，约 700 token）→ 一句话概括
+（检索时用它快速判相关性，展示时用它替代正文）。
+**概括缺失的段落在写作阶段根本看不到** —— 所以概括批次失败是有界重试的，见第六节。
 
 ---
 
-## 三、代码地图
+## 三、平台与模型
 
-| 路径 | 是什么 |
-|---|---|
-| `research_agent/server.py` | **FastAPI 服务**：REST + SSE + 审批。前端第一轮已补齐事件推送（astream）与引用查询 |
-| `research_agent/graph/runner.py` | 主图装配（边在这里）+ **两个图实例**：同步 `get_graph()` / 异步 `get_agraph()` |
-| `research_agent/graph/nodes.py` | 主图节点：probe/outline/retrieve/extract/assess/apply_revision/write/finalize（**最容易出问题的地方**）|
-| `research_agent/graph/state.py` | `ResearchState` / `WriteState`（**漏声明字段会被 LangGraph 静默丢弃**）|
-| `research_agent/graph/subgraphs/write.py` | write 子图：规划 / 并发写作 / 审查 / 返修（1,000+ 行）|
-| `research_agent/graph/subgraphs/extract_batch.py` | 段落概括 / 来源性质 / 段级闸门 |
-| `research_agent/graph/subgraphs/probe.py` | 探针四步 |
-| `research_agent/graph/prompts.py` | **全部提示词集中在这里**（改行为先看它，600+ 行）|
-| `research_agent/llm/provider.py` | provider 分发 / SSE 流式 / 重试 / 限流分类 / 记账 |
-| `research_agent/llm/toolloop.py` | 工具循环 |
-| `research_agent/tools/evidence.py` | 三个证据工具 + 段号索引 |
-| `research_agent/db/repo.py` | 裸 SQL 薄封装，5 个迁移 |
-| `frontend/src/` | **前端（Vite+React+TS）**：`useSession.ts` 是全部状态与 SSE 接入 |
-| `config/models.yaml` | **平台与模型配置的唯一真相源** |
+`config/models.yaml` 的 `providers:` 档案管理，
+**阶段一律不写 provider，由 `defaults.provider` 统一决定**
+（档案里的模型名 / 地址 / 密钥 / 关思考怎么表达随之继承）。
+**换平台只改这一行。**
 
-代码约 7,000 行，测试约 7,000 行。
+| provider | 协议 | 当前用途 |
+|---|---|---|
+| `minimax` | Anthropic Messages（`/v1/messages`） | **当前默认** |
+| `internai` | OpenAI 兼容（`/v1/chat/completions`） | 备用，两轮全量都验过 |
+| `xj189` | OpenAI 兼容 | 备用 |
 
----
+⚠️ **换 provider 不是只改一行**：协议形状不同，防线要逐条核对。
+已踩过的：截断检测认不出 Anthropic 形状的 `usage` / `stop_reason`（坑 51）、
+`complete_json_forced` 没有 provider 分派导致整个环节 404（坑 54）。
+**换平台前先读第五、六节。**
 
-## 四、怎么跑
+### 切换时必须一起改的东西
 
-```bash
-cd "/Users/wd/Documents/Deep Research Agent"
+- **`summarize` 的 `reasoning_effort` 必须是 `low`**（MiniMax 这条路上「关思考 + 发工具」
+  会让模型假装调用并编造结果，护栏 `_check_minimax_thinking_tools` 会**直接拒绝**）。
+  换到 xj189 / internai 才能改回 `disabled`。
+- `providers.minimax` **故意不写 `effort_off`**：`_minimax` 把 `reasoning_effort`
+  翻译成 `thinking.type`，写成 `none` 会让「关思考」走错字段。
+- 各 provider 的 `rate_limit_per_min` 是**实测值**，不是猜的
+  （internai 45、minimax 40）。换平台先测再填，见第六节。
 
-# 完整流程（含 write，约 25 分钟）
-.venv/bin/python tests/e2e_run.py "你的问题" /tmp/x.db
+### 两轮全量的实测对照（2026-10-18）
 
-# 只到 assess（write 打桩，约 15 分钟）——改规划/检索类先跑这个
-.venv/bin/python tests/probe_assess_run.py "你的问题" /tmp/x.db
+| | internai `/tmp/ra_v11_full.db` | minimax `/tmp/ra_v12_minimax.db` |
+|---|---|---|
+| 结果 | `done` | `done` |
+| 写作阶段 | 29/29 全过 | **33/33 全过** |
+| 报告 | 22,379 字 | **28,230 字** |
+| `relevance` | 232 次零失败 | 208 次零 429 |
+| `summarize` 批次失败 | 2/32（6%） | 12/32（37.5%，**孤例、未能复现**） |
 
-# 看账
-.venv/bin/python tests/cost_report.py /tmp/x.db <session_id>
-
-# 离线自检（不花 API）
-.venv/bin/python tests/align_offline.py       # 框架优化循环
-.venv/bin/python tests/assess_offline.py      # assess 重写
-.venv/bin/python tests/smoke.py              # 冒烟（慢，要下 embedding 模型）
-
-```bash
-# 换平台前先预检
-.venv/bin/python tests/preflight_xj189.py
-
-# 测子 agent 对新约定的遵守率（改提示词约定后跑它）
-.venv/bin/python tests/lead_mark_probe.py
-```
-
-**改前端时用回放，别真跑**（25 分钟 + 几十万 token → 几秒 + 零成本）：
-
-```bash
-cp /tmp/ra_fe2.db /tmp/ra_replay.db          # 任何跑过研究的库都行
-.venv/bin/python tests/replay_server.py --speed 1 --db /tmp/ra_replay.db
-# 前端照常连 http://127.0.0.1:5180，点「新建研究」看全过程
-```
-
-它**只把「跑图」换成回放录好的事件**，其余全走真代码
-（真 FastAPI / 真 SSE / 真 SQLite / 真 EvidenceTools），
-所以「mock 通过」基本等于「真跑也通过」。
-⚠️ 报告页与引用抽屉要用**左侧已有的真实会话**测——
-回放会话没有 chunk，段号取不到东西（见该文件顶部说明）。
-
-**跑 server（前端后端）**：
-
-```bash
-cd "/Users/wd/Documents/Deep Research Agent"
-set -a; . ./.env; set +a          # ⚠️ uvicorn 不会自己读 .env
-RA_DB_PATH=/tmp/ra_fe.db .venv/bin/python -m uvicorn research_agent.server:app \
-    --host 127.0.0.1 --port 8000
-
-# 看事件流（另开一个终端）
-curl -N http://127.0.0.1:8000/api/stream/<session_id>
-```
-
-| 端点 | 干什么 |
-|---|---|
-| `POST /api/sessions` | 建会话 |
-| `POST /api/sessions/{sid}/run` | 启动研究（`?streaming=false` 退回同步路径）|
-| `GET /api/sessions/{sid}/approval` | **待审批的框架**（没有就 `waiting:false`）|
-| `POST /api/sessions/{sid}/approve` | 审批并续跑 |
-| `GET /api/sessions/{sid}` | 报告 + 来源 + 主题 |
-| `GET /api/sessions/{sid}/seg/{ref}` | **按段号取原文**（`S1·5`），报告里点引用走它 |
-| `GET /api/sessions/{sid}/segments?refs=A,B` | 批量取多段 |
-
-SSE 事件类型：`connected` / `node`（节点到达）/ `progress`（该节点的结构化事件）/
-`thinking`（思考增量，**已后端合并**）/ `done` / `error`。
-
-`.env` 四个 key：`TAVILY_API_KEY` / `OPENCODE_API_KEY` / `MINIMAX_API_KEY` /
-`XJ189_API_KEY` / `AGNES_API_KEY`。**绝不可回显、不可提交**（已在 `.gitignore`）。
+⚠️ minimax 那次的 `summarize` 失败率高，但事后用**同一批真实段落 + 生产批量口径**
+重测 32 个批次**零失败**（串行 100%、4 并发 100%）。
+「提示词」和「并发」两个假设都被 A/B 实验推翻，**病因仍未知**。
+重试是针对「一次失败就丢 12 段证据」这个独立缺口加的，不依赖病因是否查清。
 
 ---
 
-## 五、排查一轮研究
+## 四、代码地图
 
-```sql
--- 每一轮的判断、检索了什么、为什么停
-SELECT round, kind, detail_json FROM run_trace WHERE session_id=? ORDER BY at;
-
--- 每阶段耗时
-SELECT stage, COUNT(*) n, ROUND(SUM(latency_ms)/1000.0) sec
-FROM llm_call WHERE session_id=? GROUP BY stage ORDER BY SUM(latency_ms) DESC;
-
--- 审查历史（含 rework_check 逐条核对结果）
-SELECT audit_history_json FROM write_trace WHERE session_id=?;
+```
+research_agent/
+├── llm/
+│   ├── provider.py     ★ 统一调用入口、全部 provider 后端、限流、guard
+│   │                     · SSEAccum（OpenAI 形状）/ AnthropicSSEAccum（Anthropic 形状）
+│   │                     · _minimax / _minimax_tools / _openai_compat_forced
+│   │                     · _is_truncated（认两套 usage/stop_reason 形状）
+│   │                     · SendRateLimiter（挂在 httpx request event hook）
+│   └── toolloop.py     工具循环执行器 + _check_minimax_thinking_tools 护栏
+├── graph/
+│   ├── nodes.py        主图各节点
+│   ├── prompts.py      全部提示词
+│   ├── state.py        ResearchState / WriteState ★ 加字段必须在这里声明
+│   └── subgraphs/{probe,extract_batch,write}.py
+├── db/repo.py          SQLite 读写（llm_call / chunk / source / write_trace …）
+├── server.py           FastAPI + SSE
+config/models.yaml      ★ provider 档案 + 各环节预算/effort/stream
+tests/                  守门测试 + 生产路径入口（见 README）
 ```
 
-**`report` 表从 R5 起就没更新过**——测试 harness 把报告写文件不写 DB。
-查历史报告读 `/tmp/e2e_report_*.md`，**不要查 `report` 表**。
+## 五、仍然有效的决策（别推翻，除非有新的实测证据）
 
-⚠️ **失败的调用（504/429）在 DB 里没有任何记录**，它们是异常不是记账行，
-只能从 stdout 数 `⚠️` 行。
+这些不是「当时的偏好」，是**踩过坑之后定下来的**。改之前先看对应坑号。
+
+| 决策 | 为什么这么定 | 相关坑 |
+|---|---|---|
+| **预算一次给够，重试时一动不动** | `max_tokens` 是思考与正文的**共享天花板**；「失败就翻倍预算」是把墙抬高让模型想得更远再撞一次。实测 @16,384 时 reasoning 恰好顶满、正文 0 | 33/34/35 |
+| **重试的动作是降 effort，不是加钱** | 同上。梯子 `high → medium → low`，走完还失败就抛 | — |
+| **超时按吞吐推导，不是拍脑袋** | 最慢 62 tok/s，65,536 跑满需 1,057 秒 ⇒ 600 秒的墙比满预算还近 | — |
+| **拆 `write_plan` 成 spec / tasks 两个 stage** | 两者预算需求差一个量级，共用一个 `max_output_tokens` 必然一边不够 | — |
+| **结构化输出是为了让长输出更稳定，不是为了解决崩溃** | 用户原话。强保底靠**三层**：Phase A 自愿交卷 → Phase B 强制 → `_parse_json` 老路兜底 | 50 |
+| **Phase B 的「强制」在不同平台上强度不同** | internai/xj189 是硬的；**minimax 上 `tool_choice` 只是暗示**（实测强制 6/10 对不强制 5/10）。降级等于把「保证」变成「也许」 | 52 |
+| **主动限流挂在 httpx request event hook** | 6~8 个发送点各埋一次必漏；且埋在外层**数不到内部重试**。按发送速率限，不限并发 | 47 |
+| **限流值一律实测，不猜** | minimax：6 并发打满 60 秒只成功 50/3248 ⇒ 上限约 50/min；按 40/min 配速 60/60 全过 | — |
+| **`reasoning_effort: disabled` 是平台中性的语义值，不是字面量** | 由 `providers.<名>.effort_off` 翻译成 `none` 或省略。写死 `none` 切到别的平台会**反向打开思考**（静默多烧 token）| 39 |
+| **刻意不用 `off` 当档位** | YAML 1.1 把裸 `off` 解析成布尔 false ⇒ 翻译不发生 ⇒ 思考反而默认打开 | 39 |
+| **`grounded_in` 是大纲小节的唯一硬约束** | 缺它的节直接丢弃 —— 「模型说它有」不算数，必须能指回实际观察到的材料 | — |
+| **子 agent 的标题编号由装配层统一编** | 提示词管不住的由程序兜底，两处都要看 | — |
+| **`<!-- lead -->` 是删引言标题的唯一依据** | 改成「程序用相似度判断」实测 7 个只删对 3 个，而且误删是**静默的** | — |
+| **概括批次失败要有界重试** | 一次失败 = 12 段证据静默丢失，报告照样写完不报错。只重试一次、只重试失败/不完整的批次 | — |
+| **审批点后置到第一次 `assess` 之后** | 让用户审批一份未经材料检验的框架没有意义 | — |
 
 ---
 
-## 六、已知地雷
+## 六、已知地雷（改代码前先扫一眼）
 
 **`drafts` 的结构**（R6 改过）：`{task_id: {section_id: 正文}}`。
 `node_assemble` / `node_revise` / `_check_all_citations` / `node_final` 都碰它——
@@ -276,7 +213,9 @@ stage 是 `probe_outline` / `outline` / `assess` / `write_plan` / `write_audit` 
 所以更像是 C1-j 修完 ContextVar 记账之后测试的 mock 没跟上，
 而不是并发真的乱序。**跑它之前先修 mock，别把失败当成真 bug 去查代码。**
 
-## 六之二、跑 server 的两个坑（2026-10-11 踩的）
+---
+
+## 七、跑 server 的两个坑（2026-10-11 踩的）
 
 **① uvicorn 不会自动读 `.env`。**
 `RA_DB_PATH=... .venv/bin/python -m uvicorn research_agent.server:app`
@@ -299,7 +238,10 @@ server 不是**。要么 `set -a; . ./.env; set +a`，要么给 uvicorn 装
 
 ---
 
-## 七、踩过的坑（只留会再踩的）
+---
+
+## 八、踩过的坑（56 条 · 只留会再踩的）
+
 
 ### 1. 避坑注释写在别处 ≠ 那个坑被填上了
 
@@ -1280,145 +1222,6 @@ Anthropic 形状的对应物是 `stop_reason == "max_tokens"` 和 `output_tokens
 
 ---
 
-## 八、待办
-
-### 最近的
-
-| 事项 | 说明 |
-|---|---|
-| **产品化五阶段** | **✅ 全部完成（2026-10-12）**。方案见 `DESIGN_R11_PRODUCT.md`（砍掉跨会话召回与上传语料，专注「检索→写作」+ 资产体系）。① 会话管理 ✅ ② 文件夹树 ✅ ③ 会话摘要 ✅ ④ 来源库 ✅ ⑤ 标记排除 ✅ |
-| 产品化范围 | 2026-10-12 用户定：✅ 回收站（软删除）✅ 标记排除无用来源 ✅ 归档保留（语义=纯整理，「值得留、别出现在默认列表」，**不再是进入历史召回**）✅ 文件夹支持嵌套 ✅ 会话摘要（生成时机=**报告写完时**，不是归档时）❌ 跨会话召回 ❌ 上传语料。~~❌ 报告目录~~ → ✅ **2026-10-13 已做**（`components/Toc.tsx`，见下「前端打磨三轮」） |
-| 「对话/资产」双视图 | ✅ **已在阶段 4 落地**：侧栏顶部「对话 / 来源库」切换。来源库只在切过去时才拉数据（要按 session 建段号索引算引用数，比列会话重） |
-| **本轮要做的四项** | **✅ 四项全部完成（2026-10-13）**。① `round` 口径写清（不是 bug，是语义约定）② 失败调用留痕（迁移 `0008`）③ 拖拽排序（repo + 端点 + 原生 DnD）④ 检索轮次图表（新端点 + SVG 图表）。下面三行有各自的细节 |
-| 前端展示形态 | ✅ 已定：**对话式工作流**（三层：大环节→子环节→明细）。思考/正文流式已推翻删除（`2026-10-12`），见 `DECISIONS.md` |
-| 阶段 3 的坑 | 会话摘要的 stage 已加（`session_summary`，**省略 `reasoning_effort` 关思考**，实测平台不返 `reasoning_content`）。重跑探针：`tests/probe_session_summary.py`（默认只读，`--write` 才落库，`--thinking <stage>` 做反向对照） |
-| 检索轮次图表 | ✅ **本轮完成**。`GET /api/sessions/{sid}/trace` 按轮合并 `retrieve`+`assess`（**只取事件口径**，见下节），前端 `RoundChart.tsx` 画「命中/采用」柱 + 「累计段」折线。⚠️ **数据必须走 DB 不能走 SSE 事件**：会话跑完后 `useSession` 直接 return、不开 EventSource，`progress` 恒空，只从事件推的话刷新一次图就没了 |
-| 失败调用留痕 | ✅ **本轮完成**。迁移 `0008_llm_call_failure.sql` 加 `status`/`error`；`provider._record_error()` + 三条失败路径。`complete_json` 解析失败记**两行**（ok 行 token 确实花了 + error 行业务没成），`session_cost()` 不受影响。探针 `tests/probe_call_failure.py` |
-| 拖拽排序 | ✅ **本轮完成**。`repo.reorder_folders()` + `PATCH /api/folders/order` + `FolderTree` 原生 HTML5 DnD。**只做同级排序**，跨层级走菜单「移到…」 |
-| 引用 hover 预览 | ✅ **2026-10-13 已做**（原记录「⬜ 下轮」已过时）。新端点 `GET /api/sessions/{id}/seg_preview`，前端 `RefChip` 用 **portal + `position:fixed`** 出气泡（见 `DECISIONS.md`）。**原生 `title` 必须去掉**，留着会和气泡同时出现 |
-| **前端审计与修复** | ✅ **2026-10-14**。全量扫了 19 个文件/3950 行，修掉四条会骗人的缺陷：① 工作流视图环节归类错乱（写作阶段「规划」整个消失，根因是 `useSession` 丢掉了 SSE 外层的 `node`）② 侧栏写操作静默失败（`act()` 无 catch，删不掉看起来像删掉了）③ `jpatch`/`jdel` 错误信息还是老格式 ④ 新建/启动/审批/归档失败完全无声。另有 12 条一致性缺口 + 6 条清理项列在 `DECISIONS.md`，等美化时一并处理。**⚠️ 坑 25：回放只测得到审批为止，写作阶段从没被前端测过** |
-| **前端打磨三轮** | **✅ P0/P1/P2 全部完成（2026-10-13）**，都是只动前端、不动后端。**P0**（`27507bc`）：手写表格样式（`prose-sm` 原来是空类，typography 从未安装）、`notice` 通道、7 处静默吞错、来源库失败态、`ErrorBoundary`。**P1**（`fef594c`）：目录+进度条、新建研究对话框、加载态。**P2**：抽屉 Esc/遮罩/滚动锁、引用气泡键盘可达、引用按复用次数分三档、标题层级 |
-| **前端美化四段** | ① **✅ `79cc7e6`** 全局 tokens + 侧栏 ② **✅ `19f845c`** 报告阅读区 ③ **✅ `77c9884`** 工作流视图（拆开两个 `kind:"write"` → 「报告完成」/「证据闸门」；环节摘要不再重复 badge 的数；标签列宽**按环节各算各的**；`buildPhases` 加 memo——不 memo 会每次渲染触发 `scrollIntoView` 把上翻的用户拽回底部；空状态给一句「接下来会做什么」）④ **✅ 本轮** 来源库（**54% 的行在换行**——四项中位总宽 236px 超过 227px 可用宽；改单行+域名吸收+统计右对齐，行高 61/79 两种变 63 一种，域名 69px→147px，同视口 7 行→10 行；分组标题从紫色 badge 压成小圆点）。**四段全完成**。**⚠️ 坑 26/27/28/29/30/31/32：Tailwind class 顺序、vite 陈旧 CSS、内置 Browser 三个测量陷阱、探针 `<link href="./">` 静默失败、同一下标两套含义、内联 onClose 进依赖毁掉焦点归还、验不到≠通过** |
-| **收尾：a11y + 两个 bug + 阶段性能** | **✅ 2026-10-15**。a11y：菜单方向键导航/随滚动关闭/焦点归还、三个模态共用 `useDialog`（Tab 陷阱 + 锁滚 + 归还焦点，**原来三个都没有焦点陷阱**）、文件夹菜单加上移/下移（拖拽的键盘等价路径，走**同一个** `commitReorder`，到头时**禁用而非隐藏**）。bug：`useSession` SSE 断线后���轮询泄漏（孤儿 interval + 跑完不自停，为此给 `/approval` 端点加了 `status` 字段）、`Sidebar` 的 `ago()` 不刷新（30s 心跳，挂在 `SessionRow` 不是 Sidebar）。阶段性能：`assess`/`apply_revision`/`summary` 补 `@_timed_node`（`assess` 单次 LLM 155.5s 却完全没墙钟记录；**下一轮实测它占 111s/10%，在 v5 里完全不可见**）。另删 5 处死代码，**保留 `_fallback_queries` 墓碑**（记着为什么删）。**⚠️ 坑 31：Menu 里踩了和 useDialog 同一个坑，同类 bug 要连着搜一遍** |
-| **全量复跑 + 预算重定标** | **✅ 2026-10-15**。第一次在当前代码上跑完整流程（与 v5 同题、真实规模）。**结果：`status=done`、43 来源/91 段全入库，但报告是空的** —— `node_plan_tasks` 空返回 → `tasks=0`。降级完全正确（三处都写明原因，无静默失败）。根因：**`max_output_tokens` 定得太小**（write_plan 实测最大 7,654 = 上限 4,096 的 **187%**，一直在靠翻倍硬撑）。实测 4,096 成功 **1/14**、16,384 成功 **2/3**。改：write_plan→16,384/32,768，assess/write_section/probe_outline→8,192/16,384（**assess 在同一轮里也已经失败过一次**）。顺带修防线二（它只写在非流式分支，而所有思考型环节全是 `stream: true`，**一次都没跑过**）与写死模型名的错误信息。加 `tests/check_token_budget.py` 防复发。**⚠️ 坑 33/34/35：探针 SSE 手搓解析造出假数据、n=1 的趋势是噪声、默认值按多数定会系统性坑掉需要真思考的少数** |
-| **已换平台：中国信通院 discovery-api（2026-10-16）** | ✅ xj189 维护 19h+ 无恢复（四次复查形态一字不差），用户拍板换第二套方案。OpenAI 协议 `https://discovery-api.intern-ai.org.cn/v1`，模型 **`deepseek-v4-flash-0731`**（xj189 提供的同一个，旧数据能接上）。密钥 `INTERN_AI_API_KEY` 在 `.env`（gitignore）。预检 **9/9 通过**，生产路径冒烟 **4/4 通过**，预算体检全绿。⚠️ **坑 39：effort 语义与 xj189 完全相反**；⚠️ **坑 40：预检过了生产照样可能挂** |
-| **全量复跑同题（internai）** | ✅ **2026-10-18 跑通**：`/tmp/ra_v11_full.db`，`status=done`，44 来源 / 262 分块 / 245 段，报告 **22,379 字**（参考库那轮 18,200 字，没变薄），总 token 931,039。`write_section` **12/12 全过零 400**、`write_audit` **3/3 全过无空返回** —— 这两项到此才有线上验证（此前只有离线）。三次失败**全部响的**：`assess` 降档梯子走到底抛 EmptyOutput、`summarize` 一次平台无视 tool_choice、一次上游 400 grammar |
-| ⬜ **MiniMax 额度恢复后切回去** | `providers.minimax` 档案现成的，`defaults.provider` 改一行即可。切之前记得：`summarize` 的 `reasoning_effort: low` 是**为 MiniMax 加的**（那条路上关思考+工具会编造），在 xj189/internai 上可以改回 `disabled`。⚠️ MiniMax **限流还没设** `rate_limit_per_min` —— 实测撞过 `(2062) 速率限制`，relevance 20/131 失败 |
-| ⬜ **`write_plan` 上实测 effort 档位有没有用** | internai 的 n=3 消融里 low/medium/high 在简单题上分不出差别（中位 58~70 字、组内范围完全交叠），**但那不能推出「effort 无效」** —— 思考只用 60 字，是天花板效应（xj189 当初就这么误判过）。**必须在 write_plan 那种真需要规划的活上测**，每格 n≥3，记成功率「和」思考字数分布。现阶段保持 high 不动 |
-| **分派失败兜底：先不做** | ❌ **用户 2026-10-16 定：先不做，等验证工具循环效果**。工具循环刚加回来、一次没测过；兜底会**吃掉失败率、掩盖真问题**，且它绕过全局决策、切出来的任务粒度大概率不对（「正文是错的」比「正文是空的」更难发现）。**触发条件**：工具循环**仍**压不住空返回率，再讨论，且必须带降级标注。详见 `DECISIONS.md` |
-| 存疑节高亮 | ✅ 已在 `ReportView` 里做了（琥珀色区块） |
-| ~~流式第二步：正文增量~~ | ✅ **2026-10-13 核实：早就做完了，原记录过时**。`server.py:723` 推 `{"kind": "draft"}`（`reasoning` 推成 `thinking`），带 40 字/0.25s 节流和收尾 flush；`types.ts:53` 有类型、`useSession.ts:108` 在消费。剩下的**已知限制**不是待办：正文增量无法归属到具体小节（`write_section` 是 4 并发，`run_tool_loop` 拿不到 task_id） |
-| `blocked` 分类的实测数据 | v5 跑出 `blocked=0`。**2026-10-11 两度核对，结论是「材料确实够」**：①判据在 `prompts.py:488-518` 写得很完整；②真实数据复核——143 段证据，报告里 **17 个数值断言全部能在证据中找到出处，零编造**（`tool_reads={read_segments:21}`，子 agent 确实调过工具）。**中间我一度用构造草稿得出相反结论，那是坏探针，已作废**（见坑 11）。真正材料稀缺的场景还没测到，`bad_assignment` / `spec_conflict` 两类仍无真实数据。 |
-| `assess` 思考档位 | 配的 `low`，但实测 `low` 判断力约等于「关」。要改 high 还是关，待定。 |
-
-### 本轮新踩的坑（20、21、22）
-
-见第七节。三条都是**浏览器实测才发现的**，读代码和跑 tsc 都不会报：
-「未分类」常驻半透明（`null === null`）、SVG 刻度缩到 5px 看不清、坐标轴标签上下颠倒。
-
-### ⚠️ `run_trace` 的 `round` 有两套口径——都对，但别混用
-
-一开始以为这是 bug，查完发现**两边都是自洽的**（2026-10-13 核实）：
-
-| 记法 | 语义 | v5 实测值 |
-|---|---|---|
-| `run_trace` 的 `node:*` | **进入该节点时，已完成几轮** | `node:retrieve` = 0,1,2　`node:extract` = 1,2,3　`node:write` = 3 |
-| `retrieve` 事件 | **本次是第几轮** | 1, 2, 3 |
-
-`retrieve` 看起来「差 1」，是因为它是**唯一执行中就推进 `round`** 的节点。
-
-**别去统一它们。** 试过给 `node:*` 整体 +1：`node:retrieve` 看着对了，
-但 `node:extract` 会从 1,2,3 变成 2,3,4——extract 确实是在完成 1/2/3 轮
-时执行的，当前值本来就是对的。**统一会把本来对的改错。**
-
-⇒ 画「第 N 轮」图表**一律用事件口径**（`assess` / `retrieve`），
-`node:*` 只用来对齐耗时，不单独当轮次。已写进
-`repo.save_node_timing` 的 docstring 和 `node_retrieve` 里。
-
-### 已知缺口（2026-10-11 对照 `DECISIONS.md` 早期蓝图实测，详见 `GAP_CHECK.md`）
-
-> **2026-10-13 已清空四项空转**（用户定：「清干净，不留尾巴」）：
-> 矛盾结论、历史召回、话题标签、上传语料。表、repo 方法、端点、
-> 前端类型、测试脚本一并删除。迁移 `0007` 删老库的表，`0001_init.sql`
-> 同步改掉（`schema_migrations` 只记文件名、无 checksum，改历史迁移是安全的）。
-> 下面这张表只剩两项**仍未处理**的。
-
-| 缺口 | 实证 |
-|---|---|
-| 🔴 **库内检索根本不存在**（原写「时间衰减接不到排序」，是错的） | **只有 web 检索**（searxng/tavily 拿 URL → 抓取 → 切段 → **全部段落进写作**）。没有打分、没有排序、没有截断。`chunk_fts` 虚表 + 4 个同步触发器已建好、143 行一直在维护，但**全库没有一条 FTS5 MATCH 查询**，`cosine_topk()` 同样零调用。所以 `time_decay()` 从初始提交 `fe5129c` 就在，**一次都没被调用过**——它不是「没写完」，是给一个不存在的环节预留的零件。**2026-10-13 已删**（`embed.py` 末尾留了说明注释）。**向量化本身也已停算**（`chunk.embedding` 143 个向量算是历史存量，新会话不再写）——详见下方「向量化已停算」 |
-| ✅ `claim` 表 | **不是缺口，是已被取代**。用户 2026-10-13 补充：`claim` 是早期设计，后期换成了 `superseded_by`——段级/来源级的取代（`supersede_chunk()` + 抓取时的 `UPDATE source SET superseded_by`），比 claim 设想的结论级**更细**。「不静默覆盖」这个原始诉求已经被满足，`claim` 没有任何东西需要接手。**文档当时没记下这次替换** |
-
-### 关于「库内检索」这个缺口的判断
-
-**别默认它是待办。** 三个选项量级完全不同：
-
-1. **什么都不做**（现状）——v5 证明在这个规模（41 来源 / 143 段）下能出好报告：`blocked=0`、17 个数值断言全部有出处、零编造。代价是 token 随证据池线性增长（v5 用了 465k）。
-2. **先有排序**——FTS5 和向量**都已就绪**，缺的只是查询端。这是**质变**：token 大降，但**会改变报告看到的东西**，可能漏掉关键段落。必须用真实数据验证，不能拍脑袋。
-3. **只接时间衰减**——不成立。没有排序就无处衰减。（原来的 `time_decay` 属于这一类，所以删了。）
-
-`cosine_topk()`、`stack_blobs()`、`ready_chunks()` **2026-10-13 已删**：
-它们是「按相似度召回段落」这套实现的上下游零件，而这个环节从来没被接上。
-详见下方「向量化已停算」。
-
-**为什么清这些**：它们不是「没写完」，是**永远不可能被触发**——
-表和数据行都在，但写入方根本不存在。清掉的收益不只是代码变短，
-而是**代码不再谎报功能存在**（比如「认知演进」一节，
-用户以为报告里有，其实从来没出现过；`time_decay` 则让人以为「排序已经存在、只差接一下」）。
-
-### 向量化已停算（2026-10-13）
-
-**全库没有独立的向量数据库**——无 faiss/chroma/milvus/qdrant/weaviate/pgvector/pinecone
-依赖。所谓「向量」就是 `chunk.embedding` 这一列 BLOB（**384 维** float16 = 768 **字节**/段，
-143 段共 107 KB）。
-
-核实结果：
-
-| 项 | 真实情况 |
-|---|---|
-| `embed_document()` 生产调用点 | 只有一处（`node_finalize`，2026-10-13 已删） |
-| `cosine_topk()` | 零生产调用，**已删** |
-| 按向量相似度检索的查询 | **全库 0 条** |
-| `chunk_fts` FTS5 虚表 + 4 触发器 | 零 MATCH 查询（**由触发器维护、算力成本≈0，故保留**） |
-
-所以停算的理由不是「向量检索以后可能有用」，而是它**算出来就再没被读过**——
-v5 那一轮 143 段花了 **251 秒（整轮 1591s 的 15.8%）** 在写一列没人读的数据。
-
-⚠️ **最容易踩的坑**：`repo.complete_chunks()` 里 `status='complete'` 和 `embedding=?`
-原本在同一条 UPDATE 上。只删向量化不管这个，段落会**永久卡在 pending**，
-而 `node_finalize` 正是靠 `WHERE status='pending'` 选段的，二次运行会把它们全部重跑一遍。
-已同步把 `embedding=?` 从这条 UPDATE 里摘掉。
-
-顺带发现：`complete_chunks()` 的签名收着 `token_count`，但列表推导用 `_` 把它丢了，
-**从来没进过 SQL**——所以 `nodes.py` 里那次 `count_tokens()` 是纯白算
-（chunk 插入时 `add_chunk` 已经写过 token_count 了）。一并删掉。
-
-**`embedding` 列保留**（选项 C 未采纳）：历史会话那 143 段向量还在，将来真要做
-库内检索时不必改 schema。代价是这列从此只会越来越空。
-
-**删完后 `finalize` 节点耗时 315s → 0.033s**（真实库 143 段回放实测，
-status 全部正确翻成 `complete`，`cost_tokens` 正确回写，二次运行仍幂等）。
-`embed.py` 整个模块现在**零生产调用方**，`sentence_transformers` 重依赖仍挂在依赖树里。
-
-### 中期的
-
-> ⚠️ 这里原来第一条写的是「**前端（一行没写）**：报告阅读 + 引用跳转、审批界面、`assemble_warnings` 高亮」——
-> **2026-10-13 核实为彻底过时并删除**：四项全在（`ReportView.tsx` 153 行、`ApprovalView.tsx` 81 行、
-> 引用跳转 `withRefs`、`ReportView.tsx:60` 存疑节琥珀色高亮），前端共 3047 行。这已是这张表第二次腐化。
-
-- **Agnes 接入**：`DESIGN_R7_SECONDARY_MODELS.md` 有完整方案（接 `write_plan`/`probe_*`/
-  `outline`/`extract`，不接 `write_audit`/`relevance`），需要 provider 适配 + 令牌桶
-- `dedupe`：配置里有、图里零调用点，**记着的待办**不是废代码。实测按内容哈希做触发率为 0，真要干活得是语义级去重
-- ~~`assign`~~：✅ **2026-10-13 删掉**。它要映射的「断言」已被 `superseded_by` 取代（`claim` → 段级/来源级取代），分派现在由 `assess` 带框架一起做。**环节不存在，不是待接入**——和 `claim`/`time_decay` 同一类
-- ~~段落概括 JSON 失败率~~：✅ **已彻底解决**（2026-10-13 核实）。`extract_batch.py:263` 用
-  `complete_json_forced(..., name="emit_summaries", schema=...)` 强制工具调用，代码注释记着
-  「同一组数据实测 3/3 通过」；**v5 真实数据 143/143 段概括完整，0 段为空**。
-  `write.py:1219` 的 `n_no_summary` 只是兜底分支，正常不触发
-
-### 明确不做的
-
-降级路径（`LLMClient` 无 provider 切换）——单点依赖 MiniMax/xj189，
-但两个平台同时挂的概率低。探索式深度研究的 UI 形态。
-
 ---
 
 ## 九、工作约定
@@ -1431,4 +1234,32 @@ status 全部正确翻成 `complete`，`cost_tokens` 正确回写，二次运行
 4. **能力优先**：能交给 agent 自主判断的不写成程序死规则；
    引导性规则优于硬约束，硬约束只用于合规性与底层限制
 5. **结构性修改一律先说方案再改**
-6. **每个决定记进 `DECISIONS.md`**，状态同步进本文
+6. **每个决定记进 `CONTEXT.md`**（原 `DECISIONS.md` 已删）
+7. **自己判断错了要当场纠正并说明** —— 下面 56 条里至少有 6 条是我猜错之后
+   被自己的实验推翻才写进去的
+
+---
+
+## 十、已知缺口（写下来，别假装没有）
+
+| 缺口 | 状态 |
+|---|---|
+| `summarize` 37.5% 失败的病因 | **未知**。两个假设已被实验推翻，重测 32 批零失败 |
+| `summarize` 重试的真实收益 | **未验**。只有离线测试，需要再跑一轮约 40 分钟的全量 |
+| 工具侧参数被截断 | **只有告警，没有硬防线**（Anthropic 形状返回已解析对象，抛异常代价大于收益）|
+| `run_tool_loop` 的 MiniMax guard | 比真实危险条件**更宽**（把 3/3 正常的那种也挡住了）。保留：多挡只多花 token，漏挡是假证据进报告 |
+| MiniMax 限流的 **token 维度** | 未测。40/min 只保证请求速率；真实调用 token 量差几个量级（本轮全量也没撞）|
+| high vs low 的产物质量差异 | 未评估 |
+| 前端写作阶段 | **回放服务只测得到审批为止**（坑 25），写作阶段从没被前端测过 |
+| `bad_assignment` / `spec_conflict` 两类审查 | 仍无真实数据 |
+
+---
+
+## 十一、要改代码前先确认的清单
+
+- 加 state 字段 → **必须在 `ResearchState` / `WriteState` 里声明**，否则 LangGraph 静默丢弃
+- 改 provider → 读第六节（56 条坑）+ 「切换时必须一起改的东西」
+- 写/改守门测试 → provider **钉死**，不许跟着 `defaults` 漂；桩要接在**正确的层**上
+- 加一条新的发请求路径 → **数一遍同类路径有几条**（这轮栽了三次：空 tools 400、流式分支、截断检测）
+- 断 provider 协议形状 → **逐个字段核对** usage / stop_reason / tools / tool_choice，
+  不要假设「另一条路有的这里也有」

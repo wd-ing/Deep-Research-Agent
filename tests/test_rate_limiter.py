@@ -163,6 +163,12 @@ def t5_hook_wired():
             headers={"content-type": "text/event-stream"})
 
     c._client._transport = httpx.MockTransport(handler)
+    # ⚠️ **还要清掉 mounts**（2026-10-18 收尾时发现）。
+    # `httpx.Client` 的 `trust_env` 默认 True，会在**环境里有 `HTTP_PROXY`**
+    # 时装上代理 transport；此时只换 `_transport` 不够，请求照样走代理出去 ——
+    # 表现是「守门测试在有代理的机器上真的打网络并失败」。
+    # 症状与「限流钩子没生效」毫无关系（坑 47 的同一类：环境把它骗了）。
+    c._client._mounts = {}
     try:
         from research_agent.graph.subgraphs import write as W
         for _ in range(4):
