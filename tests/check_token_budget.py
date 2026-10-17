@@ -71,7 +71,23 @@ def main(argv: list[str]) -> int:
     print("-" * 72)
     over: list[str] = []
     near: list[str] = []
-    rows = sorted(obs.items(),
+
+    # ⚠️ 配置里没有的 stage **不能让它崩**（2026-10-17 修）。
+    # 起因：`write_plan` 拆成了 `write_plan_spec` / `write_plan_tasks`，
+    # 而历史数据里那些行的 stage 还写着 `write_plan` ——
+    # 脚本直接 `reg.stage(st)` 就抛 ConfigError，整个体检跑不完。
+    # 而「历史数据归不到新 stage」本身就是要报告的事实，不能被崩溃盖掉。
+    orphan: list[tuple[str, int, int]] = []
+    live: dict[str, tuple[int, int, int]] = {}
+    for st, v in obs.items():
+        try:
+            reg.stage(st)
+        except Exception:
+            orphan.append((st, v[0], v[1]))
+            continue
+        live[st] = v
+
+    rows = sorted(live.items(),
                   key=lambda kv: -kv[1][1] / max(reg.stage(kv[0]).max_output_tokens, 1))
     for st, (n, mx, av) in rows:
         cfg = reg.stage(st)
@@ -86,6 +102,12 @@ def main(argv: list[str]) -> int:
             near.append(st)
         print(f"{st:<18}{cfg.reasoning_effort or '-':<7}{cap:>8,}"
               f"{cfg.guard.max_output_tokens:>8,}{mx:>9,}{ratio:>6.0%}{n:>9}  {flag}")
+
+    if orphan:
+        print(f"\n⚠️ 配置里已不存在的环节（{len(orphan)} 个），其历史数据无法归因：")
+        for st, n, mx in sorted(orphan, key=lambda x: -x[2]):
+            print(f"   {st:<18}{n:>4} 次  实测最大 {mx:,}")
+        print("   —— 这不是错误，是**改名/拆分的代价**：这些调用的归属已经不可知。")
 
     print()
     if over:

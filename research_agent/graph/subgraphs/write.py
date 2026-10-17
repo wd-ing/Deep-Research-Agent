@@ -70,7 +70,8 @@ def node_plan_spec(state: WriteState) -> dict:
     拆开后两次都能完成：规约 4,234 out、任务列表 7,135 out，各自都在安全区。
     """
     try:
-        data = LLM.complete_json("write_plan", _clip(_dumps(_brief(state)), 40000),
+        data = LLM.complete_json("write_plan_spec",
+                                 _clip(_dumps(_brief(state)), 40000),
                                  system=prompts.WRITE_PLAN_SPEC)
     except Exception as e:
         return {"plan_failed": str(e)[:200],
@@ -122,7 +123,7 @@ def node_plan_tasks(state: WriteState) -> dict:
         tools = EvidenceTools(get_repo(), sid)
         try:
             text, _, log = run_tool_loop(
-                LLM, "write_plan", prompts.WRITE_PLAN_TASKS,
+                LLM, "write_plan_tasks", prompts.WRITE_PLAN_TASKS,
                 [{"role": "user", "content": _clip(prompt, 60000)}],
                 tools, max_rounds=MAX_TOOL_ROUNDS)
             _record_tool_use(state, "plan_tasks", log)
@@ -134,7 +135,7 @@ def node_plan_tasks(state: WriteState) -> dict:
 
     try:
         data = (_parse_json(text) if text
-                else LLM.complete_json("write_plan", _clip(prompt, 60000),
+                else LLM.complete_json("write_plan_tasks", _clip(prompt, 60000),
                                        system=prompts.WRITE_PLAN_TASKS))
     except Exception as e:
         return {"plan_failed": str(e)[:200],

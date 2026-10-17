@@ -58,7 +58,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # 配了 retry_on_empty 却不生效——思考 16,928 字符耗尽预算后直接崩掉。
 NEEDS_GUARD = {
     "probe_light", "probe_outline", "probe_degraded", "outline", "extract",
-    "relevance", "assess", "write_plan", "write_audit",
+    "relevance", "assess",
+    # ⚠️ `write_plan` 在 2026-10-17 拆成了两个 stage（见 write.py:73/126/138）。
+    # 拆之前两节点共用一个 `max_output_tokens`，而它们的需求差一个量级：
+    # 分派要看 99 段证据的概括，规约只看框架 + 术语。
+    # 更糟的是三处调用点在 DB 里全记成 `write_plan`，**历史数据无法归因到节点**。
+    "write_plan_spec", "write_plan_tasks",
+    "write_audit",
     "write_section", "write_revise", "summarize",
     # dedupe：配置里有、图里没有调用点，是**记着的待办**不是废代码。
     # 真要接入时它已经在白名单和 guard 里了。查证：grep 调用点为 0。
@@ -605,6 +611,29 @@ def _sse_lines(resp) -> Iterator[dict]:
             continue
 
 
+# 空返回/截断重试时的 **effort 降档梯子**（2026-10-17 加）。
+#
+# 为什么是降 effort 而不是加预算：
+# `max_tokens` 是思考和正文的**共享天花板**，思考吃满 ⇒ 正文必然 0
+# （实测 write_plan @16,384：reasoning_tokens 恰好 16,384、正文 0 字）。
+# 所以「失败就翻倍预算」是把墙抬高，让模型想得更远再撞一次。
+#
+# ⚠️ **梯子最底是 `low`，不是 `disabled`**：
+# `none` 在这个平台上**不是可靠开关** —— 实测（`probe_plan_tasks_modeB.py` E 格）
+# `disabled` 的思考中位仍有 11,109 token，还跑飞过一次 16,384。
+# 之前说「`none` 是干净开关、n=3 全 0、方差为零」是**用简单题测出来的假象**，
+# 换成 write_plan 的真实载荷就不成立了，已撤回。
+_EFFORT_LADDER = ("high", "medium", "low")
+
+
+def _lower_effort(current: str | None) -> str | None:
+    """给一档更低。没有更低档就返回 None（调用方据此停止重试）。"""
+    if not current or current not in _EFFORT_LADDER:
+        return None
+    i = _EFFORT_LADDER.index(current)
+    return _EFFORT_LADDER[i + 1] if i + 1 < len(_EFFORT_LADDER) else None
+
+
 def _is_truncated(usage: dict | None, finish_reason: str | None,
                   budget: int) -> bool:
     """输出是不是被 `max_tokens` 上限**切断**了（2026-10-17 加）。
@@ -992,6 +1021,12 @@ class LLMClient:
             {"role": "user", "content": prompt}
         ]
         budget = cfg.max_output_tokens
+        # 基础预算**一次给够，不在重试里翻倍**（2026-10-17 改）。
+        # `max_tokens` 是思考和正文的共享天花板（实测 write_plan @16,384 时
+        # reasoning_tokens 恰好 16,384、正文 0），所以「撞空就加钱」方向是反的 ——
+        # 加钱只会让它想得更远再撞一次。空/截断的正确动作是**降 effort**。
+        # `effort` 在重试里逐档下调；预算全程不动。
+        effort = cfg.reasoning_effort
         # 两种失败的额度**分开算**，不互相抢。理由见 GuardPolicy.retry_on_transport。
         guarded = cfg.stage in NEEDS_GUARD
         empty_left = cfg.guard.retry_on_empty if guarded else 0
@@ -1014,8 +1049,8 @@ class LLMClient:
                 "temperature": cfg.temperature,
             }
             # 该模型只接受 minimal / low 这类档位，none 与 0 会被 400 拒绝
-            if cfg.reasoning_effort:
-                payload["reasoning_effort"] = cfg.reasoning_effort
+            if effort:
+                payload["reasoning_effort"] = effort
             if json_mode:
                 payload["response_format"] = {"type": "json_object"}
 
@@ -1052,20 +1087,31 @@ class LLMClient:
                 usage["latency_ms"] = int((time.time() - t0) * 1000)
                 self._warn_reasoning_ratio(
                     cfg, usage, "".join(acc.reasoning))
-                # 截断与空返回**共用额度与翻倍逻辑**（2026-10-17 加）。
-                # 截断比空返回更隐蔽：内容非空，但 JSON 只写了一半 ——
-                # `_parse_json` 会把残缺 JSON 抢救回来，于是**静默丢字段**。
+                # 截断与空返回**共用额度与降档逻辑**（2026-10-17 加、改）。
+                # ⚠️ **动作从「翻倍预算」改成「降 effort」** —— 方向是反的，
+                # 而且原来那个方向从来就不对：
+                #   `max_tokens` 是思考和正文的**共享天花板**，思考吃满 ⇒ 正文必然 0
+                #   （实测 write_plan @16,384：思考 token 16,384/16,384，正文 0）
+                # 所以「预算不够」的正确解法是**一次给够**（见 models.yaml 的定标），
+                # 而不是失败了临时加钱 —— 加钱只会让它想得更远再撞一次。
+                # 真撞了天花板还出不来正文，说明这个任务上**想得太多**，
+                # 该做的是压思考量。
                 if not txt or _is_truncated(usage, acc.finish_reason, budget):
                     truncated = bool(txt)
                     last_reason = "truncated" if truncated else "empty"
                     if empty_left <= 0:
                         break
+                    nxt = _lower_effort(effort)
+                    if nxt is None:
+                        # 档位已经到底（通常是 disabled），再试也是同一份行为
+                        break
                     empty_left -= 1
-                    budget = min(cfg.guard.max_output_tokens, budget * 2)
+                    effort = nxt
                     self.warnings.append(
                         f"[{cfg.stage}] 流式{'输出被上限截断' if truncated else '返回空内容'}"
-                        f"（finish_reason={acc.finish_reason}），预算翻倍至 {budget} "
-                        f"后重试（额度还剩 {empty_left}）")
+                        f"（finish_reason={acc.finish_reason}），"
+                        f"**不抬预算**、改降 reasoning_effort → {effort!r} 重试"
+                        f"（额度还剩 {empty_left}）")
                     continue
                 return txt, usage
 
@@ -1149,20 +1195,24 @@ class LLMClient:
             self._warn_reasoning_ratio(
                 cfg, usage, msg.get("reasoning_content") or "")
 
-            # 防线一：内容为空**或被上限截断**则重试并翻倍预算
-            #（额度独立于传输断连；截断检测见 `_is_truncated`）
+            # 防线一：内容为空**或被上限截断**则重试。
+            # ⚠️ **动作是降 effort，不是加预算**（理由见上面 `effort` 那段注释）。
             if not text or _is_truncated(usage, choice0.get("finish_reason"), budget):
                 truncated = bool(text)
                 last_reason = "truncated" if truncated else "empty"
                 if empty_left <= 0:
                     break
+                nxt = _lower_effort(effort)
+                if nxt is None:
+                    break
                 empty_left -= 1
-                budget = min(cfg.guard.max_output_tokens, budget * 2)
+                effort = nxt
                 self.warnings.append(
                     f"[{cfg.stage}] 第 {attempt+1} 次"
                     f"{'输出被上限截断' if truncated else '返回空内容'}"
                     f"（finish_reason={choice0.get('finish_reason')}），"
-                    f"预算翻倍至 {budget} 后重试（额度还剩 {empty_left}）"
+                    f"**不抬预算**、改降 reasoning_effort → {effort!r} 重试"
+                    f"（额度还剩 {empty_left}）"
                 )
                 continue
             return text, usage
@@ -1174,17 +1224,16 @@ class LLMClient:
         # （同一类错误在别处也犯过：告警只说「该环节可能不适合 X」，
         #  证据只够说「相关」，不够说「不适合」。）
         #
-        # 有把握的部分是「预算 vs 思考」：2026-10-15 实测 write_plan 在
-        # 4,096 下成功 1/14、16,384 下 2/3 —— 所以下面给的是**下一步该查什么**，
-        # 不是「原因就是 X」。
+        # ⚠️ 这里**不能**再建议「抬 max_output_tokens」了（2026-10-17 改）：
+        # 重试的动作已经换成**降 reasoning_effort**，预算是按实测定死、
+        # 重试里一动不动。梯子走完还失败，说明「压思考量」这条也不管用，
+        # 再说「加钱」就是让模型想得更远再撞一次。
         raise EmptyOutput(
             f"环节 {cfg.stage} 的重试额度用尽仍未拿到内容"
             f"（模型 {cfg.model}，空返回 {cfg.guard.retry_on_empty} 次、"
             f"连接中断 {drops} 次，最后原因 {last_reason}）。"
-            f"已知同环节把 max_output_tokens 提到 "
-            f"{cfg.guard.max_output_tokens} 仍失败时，"
-            f"可考虑抬基础预算或降 reasoning_effort（当前 "
-            f"{cfg.reasoning_effort or '未设'}）——"
+            f"**已经试过的**：reasoning_effort 沿 high→medium→low 降档到 "
+            f"{effort or '未设'}，预算全程未抬（{budget}）。"
             f"这一条只是排查建议，本次并未观测到成因。"
         )
 

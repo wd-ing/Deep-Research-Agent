@@ -88,11 +88,12 @@ class Fake:
 
     def complete_json(self, stage: str, prompt: str, system: str | None = None):
         self.calls.append((stage, len(prompt)))
-        if stage == "write_plan":
-            # 拆成两次之后靠提示词内容区分：规划给「证据段落」清单，
-            # 分派给「写作规约 + 框架与轮廓」
-            if "写作规约" in prompt:
-                return self.plan
+        # ⚠️ 2026-10-17：`write_plan` 拆成了 `write_plan_spec` / `write_plan_tasks`
+        # 两个 stage（write.py:73/126/138）。桩必须跟着拆，否则分派拿不到 tasks
+        # → `by_task` 空 → `targets` 空 → `need_rework` 恒 False → 返修路径测不到。
+        if stage == "write_plan_spec":
+            return self.plan
+        if stage == "write_plan_tasks":
             return {k: v for k, v in self.plan.items() if k != "tasks"}
         if stage == "write_audit":
             d = self.audits[min(self._ai, len(self.audits) - 1)]
@@ -109,7 +110,8 @@ class Fake:
         # 正文垃圾 → `write_plan_error` → `by_task` 为空 → `targets` 为空 →
         # `need_rework` 恒 False → **场景 2 的返修路径整条测不到**。
         # 而且症状极隐蔽：场景 1（不返修）照样过，只有场景 2 才炸。
-        if stage == "write_plan":
+        if stage == "write_plan_tasks":
+            # 分派走工具循环（39b26f6 加回来的），这条路要回完整的 plan（含 tasks）
             return {"blocks": [{"type": "text",
                                 "text": json.dumps(self.plan, ensure_ascii=False)}],
                     "usage": {}}
