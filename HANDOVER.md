@@ -55,7 +55,12 @@ assess 顺带输出 `outline_review` 把框架校准到材料撑得住的粒度�
 `config/models.yaml` 的 `providers:` 档案管理，**阶段一行 `provider: xj189` 就切平台**。
 模型名 / 地址 / 密钥 / 预算 / 思考档位全在配置里，**代码零硬编码**。
 
-当前主用 **xj189（DeepSeek-v4-flash-0731）**；`minimax` / `opencode` 保留备用。
+当前主用 **minimax（MiniMax-M3）**——xj189 未恢复前的临时默认；
+`internai` / `opencode` 保留备用。切回 xj189 只改 `defaults.provider` 一行。
+
+⚠️ 换 provider **不只是改一行**：协议形状不同，防线要逐条核对。
+已踩的：截断检测认不出 Anthropic 形状的 `usage` / `stop_reason`
+（坑 51）。下次换平台前先读坑 51 和坑 52。
 
 ⚠️ **xj189 前面有 nginx 的 60 秒读超时墙**。开了流式的环节已绕过
 （实测跑过 245 秒），流式状态见 `config/models.yaml` 的 `stream:` 字段。
@@ -1119,9 +1124,13 @@ or omit the field entirely.
 
 | 情况 | 行为 | 理由 |
 |---|---|---|
-| MiniMax provider | `ConfigError` | 没接 `tool_choice`，降级等于把「保证」变成「也许」 |
 | `tool_choice` 名字不在 `tools` 里 | `ConfigError`（附现有工具名） | 名字拼错会静默变成普通调用 |
 | `arguments` 被 `max_tokens` 截断 | `EmptyOutput`（经 `_reject_broken_args`） | `{}` 会伪装成「成功的空结果」——这正是 `write_plan_tasks` 当年 `tasks=0` 的病根 |
+
+⚠️ **这一行已作废**：原来写着「MiniMax provider → `ConfigError`，没接
+`tool_choice`」。实测 MiniMax **认**这个字段，已撤销拦截并接上强制。
+（为什么会误判：`run_tool_loop` 那次我把两个变量混在一起测了 ——
+见坑 52。）
 
 ⚠️ 流式与非流式**必须对称**。`_openai_compat_forced` 的流式分支早有
 破参数标记，非流式分支没有 —— 同一条路两种待遇，这类洞只有在
@@ -1131,6 +1140,61 @@ or omit the field entirely.
 `stream: true`，走 `.stream()` 而不是 `.post()`；第一版只桩了 `.post`，
 于是测试**真的发了一次请求**（拿到 401）。桩没接对位置时，测试会
 悄悄变成一次真实调用 —— 比不写桩更危险。
+
+### 51. 换 provider 时，整段防线跟着协议形状一起漏掉
+
+`_is_truncated`（截断检测）只读 `finish_reason == "length"` 和
+`usage["completion_tokens"]` —— **两个都是 OpenAI 形状**。
+Anthropic 形状的对应物是 `stop_reason == "max_tokens"` 和 `output_tokens`。
+而且 `_minimax` 压根没调它，原来只判 `if not text`。
+
+⇒ 切到 minimax 之后，被 `max_tokens` 切断的正文**当成成功返回**：
+   `degraded: false`，不报错，不重试，报告静默少一截。
+   `_openai_compat` 里这道防线是有的 —— **它不是漏写，是漏搬**。
+
+同一个洞的另一个样子在同一个文件里：`_record` 早就
+`output_tokens or completion_tokens` 两个都读了，只有 `_is_truncated` 漏了。
+**记账对、告警错**是最难发现的一种不一致，因为数字看着有。
+
+**教训**：协议形状不同的 provider 之间切换，**逐个字段核对**，
+不要假设「另一条路有的这里也有」。最省事的检查：
+把每个后端分支读到的 usage 字段列出来对一遍。
+
+守门测试 `tests/test_minimax_truncation.py`。它测两件事，缺一不可：
+`_is_truncated` 认不认新字段名（①）、`_minimax` **有没有真的调它**（②）——
+只测 ① 的话，② 没接上时测试照样全绿。
+
+### 52. 「`tool_choice` 是保证」这句话，是从一次成功里读出来的
+
+原来的记录写「实测 MiniMax 认 `tool_choice`，4/4 全部正确」。
+那 4/4 的提示词**本身就点名要调工具**，而真正决定成败的是提示词。
+
+分变量 n=10 复测（同一 `tool_choice` 形状）：
+
+| 提示词 | 思考 | 强制 | 真调工具 | 真·编造 |
+|---|---|---|---|---|
+| 点名工具 | adaptive | 是 | **10/10** | 0 |
+| 点名工具 | disabled | 是 | 6/10 | 0 |
+| 点名工具 | disabled | 否 | 5/10 | **1/10** |
+| 只说「查一下 X」 | disabled | 否 | 3/3 | 0 |
+| 中性提示 | adaptive | 是 | **1/3** | 0 |
+
+⇒ 强制 6/10 对不强制 5/10，在噪声内。**真正起作用的是提示词。**
+⇒ 生产提示词（`WRITE_PLAN_TASKS`）恰好是点名 + 开思考那一格，
+   所以线上 Phase B 实测 3/3 —— **两层都过，不代表 `tool_choice` 本身是保证。**
+
+同一条也解释了更早的一次误判：我说过「MiniMax 不支持强制」，
+那次**同时**用了 `thinking: disabled` —— 两个变量没分开。
+**关思考 + 工具 + 提示词点名** 这一格命中率只有 5~6/10，
+而那正是当初看起来像「不支持强制」的形态。
+
+⚠️ 顺带纠正一个更宽的说法：「关思考 + 发工具就会编造」也说宽了 ——
+「只说『查一下 X』」不点名时，关思考照样 3/3 正常调用。
+真凶是**点名 × 关思考**。`run_tool_loop` 的 guard 因此比真实危险条件更宽，
+**保留不撤**（多挡只多花 token，漏挡是假证据进报告），但文案已改成实测口径。
+
+**教训**：断言「平台支持 X」时，提示词必须**跨格取样**。
+只在「模型本来就想做 X」的提示词上测，测的是提示词，不是接口。
 
 ---
 
