@@ -11,7 +11,7 @@
 
 跑法：
     set -a; . ./.env; set +a
-    RA_DB_PATH=/tmp/ra_xj189_v5.db .venv/bin/python tests/probe_session_summary.py
+    RA_DB_PATH=data/refs/ra_xj189_v5.db .venv/bin/python tests/probe_session_summary.py
 
 默认**只读不写**：不碰 session 表。要落库加 `--write`。
 """

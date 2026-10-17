@@ -85,7 +85,7 @@ START → probe(子图) → outline → retrieve → extract(子图) → assess
 
 ### 两轮全量的实测对照（2026-10-18）
 
-| | internai `/tmp/ra_v11_full.db` | minimax `/tmp/ra_v12_minimax.db` |
+| | internai `data/refs/ra_v11_full.db` | minimax `data/refs/ra_v12_minimax.db` |
 |---|---|---|
 | 结果 | `done` | `done` |
 | 写作阶段 | 29/29 全过 | **33/33 全过** |
@@ -120,7 +120,35 @@ research_agent/
 ├── server.py           FastAPI + SSE
 config/models.yaml      ★ provider 档案 + 各环节预算/effort/stream
 tests/                  守门测试 + 生产路径入口（见 README）
+data/refs/              ★ 真实跑出来的参考库（见下）
 ```
+
+### 参考库（`data/refs/`）
+
+真实跑出来的 SQLite 库，既是探针与体检脚本的**输入**，也是文档里那些实测数字的出处。
+**原来全躺在 `/tmp`** —— macOS 会清，一次重启就没了，而重造一份要 25~40 分钟
+加几十万 token。2026-10-17 用 `VACUUM INTO` 搬到这里（WAL 折进主文件、
+`integrity_check` 全 ok、行数与原件逐项核对一致），`/tmp` 的原件故意留着没删。
+
+| 库 | 内容 | 谁在读它 |
+|---|---|---|
+| `ra_v12_minimax.db` | minimax 全量，`done`，28,230 字 / 37 来源 / 288 次调用 | 注释与文档里的实测出处（prompts / extract_batch / test_summarize_retry）|
+| `ra_v11_full.db` | internai 全量，`done`，22,379 字 / 44 来源 / 308 次调用 | 前端回放的源库（README）|
+| `ra_xj189_v5.db` | 「v5」那一轮，23,130 字 —— 预算定标那批数字的出处 | `check_token_budget.py`、`probe_session_summary.py` |
+| `ra_internai_v1.db` | 18,200 字 / 39 来源 / 109 段 | **4 个探针的 `SRC_DB` 输入**（minimax_plan / forced_choice / plan_tasks_forced / relevance_model）|
+| `ra_v6_full.db` | 更早一轮，6,152 字 | `check_token_budget.py` |
+| `ra_verify_nature.db` | 来源性质端到端验收的真实数据（58k token / 7.4 分钟）| `verify_nature_e2e.py` |
+
+⚠️ **`data/` 整个被 `.gitignore` 排除**（`*.db` 也单独排除），所以这些库**不在 git 里**。
+搬到这里只解决「`/tmp` 被清」，**不解决「`data/` 被删」** —— 真要保命得自己备份到仓库外。
+
+⚠️ **探针的 `WORK_DB` 仍然留在 `/tmp`，不要改。** 探针是 `shutil.copy(SRC_DB, WORK_DB)`
+之后往 WORK_DB 里写的，一旦让它指向这里，跑一次探针就把参考库写脏了。
+只有**输入**路径搬了。
+
+⚠️ 没搬的那些：`ra_forced_choice` / `ra_forced_probe` / `ra_minimax_probe` 是
+`ra_internai_v1` 的工作副本（跑一次就能再生）；`mig_old` 是 `ra_xj189_v5` 的副本；
+`ra_v10_full` 没有任何地方引用、write 基本没产出（4,182 字、`write_trace` 为 0）。
 
 ## 五、仍然有效的决策（别推翻，除非有新的实测证据）
 

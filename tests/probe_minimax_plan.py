@@ -34,7 +34,7 @@ for _l in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
         k, v = _l.split("=", 1)
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
-SRC_DB = Path(os.environ.get("PROBE_SRC_DB", "/tmp/ra_internai_v1.db"))
+SRC_DB = Path(os.environ.get("PROBE_SRC_DB", str(ROOT / "data" / "refs" / "ra_internai_v1.db")))
 SID = os.environ.get("PROBE_SID", "s_efb71e9cbf66")
 WORK_DB = Path("/tmp/ra_minimax_probe.db")
 

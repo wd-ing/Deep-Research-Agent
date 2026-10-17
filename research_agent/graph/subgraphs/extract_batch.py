@@ -334,7 +334,7 @@ def summarize_segments(items: list[dict]) -> dict:
     # 而报告照样写完、`degraded: false`、不报错 —— 这正是本项目
     # 反复消灭的「静默丢证据」。
     #
-    # 实测代价（MiniMax 全量，`/tmp/ra_v12_minimax.db`）：
+    # 实测代价（MiniMax 全量，`data/refs/ra_v12_minimax.db`）：
     #     summarize ok 20 · error 12（37.5%，全部是「模型返回文本而非工具调用」）
     #     ⇒ 246 个分块里 98 个仍 pending、148 段里 98 段无概括
     # 按批次算，一次失败丢掉 12/246 ≈ 5% 的证据；重试成本也是一次调用。

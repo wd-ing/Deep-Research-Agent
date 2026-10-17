@@ -41,7 +41,7 @@ for _l in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
         k, v = _l.split("=", 1)
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
-DB = "/tmp/ra_internai_v1.db"
+DB = str(ROOT / "data" / "refs" / "ra_internai_v1.db")
 SID = "s_efb71e9cbf66"
 
 

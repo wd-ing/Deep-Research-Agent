@@ -39,7 +39,7 @@ for _line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
         k, v = _line.split("=", 1)
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
-SRC_DB = Path(os.environ.get("PROBE_SRC_DB", "/tmp/ra_internai_v1.db"))
+SRC_DB = Path(os.environ.get("PROBE_SRC_DB", str(ROOT / "data" / "refs" / "ra_internai_v1.db")))
 SID = os.environ.get("PROBE_SID", "s_efb71e9cbf66")
 # 拷一份再连：探针会写 llm_call / write_trace，不许污染那轮参考数据。
 WORK_DB = Path("/tmp/ra_forced_probe.db")

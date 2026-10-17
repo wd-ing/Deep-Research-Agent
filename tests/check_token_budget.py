@@ -46,7 +46,8 @@ def collect(db: str, reg: ModelRegistry) -> dict[str, tuple[int, int, int]]:
 def main(argv: list[str]) -> int:
     warn_only = "--warn-only" in argv
     dbs = [a for a in argv if not a.startswith("--")] or [
-        "/tmp/ra_xj189_v5.db", "/tmp/ra_v6_full.db"]
+        str(ROOT / "data" / "refs" / "ra_xj189_v5.db"),
+        str(ROOT / "data" / "refs" / "ra_v6_full.db")]
     reg = ModelRegistry()
 
     obs: dict[str, tuple[int, int, int]] = {}

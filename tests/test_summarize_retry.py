@@ -3,7 +3,7 @@
 ## 为什么要
 
 一次批次失败 = **12 段证据永远到不了写作阶段**，而报告照样写完、
-`degraded: false`、不报错。MiniMax 全量实测（`/tmp/ra_v12_minimax.db`）：
+`degraded: false`、不报错。MiniMax 全量实测（`data/refs/ra_v12_minimax.db`）：
 
     summarize ok 20 · error 12（37.5%）
     ⇒ 246 个分块里 98 个仍 pending、148 段里 98 段无概括

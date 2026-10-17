@@ -47,7 +47,7 @@ for _line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
         k, v = _line.split("=", 1)
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
-SRC_DB = Path(os.environ.get("PROBE_SRC_DB", "/tmp/ra_internai_v1.db"))
+SRC_DB = Path(os.environ.get("PROBE_SRC_DB", str(ROOT / "data" / "refs" / "ra_internai_v1.db")))
 # Phase B 用的 stage。别在下面散着写字面量——上一版就是因为
 # 从另一个文件抄了 `BASE_STAGE` 这个名字，两处 NameError。
 BASE_STAGE = "write_plan_tasks"

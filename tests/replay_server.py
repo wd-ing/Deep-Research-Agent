@@ -17,7 +17,7 @@
 
 ```bash
 # 1) 准备一份带真实报告的库（任何跑过研究的库都行）
-cp /tmp/ra_fe2.db /tmp/ra_replay.db
+cp data/refs/ra_v11_full.db /tmp/ra_replay.db
 
 # 2) 起回放服务器（speed=0 瞬间发完，纯测 UI 终态；1.0 是真实节奏）
 .venv/bin/python tests/replay_server.py --speed 1 --db /tmp/ra_replay.db

@@ -95,7 +95,7 @@ SSE 事件：`connected` / `node` / `progress` / `thinking` / `done` / `error`�
 25 分钟 + 几十万 token 的东西，用回放几秒跑完、零成本：
 
 ```bash
-cp /tmp/ra_v11_full.db /tmp/ra_replay.db       # 任何跑过研究的库都行
+cp data/refs/ra_v11_full.db /tmp/ra_replay.db   # data/refs/ 里任何一份都行
 .venv/bin/python tests/replay_server.py --speed 1 --db /tmp/ra_replay.db
 ```
 
@@ -180,6 +180,7 @@ research_agent/     后端（见 CONTEXT.md 第四节代码地图）
 frontend/           前端（React + Vite）
 config/models.yaml  ★ provider 档案 + 各环节预算/effort/stream
 data/               默认 SQLite 位置（用 RA_DB_PATH 覆盖）
+data/refs/          ★ 真实跑出来的参考库（探针输入 + 实测数字出处，见 CONTEXT 第四节）
 tests/              守门测试 + 生产路径入口
 tests/fixtures/     回放与端到端验的固定数据（replay_server / verify_nature_e2e 读它）
 CONTEXT.md          ★ 交接文档：架构 / 决策 / 56 个坑 / 已知缺口
