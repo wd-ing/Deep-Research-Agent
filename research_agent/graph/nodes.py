@@ -196,6 +196,14 @@ def node_outline(state: ResearchState) -> dict:
     # 从「探针过载降级」到「报告只剩一节」，中间没有任何一句提示。
     # 实测（2026-10-06）：探针 529 过载 4 次全挂，outline 输入从 5,172 token
     # 掉到 382，产出一份 19,261 字、单节的报告，而事件里全是 "degraded: true"。
+    #
+    # 🔴 **2026-10-18 修：`warn = []` 原来写在下面第 215 行，晚于这里的
+    # `warn.append(...)`。** 于是**框架退化这条分支一进就崩**
+    # （`UnboundLocalError`）—— 它从来没被执行过，因为正常路径不碰它。
+    # 探针降级恰恰是最需要这条分支的时候。
+    # 教训：局部变量列表要在**所有**分支之前初始化，
+    # 「先写正常路径、告警顺手写在后面」是最容易漏的写法。
+    warn: list[str] = []
     probe_degraded = bool(state.get("probe_degraded")) or not sig
     raw_n = len(raw_sections)
     if probe_degraded or raw_n == 0 or len(outline) <= 2:
@@ -212,7 +220,6 @@ def node_outline(state: ResearchState) -> dict:
 
     qz = (plan.get("queries") or {}).get("zh") or []
     qe = (plan.get("queries") or {}).get("en") or []
-    warn = []
     if len(qz) > MAX_QUERIES_PER_LANG or len(qe) > MAX_QUERIES_PER_LANG:
         warn.append(f"查询超限：zh {len(qz)} 条、en {len(qe)} 条，将截断至 {MAX_QUERIES_PER_LANG} 条")
 
