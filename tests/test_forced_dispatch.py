@@ -181,13 +181,24 @@ _off_stage = next((n for n in llm1b.registry.raw.get("stages") or {}
                    if (llm1b.registry.raw["stages"][n] or {}).get("reasoning_effort")
                    == "disabled"), None)
 if _off_stage:
-    _raw = "disabled"
+    # 期望值**从档案算**，不写死某个 provider 的行为：
+    #   minimax 档案故意不声明 `effort_off` ⇒ `disabled` → None
+    #   internai / xj189 声明了 ⇒ `disabled` → none / None
+    # 写死 minimax 的话，默认一切回 internai 这条就假失败 ——
+    # 失败原因是**测试自己过期**，不是代码坏了（同一个陷阱第三次）。
+    _prof_name = ((llm1b.registry.raw["stages"][_off_stage] or {}).get("provider")
+                  or (llm1b.registry.raw.get("defaults") or {}).get("provider"))
+    _effort_off = ((llm1b.registry.raw.get("providers") or {}).get(_prof_name)
+                   or {}).get("effort_off")
+    _want = _effort_off or None
     _got = llm1b.registry.stage(_off_stage).reasoning_effort
-    check("② registry 把 `disabled` 翻译成 None（minimax 不声明 effort_off）",
-          _got is None, f"{_off_stage}: 配置写 {_raw!r} → 解析成 {_got!r}")
+    check(f"② registry 按档案把 `disabled` 翻译成 {_want!r}（provider={_prof_name}）",
+          _got == _want,
+          f"{_off_stage}: 配置写 'disabled' → 解析成 {_got!r}"
+          f"（providers.{_prof_name}.effort_off={_effort_off!r}）")
 else:
-    check("② registry 把 `disabled` 翻译成 None（minimax 不声明 effort_off）",
-          False, "配置里已经没有环节写 disabled 了，这条机制没法验")
+    check("② registry 按档案把 `disabled` 翻译成 effort_off", False,
+          "配置里已经没有环节写 disabled 了，这条机制没法验")
 
 llm2 = LLMClient()
 pin(llm2, "summarize", "minimax", "https://api.minimaxi.com/anthropic",
