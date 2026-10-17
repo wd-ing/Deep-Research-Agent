@@ -5181,3 +5181,34 @@ JSON 永远合法，截断只表现为「少几个字段」—— 抛 `EmptyOutp
 ⚠️ 写这个测试时自己踩了一次「蒙对」：断言 `truncated in 文案` 恒成立
 （文案里那句固定解释始终含这个词），而脚本已取空、`last_reason` 其实是
 `empty`。已改成断言 `最后原因 truncated` 并**重新填脚本**。
+
+---
+
+## 2026-10-17 深夜补 · Phase B 在 MiniMax 上直接打生产路径，3/3
+
+`tests/probe_forced_choice.py 3`（默认 provider = minimax）。
+这个探针打的就是 Phase B 发出去的那**一个调用**——
+`complete_with_tools(..., tool_choice="submit_tasks")`，走 `_minimax_tools`，
+报文与生产逐字相同（载荷 99 段 / 3 小节，`thinking.type=adaptive`，65,536 预算）。
+
+    第1次 108.2s  tool_calls=['submit_tasks']  5 任务  88 段号  零编造  小节全覆盖
+    第2次 196.1s  tool_calls=['submit_tasks']  8 任务  90 段号  零编造  小节全覆盖
+    第3次 228.5s  tool_calls=['submit_tasks']  5 任务  98 段号  零编造  小节全覆盖
+
+    强制成功 3/3（连接中断 0 次）
+
+**与上面「强制是暗示」那条不矛盾**，两张表说的是同一件事：
+`WRITE_PLAN_TASKS` 的提示词本身就是强工具导向（「调用 `submit_tasks` 交卷」），
+落在 n=10 表里**「提示词点名工具 + 开思考」那个 10/10 的格子**。
+所以 MiniMax 上的实际结论是：
+
+    Phase A 自愿交卷    线上 3/3（probe_minimax_plan，真实载荷）
+    Phase B 强制交卷    线上 3/3（probe_forced_choice，同一载荷同一调用）
+    两层都在真实载荷上过了，兜底链完整。
+
+⚠️ 但边界要写清楚：**n=3，且只在「提示词点名 + 开思考」这一格验过。**
+换提示词（尤其是不点名的）就会掉到 1/3~6/10 —— 见 n=10 那张表。
+两层都过**不代表 `tool_choice` 本身是保证**，它只是在这个格子里有效。
+
+顺带：三次都打 `completion None`，因为 MiniMax 报的是 `output_tokens`
+（Anthropic 形状）。已查明并记档，且正是它把截断检测的洞带出来的。
