@@ -1230,6 +1230,54 @@ Anthropic 形状的对应物是 `stop_reason == "max_tokens"` 和 `output_tokens
 **探针和被测代码一样，会骗人。** 每次拿到预检输出，先问一句：
 「这个 ✅ 是真的测出来了，还是因为我没写失败分支？」
 
+### 54. 只在一个地方写 provider 分派 = 那个 provider 的某些环节永远不工作
+
+`complete_json_forced` 里原本是**无条件**调用 `_openai_compat_forced`：
+
+    blocks, usage = self._openai_compat_forced(cfg, system, prompt, tool)
+
+于是 provider=minimax 的环节拿 OpenAI 形状拼 URL：
+`https://api.minimaxi.com/anthropic/chat/completions` → **404**。
+
+**`summarize` 一轮 24 次全部 404，一个都没成功。**
+
+为什么这么久没发现：它是**唯一**用 `complete_json_forced` 的环节，
+而此前的验证都打在 write_plan* / relevance 上，够不到它。
+
+**认这条路的线索（很便宜，值得记）**：同一个库里两种报错前缀——
+
+    summarize  → "minimax 404: ..."     小写 = `_openai_compat`
+    relevance  → "MiniMax 429: ..."     大写 = `_minimax`
+
+`raise RuntimeError(f"{cfg.provider} …")` 和
+`raise RuntimeError(f"MiniMax {status} …")` 两处格式不同，
+**前缀大小写就是走哪条代码路径的指纹**。
+
+### 55. 护栏写在一条路上 = 另一条路完全裸奔
+
+「关思考 + 发工具在 MiniMax 上会编造」的 guard 原本只在 `run_tool_loop` 里。
+而 `summarize` 走 `complete_json_forced` —— **一条护栏都没覆盖**。
+
+护栏接上之后，`summarize` 在 MiniMax 上就**必须开思考才能跑**，
+所以这不是「防御性加固」，是**它本来就该有的一道关**。
+
+已抽成 `_check_minimax_thinking_tools()` 放在 `toolloop.py`，
+两条路都调（`provider.py` 反向 import，无环）。
+
+⚠️ **这是同一个形态第三次**：
+空 `tools` 数组 400、流式分支、`_is_truncated`，全是「只补了一条路」。
+**新增一条路径时，先数一遍同类路径有几条。**
+
+### 56. 报错的**前缀**是廉价的路径指纹
+
+见坑 54。补一条：**改了 provider 之后，扫一遍 `llm_call.error` 里的报错前缀**，
+不一致就是「有的环节还走老路」的信号。成本是一条 SQL。
+
+顺带一条实测：MiniMax 的 `usage.input_tokens` **只算未命中缓存的部分**，
+命中部分单列成 `cache_read_input_tokens`。所以 `input_tokens=74` 配上
+`cache_read=3456` 是一份正常的 3,500 token 输入，
+**不是「提示词空了」**——差点据此误判 outline 又退化了。
+
 ---
 
 ## 八、待办
