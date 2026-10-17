@@ -36,6 +36,13 @@ HARD_CAP_CHARS = 150000         # 防病态输入的硬上限，超过则截断�
 SUMMARY_BUDGET_CHARS = 24000    # 一次概括调用的段落正文字符预算
 SUMMARY_BATCH = 12            # 一次最多概括几段
 SUMM_WORKERS = 4              # 概括批次的并发度。缓存要预热、别打太满（2026-10-07）
+# 🔴 概括批次失败后的**有界重试次数**（2026-10-18 加）。
+# 一次失败 = 12 段证据静默丢失（见 summarize_segments 里那段）。
+# 只重试**失败/不完整**的批次，不重跑成功的；设 0 即回到旧行为。
+# 为什么是 1 而不是更多：实测（MiniMax 全量那次 vs 事后重测）批次失败率在 6%~37% 之间
+# 波动，**不是稳定的「必然失败」**——给一次机会就能捞回大部分，
+# 而无界重试会把「模型就是交不出来」放大成时间与 token 的黑洞。
+SUMM_RETRY = 1
 
 CONCURRENCY = 5
 
@@ -317,16 +324,67 @@ def summarize_segments(items: list[dict]) -> dict:
                     got[batch[idx]["chunk_id"]] = txt
         return got
 
-    for bi, got in enumerate(parallel_labelled(
-            list(enumerate(batches)), _one, workers=SUMM_WORKERS,
-            label="段落概括", first_serial=True)):
+    results = parallel_labelled(
+        list(enumerate(batches)), _one, workers=SUMM_WORKERS,
+        label="段落概括", first_serial=True)
+
+    # 🔴 **有界重试（2026-10-18 加）**
+    #
+    # 为什么要：一次批次失败 = **12 段证据永远到不了写作阶段**，
+    # 而报告照样写完、`degraded: false`、不报错 —— 这正是本项目
+    # 反复消灭的「静默丢证据」。
+    #
+    # 实测代价（MiniMax 全量，`/tmp/ra_v12_minimax.db`）：
+    #     summarize ok 20 · error 12（37.5%，全部是「模型返回文本而非工具调用」）
+    #     ⇒ 246 个分块里 98 个仍 pending、148 段里 98 段无概括
+    # 按批次算，一次失败丢掉 12/246 ≈ 5% 的证据；重试成本也是一次调用。
+    #
+    # **重试条件有两类，不只是「抛异常」**：
+    #   ① 返回 None（失败）
+    #   ② 返回了但**条数少于批次段数** —— 下标错位/空 summary 会被
+    #      「模型给错下标就跳过，不猜」那条规则悄悄丢掉，剩下的段
+    #      **同样到不了写作阶段**。只重试 ① 会漏掉这一半。
+    #
+    # ⚠️ **只重试一次**，且**只重试失败的批次**（不重跑成功的）——
+    # 无界重试会把「模型就是交不出来」放大成时间与 token 的黑洞。
+    # ⚠️ 重试不改变失败语义：两次都不成的照旧计入 `failed`。
+    def _short(r, b) -> bool:
+        return r is None or len(r) < len(b)
+
+    retry_idx = [i for i, (r, b) in enumerate(zip(results, batches)) if _short(r, b)]
+    retried = recovered = 0
+    if retry_idx and SUMM_RETRY > 0:
+        print(f"↻  段落概括：{len(retry_idx)}/{len(batches)} 批不完整，"
+              f"重试 {SUMM_RETRY} 次", flush=True)
+        for _ in range(SUMM_RETRY):
+            again = parallel_labelled(
+                [(i, batches[i]) for i in retry_idx], _one,
+                workers=SUMM_WORKERS, label="段落概括·重试", first_serial=True)
+            still: list[int] = []
+            for i, got in zip(retry_idx, again):
+                retried += 1
+                if not _short(got, batches[i]):
+                    results[i] = got
+                    recovered += 1
+                else:
+                    still.append(i)
+            retry_idx = still
+            if not retry_idx:
+                break
+
+    out: dict[str, str] = {}
+    failed = 0
+    for bi, got in enumerate(results):
         if got is None:
             failed += 1
-            print(f"⚠️  段落概括批次 {bi} 失败", flush=True)
+            print(f"⚠️  段落概括批次 {bi} 彻底失败（抛异常且重试仍不成），"
+                  f"这一批的 {len(batches[bi])} 段进不了写作阶段", flush=True)
             continue
         out.update(got)
 
     return {"summaries": out, "failed": failed,
             "events": [{"kind": "segment_summary", "segments": len(segs),
                         "batches": len(batches), "done": len(out),
-                        "failed": failed}]}
+                        "failed": failed,
+                        "retried": retried, "recovered": recovered,
+                        "still_incomplete": retry_idx}]}
