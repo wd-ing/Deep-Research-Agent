@@ -5336,3 +5336,51 @@ JSON 永远合法，截断只表现为「少几个字段」—— 抛 `EmptyOutp
 顺带记一条：`relevance` 的 `in=74` **不是退化** —— MiniMax 把缓存命中
 单列成 `cache_read_input_tokens`（那次是 3,456），`input_tokens` 只是未命中部分。
 差点据此误判「outline 又退化了」。
+
+---
+
+## 2026-10-18 · internai 上全量 e2e 跑通（要验的两项都验到了）
+
+`tests/e2e_run.py "固态电池的产业化进展，以及各家技术路线的分歧点" /tmp/ra_v11_full.db`
+
+### ✅ 这轮真正要验的两项
+
+| 环节 | 结果 |
+|---|---|
+| `write_section` | **12 次全 ok，零 400** |
+| `write_audit` | **3 次全 ok，无空返回** |
+
+在此之前这两项**只有离线验证**。
+
+### 整体
+
+    来源 44（相关 39 / 无关 5）   分块 262（pending 17）
+    段落 245（过闸门 190，无概括 17）   会话状态: done
+    报告 22,379 字（参考库那轮 18,200 字 ⇒ **没有变薄**）
+    总 token 931,039
+
+各环节：`probe_light` 1 / `probe_outline` 1 / `outline` 1（**sections 7，
+warnings 空，没有退化**）/ `summarize` 30 / `extract` 7 /
+`relevance` 232 / `assess` 3 / `write_plan_spec` 1 / `write_plan_tasks` 4 /
+`write_section` 12 / `write_audit` 3 / `write_revise` 9 / `session_summary` 1
+
+### 三次失败，**全部是响的**（这是这次最该看的部分）
+
+    assess    ×1  EmptyOutput：重试额度用尽，effort 沿 high→medium→low 降档到 low 仍失败
+    summarize ×1  EmptyOutput：模型返回文本而不是工具调用
+    summarize ×1  internai 400 upstream_request_rejected（grammar validation）
+
+没有一次是静默降级。`assess` 那次是**降档梯子走到底后抛的**，
+`summarize` 那次是 `_reject_broken_args` / 工具检查抓出来的。
+
+### 与之前那一轮的对照
+
+| | MiniMax（v10） | internai（v11） |
+|---|---|---|
+| `summarize` | **24/24 全 404** | 30 成功 / 2 失败 |
+| `outline` | 退化 → **崩溃** | sections 7，无退化 |
+| `write_*` | 没跑到 | 全过 |
+| 429 | `2062` 速率限制 → `2056` 额度用尽 | 无 |
+
+⇒ MiniMax 上挖出的三个洞（`complete_json_forced` 无分派、护栏只护一条路、
+截断检测漏 Anthropic 形状）**全部靠全量跑才暴露**，逐环节打打不到。
