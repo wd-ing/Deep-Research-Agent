@@ -5,6 +5,8 @@
 
 > **接手这个项目前，先读 [`CONTEXT.md`](CONTEXT.md)** ——
 > 架构、仍然有效的决策、56 条踩过的坑、工作约定、已知缺口。
+>
+> 已知但有意押后的工程欠账在 [`TECH_DEBT.md`](TECH_DEBT.md)。
 
 ---
 
@@ -184,4 +186,5 @@ data/refs/          ★ 真实跑出来的参考库（探针输入 + 实测数�
 tests/              守门测试 + 生产路径入口
 tests/fixtures/     回放与端到端验的固定数据（replay_server / verify_nature_e2e 读它）
 CONTEXT.md          ★ 交接文档：架构 / 决策 / 56 个坑 / 已知缺口
+TECH_DEBT.md        已知但有意押后的工程欠账
 ```
