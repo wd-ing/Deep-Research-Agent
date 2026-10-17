@@ -48,6 +48,9 @@ for _line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 SRC_DB = Path(os.environ.get("PROBE_SRC_DB", "/tmp/ra_internai_v1.db"))
+# Phase B 用的 stage。别在下面散着写字面量——上一版就是因为
+# 从另一个文件抄了 `BASE_STAGE` 这个名字，两处 NameError。
+BASE_STAGE = "write_plan_tasks"
 WORK_DB = Path("/tmp/ra_forced_choice.db")
 
 
@@ -90,23 +93,33 @@ def main() -> int:
     # （预算 / effort / stream / timeout 都照旧）——这样比的才是模型本身。
     if len(sys.argv) > 2 and sys.argv[2]:
         import copy
-        alt = copy.copy(llm.registry.stage(BASE_STAGE))
+        alt = copy.copy(llm.registry.stage("write_plan_tasks"))
         alt.model = sys.argv[2]
         llm.registry._cache[BASE_STAGE] = alt
         print(f"⚠️  模型换成 {sys.argv[2]}（其余配置照旧）")
-    cfg = llm.registry.stage(BASE_STAGE)
+    cfg = llm.registry.stage("write_plan_tasks")
     print(f"载荷 {len(state['on_topic'])} 段 / {len(state['outline'])} 小节")
     print(f"{cfg.provider} / {cfg.model} / effort={cfg.reasoning_effort} / "
           f"max_tokens={cfg.max_output_tokens} / timeout={cfg.timeout_s:.0f} / "
           f"stream={cfg.stream}\n")
 
     ok_forced = 0
+    dropped = 0
     for i in range(n):
         t0 = time.time()
         # ⚠️ 这一行就是 Phase B 发的那个调用，不是「差不多的调用」。
-        r = llm.complete_with_tools(
-            "write_plan_tasks", prompts.WRITE_PLAN_TASKS, messages,
-            [W.SUBMIT_TASKS], tool_choice="submit_tasks")
+        # 单次失败**不许中断整轮** —— 第一次跑就是被 RemoteProtocolError
+        # 直接带崩的，整轮数据全丢。失败也要算数（它本身就是结论）。
+        try:
+            r = llm.complete_with_tools(
+                "write_plan_tasks", prompts.WRITE_PLAN_TASKS, messages,
+                [W.SUBMIT_TASKS], tool_choice="submit_tasks")
+        except Exception as e:
+            dropped += 1
+            print(f"── 第{i+1}次 ──")
+            print(f"  ❌ {type(e).__name__} after {(time.time()-t0):.1f}s")
+            print(f"     {str(e)[:180]}")
+            continue
         blocks = r.get("blocks") or []
         u = r.get("usage") or {}
         calls = [b for b in blocks if b.get("type") == "tool_use"]
@@ -136,7 +149,7 @@ def main() -> int:
               + (f"，❌ 编造 {len(fake)}: {fake[:5]}" if fake else "，无编造"))
         print(f"  covers: {[t.get('covers') for t in tasks]}")
 
-    print(f"\n强制成功 {ok_forced}/{n}")
+    print(f"\n强制成功 {ok_forced}/{n}（连接中断 {dropped} 次）")
     llm.close()
     return 0 if ok_forced == n else 1
 
