@@ -86,11 +86,6 @@ def scoped(fn):
 
     return wrapper
 
-_KEEP_UPPER = re.compile(r"^(Accept|Charset|Cookie|Encoding|Referer|User-Agent|TE|"
-                         r"Transfer-Encoding|Connection|Via)", re.I)
-_PROXY_HDRS = {"host", "x-forwarded-for", "x-forwarded-proto", "x-real-ip",
-               "x-forwarded-host", "cf-connecting-ip", "x-forwarded-port"}
-
 
 def _is_time_sensitive(q: str) -> bool:
     ql = q.lower()
@@ -112,7 +107,16 @@ def _timed_node(name: str):
             sid = state.get("session_id") or ""
             t0 = time.time()
             try:
-                return fn(state)
+                out = fn(state)
+                # 累计**机器时间**，这是 `_predict_stop` 的超时判据唯一的数据来源。
+                # ⚠️ 不用「`started_at` 到现在」的墙钟：`await_approval` 是
+                # `interrupt()`，人去审批可能挂几个小时，那段不该算进预算。
+                # 这里累加的是各节点自己的耗时，审批等待天然不在内（interrupt
+                # 抛异常出去，走不到下面这行）。
+                if isinstance(out, dict):
+                    out["elapsed_s"] = round(
+                        float(state.get("elapsed_s") or 0.0) + (time.time() - t0), 1)
+                return out
             finally:
                 if sid:
                     try:
@@ -1122,11 +1126,6 @@ def node_apply_revision(state: ResearchState) -> dict:
             "events": [{"kind": "outline_revision", **entry}]}
 
 
-def route_after_assess(state: ResearchState) -> str:
-    """先应用修订，再决定继续还是收工。"""
-    return "apply_revision"
-
-
 def _stop_kind(state: ResearchState) -> str:
     """这次停下来是「够了」还是「撞顶了」。
 
@@ -1334,7 +1333,6 @@ def node_finalize(state: ResearchState) -> dict:
 
     remaining = len(chunks) - len(updates) - no_sum
     return {
-        "finalized_chunks": len(updates),
         "cost_tokens": cost,
         "events": [{
             "kind": "finalize", "chunks": len(chunks), "finalized": len(updates),

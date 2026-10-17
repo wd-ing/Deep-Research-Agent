@@ -1,3 +1,22 @@
+# ⚠️⚠️ **这个文件没有任何代码读取**（2026-10-17 查证）⚠️⚠️
+#
+# 后端唯一的 `yaml.safe_load` 读的是 `config/models.yaml`
+# （`research_agent/llm/provider.py:497`）。本文件的每个值都是
+# **写死在 Python 里的默认值**，改这里不会改变任何行为。
+# 而且它已经和真实值矛盾，照抄会看错参数：
+#
+#   这里写的                          代码里真正的值
+#   loop.max_rounds: 8            →   HARD max_rounds=4（nodes.py:41）
+#   loop.timeout_minutes: 20      →   HARD timeout_min=30（nodes.py:46）
+#   chunking.max_tokens: 500      →   RecursiveSplitter(max_tokens=2000,
+#                                     target_tokens=1000)（nodes.py:69）
+#   loop.max_tokens_per_session   →   这个判据 2026-10-08 已删，
+#       : 500000                      原因写在 nodes.py:48-60 的注释里
+#
+# 留着的理由：**文档**。`tavily.py` 开头关于「为什么不用 /research
+# 端点」的说明指到这里，那是真实的设计依据。
+# 要让它生效或者被删，是还没做的决定——在那之前，别拿它当真值。
+
 # 检索层配置
 #
 # 分工（P5 确认）：

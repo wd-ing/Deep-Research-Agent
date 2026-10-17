@@ -31,7 +31,6 @@ MAX_TASKS = 15              # 任务数上限。测试阶段的硬边界，防�
 CONCURRENCY = 4             # 并发子 agent 上限
 MAX_REWORK = 2              # 返修轮数上限
 MAX_TOOL_ROUNDS = 3         # plan 取全文的工具循环上限
-MAX_TOOL_INDICES = 30       # 单次工具调用最多取几条（超出的会在结果里明说，不静默丢）
 TASK_MARK_RE = re.compile(r"<!--\s*task:(\S+)\s+section:(\S+)\s*-->")
 # 子 agent 分节输出用的标记。`covers` 多于一节时必须逐节标注，否则无法归位。
 SECTION_MARK_RE = re.compile(r"<!--\s*section:(\S+)\s*-->")
@@ -145,8 +144,8 @@ def node_plan_tasks(state: WriteState) -> dict:
       · 代码不传工具了，`node_plan_tasks` 只调一次 `complete_json`
       · ⚠️ **但 `prompts.WRITE_PLAN_TASKS` 一直写着「看不准的时候可以调用
         工具取原文——取完再继续判断」**——在教模型去做一件它做不到的事
-      · ⚠️ `MAX_TOOL_ROUNDS` / `MAX_TOOL_INDICES` 两个常量定义了却零使用点，
-        和这轮清掉的 `keep_last` 是同一类残留
+      · ⚠️ `MAX_TOOL_INDICES` 曾定义了却零使用点，和 `keep_last` 是同一类残留，
+        已删；`MAX_TOOL_ROUNDS` 现在被下面 `run_tool_loop` 的调用使用
 
     为什么加回来而不是把提示词那两句删掉：分派是**全局决策**——决定哪段证据
     归哪一节、哪两节不能重复。只看 82 段概括做这个决定，粒度本来就不够；
@@ -1384,6 +1383,10 @@ def run_write(session_id: str, question: str, outline: list, signals: dict,
         "session_id": session_id, "question": question, "outline": outline,
         "signals": signals, "segments": segments, "on_topic": on_topic,
         "src_lines": src_lines,
+        # `n_no_summary` 原来没落进 state —— 参数传进来了却没进这个 dict，
+        # `node_final` 里 `state.get("n_no_summary")` 恒为假，
+        # 报告那句「有 N 个证据段落没能生成概括」永远写不出来。
+        "n_no_summary": n_no_summary,
         "drafts": {}, "violations": {}, "failed": [],
         "rework_rounds": 0, "rework_effective": True,
     }

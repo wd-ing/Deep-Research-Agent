@@ -131,7 +131,11 @@ _NO_DELTA_STAGES = {"relevance", "summarize", "extract",
 # 这些环节的输出是 **JSON**（框架 / 任务分派 / 审查结论），
 # 边流边推给用户只会看到一坨没闭合的括号。它们的 thinking 照常推（有用），
 # text 不推。真正给读者看的正文是 write_section / write_revise。
-_NO_TEXT_DELTA_STAGES = {"outline", "write_plan", "write_audit"}
+# ⚠️ 名字必须跟着 `config/models.yaml` 的 `stages:` 键走：
+# `write_plan` 在 2026-10-17 拆成 spec/tasks 两个 stage 后这里没跟上，
+# 它们的 JSON 增量又被推给了前端。
+_NO_TEXT_DELTA_STAGES = {"outline", "write_plan_spec", "write_plan_tasks",
+                       "write_audit"}
 
 
 def _fire_delta(stage: str, kind: str, chunk: str) -> None:

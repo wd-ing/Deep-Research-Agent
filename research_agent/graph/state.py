@@ -85,18 +85,15 @@ class ResearchState(TypedDict, total=False):
 
     # ---------- 证据 ----------
     pending_extract: list        # 本轮待批量抽取的来源
-    evidence: list               # 本轮新增的抽取结果
     all_evidence: Annotated[list, append_unique]
     sources: Annotated[list, append_unique]
     conflict_hashes: Annotated[dict, merge_dict]
 
     # ---------- 报告与收尾 ----------
     report_markdown: str
-    summarized_chunks: int
 
     # ---------- 预算 ----------
     cost_tokens: int
-    started_at: float
     elapsed_s: float
 
     # ---------- 事件流（供 SSE 推送） ----------
@@ -166,7 +163,6 @@ class WriteState(TypedDict, total=False):
     spec: dict                   # 写作规约：thesis/glossary/units/cautions/sections
     tasks: list                  # 任务列表，粒度由主 agent 定，上限 MAX_TASKS
     spec_capped: bool            # 任务数是否触顶被截断
-    tool_rounds: int             # plan 取全文用了几个工具轮次
 
     # ---- 执行 ----
     drafts: dict                 # {task_id: {section_id: 正文}}，一节一份

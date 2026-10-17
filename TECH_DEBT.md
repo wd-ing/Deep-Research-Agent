@@ -151,6 +151,22 @@ ra = "research_agent.cli:main"
 
 ---
 
+## 7. 🟡 `config/search.yaml` 没有任何代码加载，且值已和真值矛盾
+
+**2026-10-17 阶段 0 排查发现**（详见 `CONTEXT.md` 坑 61）：后端唯一的
+`yaml.safe_load` 读的是 `models.yaml`，`search.yaml` 是纯文档。
+它的 `loop.max_rounds: 8` / `loop.timeout_minutes: 20` /
+`chunking.max_tokens: 500` 都和代码里写死的值（4 / 30 / 2000）矛盾，
+`loop.max_tokens_per_session` 对应的判据已被删除。
+
+已做的处置：文件头加了显眼警告，标为「文档、不生效」。
+
+**待定（动手前要定的）**：接上（改成真正被加载、代码默认值改从它读）
+还是删掉（设计说明挪进 `CONTEXT.md`）。接上的话要先核对每条配置项
+对应的代码读法 —— 否则只是把一个说谎的文件换成另一种说法。
+
+---
+
 ## 关联文档
 
 - `CONTEXT.md` 第十节「已知缺口」—— **研究层面**的未验项（病因未知、质量未评估等），
