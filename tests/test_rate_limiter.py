@@ -128,8 +128,27 @@ def t5_hook_wired():
     sent = {"n": 0}
 
     import os
+    import os
+    # ⚠️ 密钥桩必须按**钉住之后**的 cfg 来给：先前是从 `write_plan_tasks`
+    # 读的，而那时它解析到 minimax，于是给错了键名，报「未设置 INTERN_AI_API_KEY」。
     env_name = c.registry.stage("write_plan_tasks").api_key_env
     os.environ.setdefault(env_name or "X", "dummy")
+    # ⚠️ **必须钉住 provider**：本用例验的是 **OpenAI 兼容路径**的流式发送
+    # （`stream: true` ⇒ `.stream()`）。默认 provider 切成 minimax 之后
+    # （2026-10-17），它会走 `_minimax_tools` —— **只实现非流式、用 `.post`**，
+    # 于是 `.stream` 桩形同虚设、真的打了网络，报出来的是 401/404。
+    # 症状与「限流钩子没生效」毫无关系，排查会被带偏很久。
+    import copy
+    _base = c.registry.stage("write_plan_tasks")
+    _prof = (c.registry.raw["providers"])["internai"]
+    _cfg = copy.copy(_base)
+    _cfg.provider = "internai"
+    _cfg.model = _prof["model"]
+    _cfg.base_url = _prof["base_url"]
+    _cfg.api_key_env = _prof["api_key_env"]
+    _cfg.stream = True
+    c.registry._cache["_t5"] = _cfg
+    os.environ.setdefault(_cfg.api_key_env or "X", "dummy")
     # 限额必须在 `registry.stage()` 之后设：建 stage 会按配置把桶覆写成 45
     lim = get_limiter("https://discovery-api.intern-ai.org.cn/v1", 3)
     lim.window_s = 0.4   # 只为让测试跑得完，生产永远是 60s
@@ -147,7 +166,7 @@ def t5_hook_wired():
     try:
         from research_agent.graph.subgraphs import write as W
         for _ in range(4):
-            c.complete_with_tools("write_plan_tasks", "s",
+            c.complete_with_tools("_t5", "s",
                                   [{"role": "user", "content": "p"}],
                                   [W.SUBMIT_TASKS], tool_choice="submit_tasks")
     finally:
@@ -168,6 +187,17 @@ def t6_config_value():
     prof = (reg.raw.get("providers") or {})
     rpm = (prof.get("internai") or {}).get("rate_limit_per_min")
     check("⑥ internai 配了限额", rpm == 45, f"rate_limit_per_min={rpm}")
+    # ⚠️ **不能靠 `reg.stage("write_plan_tasks")` 去触发登记**：
+    # 它跟随 `defaults.provider`，而默认已经切成 minimax（2026-10-17），
+    # 于是登记的是 minimax 的桶（它没配限额），断言必然挂 ——
+    # 而且挂的原因跟本用例要验的东西毫无关系。
+    # 钉住要测的那个 provider。
+    base = reg.stage("write_plan_tasks")
+    import copy
+    cfg = copy.copy(base)
+    cfg.provider = "internai"
+    cfg.base_url = "https://discovery-api.intern-ai.org.cn/v1"
+    reg._cache["write_plan_tasks"] = cfg
     reg.stage("write_plan_tasks")
     lim = get_limiter("https://discovery-api.intern-ai.org.cn/v1", rpm or 0)
     check("⑥ 读 stage 后桶已登记", lim.per_minute == 45,

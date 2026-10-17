@@ -26,6 +26,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import os  # noqa: E402
+
+# 全程打桩不打网络，但 provider 启动时要 `api_key_env` 有值。
+# 两个键都给：`INTERN_AI_API_KEY` 给 ⑧⑫，`MINIMAX_API_KEY` 给 ⑨。
+os.environ.setdefault("INTERN_AI_API_KEY", "stub-not-used")
+os.environ.setdefault("MINIMAX_API_KEY", "stub-not-used")
+
 from research_agent.llm import provider as P  # noqa: E402
 from research_agent.llm.toolloop import run_tool_loop  # noqa: E402
 
@@ -226,22 +233,90 @@ def t8_choice_name_missing():
         c.close()
 
 
-def t9_minimax_refuses_to_pretend():
-    """MiniMax 没接 tool_choice → 必须报错，不许降级成非强制。"""
+def t9_minimax_forced_works():
+    """MiniMax 的强制通路（2026-10-17 从「拒绝」改成「能用」）。
+
+    原来这条断言的是**反向**：MiniMax 遇到 `tool_choice` 抛 ConfigError，
+    理由是「没接强制、降级等于把保证变成也许」。后来实测证明它**认**强制：
+
+        adaptive + tools + 强制 submit   → tool_use=['submit'] ✅
+        adaptive + 两工具 + 强制 submit   → 正确选中 submit  ✅
+
+    我一度测出「不支持」，是**变量混淆** —— 那次同时用了
+    `thinking: disabled`，而「关思考 + 工具」本来就会让 M3 改成回文本。
+    两个变量没分开，结论就反了。
+    """
+    import copy
     c = P.LLMClient()
-    cfg = P.StageConfig(
-        stage="probe", provider="minimax", model="m",
-        max_output_tokens=1024, temperature=0.3, reasoning_effort=None,
-        thinking_effort=None, timeout_s=30.0)
-    c.registry._cache["probe"] = cfg
+    sent: list[dict] = []
+
+    class Resp:  # Anthropic 形状的非流式响应（`_minimax_tools` 走 `.post`）
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"content": [{"type": "tool_use", "id": "x",
+                                 "name": "submit_tasks",
+                                 "input": {"tasks": [{"covers": ["sec1"],
+                                                      "mandate": "m",
+                                                      "segments": ["S1·1"]}]}}],
+                    "usage": {"output_tokens": 9}}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        sent.append(json)
+        return Resp()
+
+    # ⚠️ **必须桩 `.post` 不是 `.stream`**：`_minimax_tools` **只实现非流式**
+    # （`stream: true` 被静默忽略——见 `_minimax_tools` 的说明）。
+    # 桩错方法的表现是「真实打网络」，拿到 401/404，看起来像代码坏了。
+    c._client.post = fake_post
+
+    base = c.registry.stage("write_plan_tasks")
+    prof = (c.registry.raw["providers"])["minimax"]
+    cfg = copy.copy(base)
+    cfg.stage = "_t9"
+    cfg.provider = "minimax"
+    cfg.model = prof["model"]
+    # ⚠️ **base_url / api_key_env 必须一起换**：只改 provider 而留着
+    # 信通院的 base_url，会打出 `/v1/messages` 到 OpenAI 兼容端点 → 404。
+    # 这个坑我踩了一次才写下来。
+    cfg.base_url = prof["base_url"]
+    cfg.api_key_env = prof["api_key_env"]
+    cfg.stream = False
+    cfg.reasoning_effort = "high"      # 关键：开思考，否则 M3 会改回文本
+    c.registry._cache["_t9"] = cfg
+
+    def fake_stream(method, url, headers=None, json=None, timeout=None):
+        sent.append(json)
+        return CM()
+
+    c._client.post = fake_post
     try:
-        c.complete_with_tools("probe", None, [], [FINAL], tool_choice="submit_tasks")
-        check("⑨ MiniMax 显式拒绝", False, "没抛")
-    except P.ConfigError as e:
-        check("⑨ MiniMax 显式拒绝", "tool_choice" in str(e), str(e)[:80])
-    finally:
-        c.registry._cache.pop("probe", None)
+        r = c.complete_with_tools("_t9", "s", [{"role": "user", "content": "p"}],
+                                  [FINAL], tool_choice="submit_tasks")
+    except Exception as e:
+        check("⑨ MiniMax 强制可用", False, f"{type(e).__name__}: {str(e)[:110]}")
+        c.registry._cache.pop("_t9", None)
         c.close()
+        return
+    finally:
+        c.close()
+    calls = [b for b in r["blocks"] if b.get("type") == "tool_use"]
+    check("⑨ MiniMax 强制可用：没有抛「拒绝」", True)
+    check("⑨ 报文带 Anthropic 形状的强制",
+          sent[0].get("tool_choice") == {"type": "tool", "name": "submit_tasks"},
+          str(sent[0].get("tool_choice")))
+    check("⑨ 强制时只发那一个工具",
+          [t.get("name") for t in sent[0].get("tools") or []] == ["submit_tasks"],
+          str(sent[0].get("tools")))
+    check("⑨ 开思考（否则 M3 会改回文本）",
+          sent[0].get("thinking") == {"type": "adaptive"},
+          str(sent[0].get("thinking")))
+    check("⑨ 拿到了工具调用", len(calls) == 1, f"tool_use={len(calls)}")
+    if calls:
+        check("⑨ 参数能解析出任务",
+              isinstance(calls[0].get("input"), dict)
+              and calls[0]["input"].get("tasks"), str(calls[0].get("input"))[:80])
 
 
 def t10_broken_args_raises():
@@ -310,13 +385,24 @@ def t12_empty_tools_must_be_omitted():
     工具循环加回来起就一直藏着 —— 与坑 41 同一形态：**平台的宽松把协议
     错误盖住了**。换成严格校验的平台才暴露。
     """
+    import copy
     c = P.LLMClient()
     sent: list[dict] = []
-    # 只发不发真的请求，密钥存不存在无所谓——但 `_opencode_tools` 会先查它，
-    # 所以塞个占位值。用**当前 stage 声明的那个**环境变量名，别写死。
-    import os
-    os.environ.setdefault(c.registry.stage("write_plan_tasks").api_key_env or "X",
-                          "dummy")
+    # ⚠️ **必须钉住 provider**：本用例测的是 **OpenAI 兼容路径**的空 tools 行为。
+    # 用 `registry.stage("write_plan_tasks")` 会跟着 `defaults.provider` 漂 ——
+    # 2026-10-17 默认切成 minimax 之后，它就走了 `_minimax_tools`
+    # （只实现非流式、用 `.post`），于是 `.stream` 桩形同虚设、**真的打了网络**，
+    # 报出来的是一个与本用例毫无关系的 401。
+    base = c.registry.stage("write_plan_tasks")
+    prof = (c.registry.raw["providers"])["internai"]
+    cfg = copy.copy(base)
+    cfg.stage = "_t12"
+    cfg.provider = "internai"
+    cfg.model = prof["model"]
+    cfg.base_url = prof["base_url"]
+    cfg.api_key_env = prof["api_key_env"]
+    cfg.stream = True
+    c.registry._cache["_t12"] = cfg
 
     SSE = [
         'data: {"choices":[{"delta":{"content":"ok"}}]}',
@@ -354,7 +440,7 @@ def t12_empty_tools_must_be_omitted():
     orig = c._client.stream
     c._client.stream = fake_stream
     try:
-        c.complete_with_tools("write_plan_tasks", "sys",
+        c.complete_with_tools("_t12", "sys",
                               [{"role": "user", "content": "p"}], [])
     finally:
         c._client.stream = orig
@@ -366,10 +452,11 @@ def t12_empty_tools_must_be_omitted():
     # `to_openai_tools` 全跳过 → `tools: []` —— 正好复现出那个 400 的报文形状。
     # 这个坑我自己踩了一次，所以留了注释。
     c2 = P.LLMClient()
+    c2.registry._cache["_t12"] = cfg      # 同样要钉住，别让它漂回 minimax
     c2._client.stream = fake_stream
     sent.clear()
     try:
-        c2.complete_with_tools("write_plan_tasks", "sys",
+        c2.complete_with_tools("_t12", "sys",
                                [{"role": "user", "content": "p"}], [FINAL])
     finally:
         c2.close()
@@ -387,7 +474,7 @@ def main() -> int:
         fn()
     print("\n=== provider 层 ===")
     t8_choice_name_missing()
-    t9_minimax_refuses_to_pretend()
+    t9_minimax_forced_works()
     t10_broken_args_raises()
     t12_empty_tools_must_be_omitted()
     print("\n=== node_plan_tasks 接线 ===")

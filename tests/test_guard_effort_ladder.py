@@ -30,7 +30,13 @@ sys.path.insert(0, str(ROOT))
 
 # provider 启动时要 `api_key_env` 有值（`_headers` / `_opencode` 都会读），
 # 但本测试全程是桩、不打网络，所以这里只需要「有值」这个事实。
+#
+# ⚠️ **两个键都要给**：本测试显式调 `llm._opencode(...)`（OpenAI 兼容那条路），
+# 但 cfg 是从 `registry.stage()` 拿的，而默认 provider 换过（2026-10-17 → minimax），
+# 于是 `api_key_env` 跟着变成了 MINIMAX_API_KEY。只给 internai 的键会报
+# 「未设置 MINIMAX_API_KEY」——**症状与本测试要验的东西完全无关**。
 os.environ.setdefault("INTERN_AI_API_KEY", "stub-not-used")
+os.environ.setdefault("MINIMAX_API_KEY", "stub-not-used")
 
 from research_agent.llm.provider import (  # noqa: E402
     LLMClient, _lower_effort,

@@ -58,8 +58,24 @@
 providers:
   minimax:
     provider: minimax
+    # ⚠️ **必须是 `MiniMax-M3`，不是 `MiniMax-M3.1-Flash-Preview`。**
+    # （2026-10-17 逐项实测，理由在 `_minimax` 的注释里）
+    #   · M3 的思考开关是 `thinking.type`：`disabled` 关、`adaptive` 开，**两个方向都行**
+    #   · M3 对 `output_config.effort` 完全不响应（传 low/high/max 全是 0 思考）
+    #   · M3.1-Flash `thinking.type=disabled` 直接 **400** ⇒ **关不掉思考**，
+    #     而本项目 7 个环节靠关思考省掉 68% 的 token
+    # 可用清单：M3 / M3.1-Flash-Preview / M2.7 / M2.7-highspeed / M2.5 /
+    #          M2.5-highspeed / M2.1 / M2.1-highspeed / M2
+    model: MiniMax-M3
     base_url: https://api.minimaxi.com/anthropic
     api_key_env: MINIMAX_API_KEY
+    # ⚠️ **故意不写 `effort_off`**：这条路径不用 `reasoning_effort` 控制思考，
+    # `_minimax` 把它翻译成 `thinking.type`（见那儿的实测对照表）。
+    # 写成 `none` 反而会让「关思考」这个语义走错字段。
+    #
+    # 限流没测过 ⇒ 不设 `rate_limit_per_min`（不设 = 不限流）。
+    # 撞了限流的表现是 HTTP 429，`_retryable_http` 会退避重试；
+    # 真撞上了再按实测填一个数，别先猜。
   opencode:
     provider: opencode
     base_url: https://api.opencode.ai/v1
@@ -176,7 +192,15 @@ defaults:
   # 而 `ModelRegistry.stage()` 本来就是 `s.get("provider") or d.get("provider")`
   # —— **单点机制一直都在，只是被硬写绕过了**。现在环节一律不写 provider，
   # 由这里统一决定，档案（模型名 / 地址 / 密钥 / 关思考怎么表达）随之继承。
-  provider: internai
+  #
+  # ⚠️ 2026-10-17 切到 `minimax`：DeepSeek 额度接近上限，
+  # 而 xj189 尚未恢复。切之前逐项实测过（见 DECISIONS 同日两节）。
+  #   Atria-Dawn 限时免费但**不能用**：`none` 90% 失败、`write_plan_tasks` 1/3。
+  #   MiniMax-M3 可用：思考开关两个方向都能控，强制工具调用认，
+  #   真实载荷 99 段 / 3 小节 n=1 全过（164.7 秒，5 任务，小节全覆盖，零编造）。
+  #
+  # 切回去只需改这一行：`provider: internai` 或 `provider: xj189`。
+  provider: minimax
   temperature: 0.0
   # 180 秒不够。实测（2026-10-05，R6 三轮真实数据）：
   #   write_audit 平均 132 秒、最长 170 秒 —— 已经贴着天花板

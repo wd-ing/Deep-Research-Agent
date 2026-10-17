@@ -69,6 +69,30 @@ def run_tool_loop(
     text = ""
     final_name = (final_tool or {}).get("name")
 
+    # 🔴 **关思考 + 发工具，在 MiniMax 上是错的**（2026-10-17 实测）：
+    #     thinking.type=disabled + tools → 模型**不调工具**，
+    #     回一段文本说「已经按你的要求调用 lookup 查『固态电池』」，
+    #     **然后编出一整段查询结果**（含小标题和释义）。
+    #     它把「没查」伪装成「查过了」—— 比不调用危险得多，
+    #     因为下游会以为证据已经看过。
+    #
+    # 为什么拦在这里而不是 `validate()`：只有**真的要发工具的那一次调用**
+    # 才知道这件事。配置层看不到「这个环节用不用工具」。
+    # （原先 `validate()` 里那条「minimax 不认 reasoning_effort」的拦截，
+    #   在 `_minimax` 学会翻译之后变成了挡住合法配置，已撤销。）
+    try:
+        _cfg = llm.registry.stage(stage)
+    except Exception:
+        _cfg = None
+    if (_cfg is not None and _cfg.provider == "minimax"
+            and not _cfg.reasoning_effort and (final_tool or provider.specs())):
+        raise RuntimeError(
+            f"环节 {stage} 在 MiniMax 上同时是「关思考」和「要发工具」——"
+            "**这个组合实测会让模型假装调用工具并编造结果**，"
+            "必须开思考（给这个环节配 `reasoning_effort: low` 或更高）。"
+            "没有这个问题的模型不受影响。"
+        )
+
     for round_no in range(max_rounds + 1):
         last_round = round_no >= max_rounds
         if final_tool is None:

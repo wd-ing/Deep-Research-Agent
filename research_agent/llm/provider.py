@@ -440,16 +440,22 @@ class StageConfig:
                     "换 provider 时必须一并删掉，否则会被静默忽略——"
                     "那正是上一轮踩过的坑。"
                 )
-        # 反向也要拦（2026-10-09 补）：MiniMax 不认 reasoning_effort，
-        # 配上去同样被静默忽略，症状和上面一模一样。
-        # 有了 `providers:` 档案之后这种错配更容易发生——阶段从 xj189 换回
-        # minimax 时忘了删 reasoning_effort，就正好踩上。
-        if self.reasoning_effort is not None and self.provider == "minimax":
-            raise ConfigError(
-                f"环节 {self.stage} 配了 reasoning_effort，但 provider 是 minimax。"
-                "reasoning_effort 是 OpenAI 兼容平台的参数，MiniMax 用 "
-                "output_config.effort —— 配错会被静默忽略。"
-            )
+        # ⚠️ 2026-10-17 **撤销了原来这条拦截**。
+        #
+        # 它写于 2026-10-09，当时 MiniMax 确实完全忽略 `reasoning_effort`，
+        # 配上去会被静默忽略。现在 `_minimax` / `_minimax_tools` **会把它翻译成
+        # `thinking.type`**（实测：M3 的 `disabled` 关、`adaptive` 开），
+        # 于是这条规则变成**挡住合法配置** —— 把 minimax 设为默认时
+        # 15 个 stage 全部起不来。
+        #
+        # 「静默忽略」这个风险已经不在了：翻译发生在一个地方，
+        # 且翻译失败会 400（响的，不是静默的）。
+        #
+        # 真正需要拦的是另一个，见 `run_tool_loop`：
+        # **关思考 + 发工具会让 MiniMax 假装调用工具并编造结果。**
+        #
+        # if self.reasoning_effort is not None and self.provider == "minimax":
+        #     raise ConfigError(...
         # 形状校验（2026-10-17 加）：**挡住 YAML 布尔值这个坑**。
         #
         # YAML 1.1 把裸 `off` / `on` / `yes` / `no` 全解析成布尔。
@@ -1119,11 +1125,18 @@ class LLMClient:
                     blocks, usage = self._opencode_tools(
                         cfg, system, messages, tools)
             elif cfg.provider == "minimax":
-                if forced is not None:
-                    raise ConfigError(
-                        f"环节 {stage}：MiniMax 路径还没接 tool_choice 强制，"
-                        f"拒绝假装约束生效")
-                blocks, usage = self._minimax_tools(cfg, system, messages, tools)
+                # 🔴 **不能降级成非强制**（2026-10-17 撤销了原来那条报错）。
+                # 当时的理由是「MiniMax 没接 tool_choice」。实测证明它**认**：
+                #   adaptive + tools + 强制 submit          → tool_use=['submit'] ✅
+                #   adaptive + 两工具 + 强制 submit          → 正确选中 submit   ✅
+                # 我一度测出「不支持」，是**变量混淆** —— 那次同时用了
+                # `thinking: disabled`，而「关思考 + 工具」本来就会让 M3 改回文本。
+                #
+                # 降级等于把「保证」变成「也许」：Phase B 失败会静默退回
+                # 手写 JSON，而那正是本次失败的原因（实测 1/2）。
+                blocks, usage = self._minimax_tools(
+                    cfg, system, messages, tools,
+                    tool_choice=(forced or {}).get("name"))
             else:
                 raise ConfigError(
                     f"环节 {stage} 的 provider {cfg.provider} 暂不支持工具调用")
@@ -1489,20 +1502,35 @@ class LLMClient:
         }
         if system:
             payload["system"] = system
-        # 思考深度走 output_config.effort，不走 Anthropic 的 thinking.budget_tokens。
+        # 思考深度：`output_config.effort` 与 `thinking.type` 是**两套互不相干**的
+        # 开关，M3 与 M3.1-Flash 的行为还正好相反。2026-10-17 逐项实测：
         #
-        # 这里曾经写的是 thinking={"type":"enabled","budget_tokens":N}，但 MiniMax
-        # 的 thinking.type 合法值只有 adaptive 与 disabled，没有 enabled。
-        # 那个字段不报 400，被静默忽略，于是「0 / 1024 / 4096 / 不传」四组设置
-        # 实际是同一组（都等于省略 → adaptive + 默认 effort=max），思考长度清一色
-        # ~35,000 字符。当时据此得出「无法控制思考，只能换模型」——结论的来源
-        # 是一次测错了参数名的黑盒实验。
+        #   设置                        MiniMax-M3          M3.1-Flash-Preview
+        #   不传 thinking            思考   0  ✅          思考 0
+        #   output_config.effort=low 思考   0（被忽略）    思考 240
+        #   output_config.effort=high思考   0（被忽略）    思考 0
+        #   effort=none              200（被忽略）        **400**
+        #   thinking.type=disabled   思考   0  ✅          **400**
+        #   thinking.type=adaptive   思考 435  ✅          思考 369
         #
-        # 官方文档：M3.1-Flash-Preview 的 effort 取 low/medium/high/xhigh/max，
-        # 省略即 max，none 与 disabled 都会 400（该模型要求 adaptive）。
-        # MiniMax-M3 则相反——省略 thinking 即关闭思考，且不接受 effort。
-        if cfg.thinking_effort:
-            payload["output_config"] = {"effort": cfg.thinking_effort}
+        # ⇒ **M3 的真开关是 `thinking.type`，不是 `effort`。**
+        #   省 effort 字段或传任何值，M3 都当没听见。
+        # ⇒ M3.1-Flash **关不掉思考**（disabled 直接 400），
+        #   而本项目 7 个环节靠关思考省 68% 的 token —— 所以选 M3。
+        #
+        # ⚠️ 这段注释以前写的是「省略即 max / 该模型要求 adaptive」，与实测相反。
+        # 那是基于 M3.1-Flash 记的，换到 M3 就不成立。**结论必须跟着实测的模型走。**
+        if cfg.reasoning_effort:
+            payload["thinking"] = {"type": "adaptive"}
+            # effort 对 M3 无效，但 M3.1-Flash / M2.x 认它；留着无害，
+            # 且换模型时这一行立刻起作用。
+            if cfg.thinking_effort:
+                payload["output_config"] = {"effort": cfg.thinking_effort}
+        else:
+            # 显式写 disabled 而不是省略：省略在 M3 上是「关」，
+            # 但**换个模型语义就可能翻**（M3.1-Flash 上省略也是关、adaptive 才开，
+            # 但 disabled 会 400）。写出来至少失败是响的。
+            payload["thinking"] = {"type": "disabled"}
         if json_mode:
             # Anthropic 协议没有 response_format，用提示词约束
             payload["messages"] = [{
@@ -1602,7 +1630,8 @@ class LLMClient:
     # ---------- 工具调用的两个后端 ----------
 
     def _minimax_tools(self, cfg: StageConfig, system: str | None,
-                       messages: list[dict], tools: list[dict]) -> tuple[list, dict]:
+                       messages: list[dict], tools: list[dict],
+                       tool_choice: str | None = None) -> tuple[list, dict]:
         key = os.environ.get(cfg.api_key_env or "MINIMAX_API_KEY", "")
         if not key:
             raise ConfigError(f"未设置 {cfg.api_key_env or 'MINIMAX_API_KEY'}")
@@ -1614,13 +1643,40 @@ class LLMClient:
             "temperature": cfg.temperature,
             "messages": messages,
         }
-        # 同 `_opencode_tools`：空数组要整个省略（见那里的实测记录）。
-        if tools:
+        if tool_choice:
+            # Anthropic 形状的强制：**只发那一个工具** + 指名。
+            # 2026-10-17 实测 MiniMax-M3 认这个（单工具 / 两工具都正确选中）。
+            #
+            # ⚠️ 我一度测出「强制不工作」，那是**变量混淆**：那次同时用了
+            # `thinking: disabled`，而「关思考 + 工具」本来就会让 M3 改成回文本
+            # （见下面那段）。开着思考再强制，4/4 全部正确。
+            pick = next((t for t in tools or []
+                         if isinstance(t, dict) and t.get("name") == tool_choice),
+                        None)
+            if pick is None:
+                raise ConfigError(
+                    f"环节 {cfg.stage} 要求强制调用 {tool_choice}，tools 里没有它")
+            payload["tools"] = [pick]
+            payload["tool_choice"] = {"type": "tool", "name": tool_choice}
+        elif tools:
+            # 同 `_opencode_tools`：空数组要整个省略（见那里的实测记录）。
             payload["tools"] = tools
         if system:
             payload["system"] = system
-        if cfg.thinking_effort:
-            payload["output_config"] = {"effort": cfg.thinking_effort}
+        # 思考开关与 `_minimax` 同一套（那里的实测对照表是依据）。
+        #
+        # ⚠️ **这里比 `_minimax` 更要紧**：实测 `thinking.type=disabled`
+        # + tools 时，MiniMax-M3 **不调工具，而是回一段文本声称
+        # 「已经按你的要求调用 lookup」并编造查询结果** ——
+        # 比不调用危险得多，因为它把「没查」伪装成「查过了」。
+        # 所以「关思考 + 发工具」这个组合在 MiniMax 上是**错的**，
+        # 由 `run_tool_loop` 在发之前拦住（那里才知道这次真的带了工具）。
+        if cfg.reasoning_effort:
+            payload["thinking"] = {"type": "adaptive"}
+            if cfg.thinking_effort:
+                payload["output_config"] = {"effort": cfg.thinking_effort}
+        else:
+            payload["thinking"] = {"type": "disabled"}
         # tools 参与缓存前缀且排在 system 之前，所以循环里 tools 必须始终一致
         t0 = time.time()
         r = self._client.post(
