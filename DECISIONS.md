@@ -5083,3 +5083,101 @@ M3.1-Flash **关不掉思考**（disabled 直接 400），而 7 个环节靠关�
    而 M3 上 `effort` 无效、`thinking.type` 是二值的 —— **没有中间档可降**。
    这不是漏改，是**这个模型上没有那个旋钮**，如实记。
 3. **Phase B 的强制在 MiniMax 上只离线验过**，线上待复测。
+
+---
+
+## 2026-10-17 深夜 · MiniMax 真实载荷复测 + 两条被我推翻的结论
+
+### 真实载荷 99 段 / 3 小节，n=3（补上强制通路之后）
+
+    第1次 ✅ 190.9s  tasks=5  covers=sec1,sec2,sec3  零编造  77 段号
+    第2次 ✅  48.4s  tasks=3  covers=sec1,sec2,sec3  零编造  61 段号
+    第3次 ✅ 192.5s  tasks=5  covers=sec1,sec2,sec3  零编造  81 段号
+
+**⚠️ 但这 3/3 验的不是 Phase B。** Phase A（模型自愿交卷）三次都成了，
+Phase B 一次都没被触发。上一版「A/B 里 B 组两次都是模型自己调的，
+Phase B 一次没执行」——**这次也是**。所以线上真实载荷目前只覆盖了
+「自愿交卷」这一层，强制层仍然要单独打（`probe_forced_choice.py`）。
+
+### 🔴 订正一：`tool_choice` 在 MiniMax 上**是暗示，不是保证**
+
+`_minimax_tools` 的注释原来写着「实测认这个，4/4 全部正确」。
+那 4/4 是在**提示词本身就点名要调工具**时测的 —— 混淆了自变量。
+分变量复测（每格 n=10，`tool_choice` 形状一致）：
+
+| 提示词 | 思考 | 强制 | 真调工具 | 回文本 | 真·编造 |
+|---|---|---|---|---|---|
+| 点名工具 | adaptive | 是 | **10/10** | 0 | 0 |
+| 点名工具 | disabled | 是 | 6/10 | 4/10 | 0（1/10 谎称无工具）|
+| 点名工具 | disabled | 否 | 5/10 | 5/10 | **1/10** |
+| 只说「查一下 X」 | disabled | 否 | 3/3 | 0 | 0 |
+| 中性提示 | adaptive | 是 | 1/3 | 2/3 | 0 |
+
+⇒ 决定成败的是**提示词想不想要这个工具**，不是 `tool_choice`
+   （强制 6/10 对不强制 5/10，在噪声内）。
+⇒ **MiniMax 上的「保证」只能来自另外两层**：Phase A 自愿交卷 +
+   `_parse_json` 兜底。Phase B 是加分项，不是保底。
+⇒ 平台层面（internai / xj189）的强制仍是硬的 —— 两边行为不同，
+   **别把 internai 的 3/3 记到 MiniMax 头上**。
+
+### 🔴 订正二：「关思考 + 工具就编造」说宽了
+
+真凶是**没有思考** × **提示词点名工具**这个格子。
+「只说『查一下 X』」不点名时，关思考照样 3/3 正常调用。
+
+`run_tool_loop` 那条 guard 因此**比真实危险条件更宽**（把 3/3 正常的
+那格也挡住了）。**保留不撤**：多挡只是多花 token，漏挡是假证据进报告。
+但错误文案已改成实测口径（5~6/10、出现过编造），不再宣称「这个组合就编造」。
+
+### MiniMax 的流式：**支持，而且是标准 Anthropic 事件**
+
+顺带测了 `_minimax` 静默忽略 `stream: true` 到底缺什么：
+
+    message_start → ping → content_block_start{text|thinking}
+    → content_block_delta{text_delta|thinking_delta|input_json_delta}
+    → content_block_stop → message_delta{stop_reason, usage}
+    → message_stop
+
+    关思考：index 0 = text
+    开思考：index 0 = thinking
+    开思考+工具：index 0 = thinking，index 1 = tool_use（partial_json 分片）
+
+`usage` 里还有 `output_tokens_details.thinking_tokens`，`stop_reason` 可用于
+截断检测。所以补流式是**可行的**，缺的是一层 Anthropic 形状的累加器
+（现有 `SSEAccum` 是 OpenAI 形状）。**本轮没做**——先记下可行性，
+等 Phase B 线上结果和全量复跑之后再动。
+
+### 🔴 查 usage 字段时挖出来的真 bug：MiniMax 上**截断检测完全失效**
+
+`probe_forced_choice.py` 打出来的每行都带 `completion None`，顺着查下去：
+
+    _is_truncated() 只读两个字段，且**都只认 OpenAI 形状**：
+        finish_reason == "length"     ← Anthropic 叫 "max_tokens"
+        usage["completion_tokens"]    ← Anthropic 叫 "output_tokens"
+    而 `_minimax` **压根没调它** —— 原来只判 `if not text`
+
+⇒ 被 `max_tokens` 切断的正文（`write_section` / `write_audit` 写到句子中间）
+   被当成**成功返回**：`degraded: false`，不报错，不重试，报告静默少一截。
+
+`_openai_compat` 两个分支里这道防线是有的（信通院那次加的），
+**切 provider 时整段漏掉了**。又是「平台换了、协议形状不同、失败是静默的」
+这同一个形态。
+
+同一次排查里还发现**记账对、截断判断错**这种最难发现的不一致：
+`_record` 早就 `output_tokens or completion_tokens` 两个都读了，只有 `_is_truncated` 漏了。
+
+**修**：`_is_truncated` 认两套形状（`max_tokens` / `output_tokens`），
+`_minimax` 补上调（重试仍走「预算翻倍」，因为 M3 上没有 effort 旋钮），
+`_minimax_tools` 对 `stop_reason == "max_tokens"` 出告警。
+
+**为什么工具侧只告警不硬失败**：Anthropic 形状返回的是**已解析对象**，
+JSON 永远合法，截断只表现为「少几个字段」—— 抛 `EmptyOutput` 会把一份
+可用的任务表变成整环节失败，代价大于收益。**这个缺口真实存在，如实记**。
+
+**守门测试** `tests/test_minimax_truncation.py` 23 项。测两件事，缺一不可：
+`_is_truncated` 认不认新字段名（①）、`_minimax` **有没有真的调它**（②）。
+只测 ① 的话，② 没接上时测试照样全绿。
+
+⚠️ 写这个测试时自己踩了一次「蒙对」：断言 `truncated in 文案` 恒成立
+（文案里那句固定解释始终含这个词），而脚本已取空、`last_reason` 其实是
+`empty`。已改成断言 `最后原因 truncated` 并**重新填脚本**。

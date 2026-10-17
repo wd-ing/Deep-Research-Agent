@@ -801,10 +801,23 @@ def _is_truncated(usage: dict | None, finish_reason: str | None,
     ⚠️ 第 2 条是**推断**不是事实：理论上存在平台把用量算得比实际多的可能。
     所以它只在「正好顶到上限」时触发（`>=` 而非接近即触发），
     宁可多重试一次，也不要把残缺结果当成功放过去。
+
+    ⚠️ **2026-10-17 补：Anthropic 形状的 usage 与 stop_reason。**
+    换到 minimax 后发现这两个信号**一个都读不到**：
+      · OpenAI 形状：截断 = `finish_reason == "length"`，用量 `completion_tokens`
+      · Anthropic 形状：截断 = `stop_reason == "max_tokens"`，用量 `output_tokens`
+    而本函数原来只认前者 ⇒ 在 MiniMax 上**恒返回 False**，
+    截断的正文会被当成成功返回（`write_section` / `write_audit` 少一截，
+    `degraded: false`，不报错）。两个字段名一起补上。
     """
-    if finish_reason and str(finish_reason).lower() == "length":
+    # 两套形状的截断标记都收：OpenAI "length" / Anthropic "max_tokens"
+    if finish_reason and str(finish_reason).lower() in ("length", "max_tokens"):
         return True
     used = (usage or {}).get("completion_tokens")
+    if used is None:
+        # Anthropic 形状用 `output_tokens`（`_record` 早就两个都读了，
+        # 只有这里漏了 —— 记账对、截断判断错，是最难发现的那种不一致）
+        used = (usage or {}).get("output_tokens")
     try:
         used_i = int(used)
     except (TypeError, ValueError):
@@ -1126,14 +1139,21 @@ class LLMClient:
                         cfg, system, messages, tools)
             elif cfg.provider == "minimax":
                 # 🔴 **不能降级成非强制**（2026-10-17 撤销了原来那条报错）。
-                # 当时的理由是「MiniMax 没接 tool_choice」。实测证明它**认**：
-                #   adaptive + tools + 强制 submit          → tool_use=['submit'] ✅
-                #   adaptive + 两工具 + 强制 submit          → 正确选中 submit   ✅
-                # 我一度测出「不支持」，是**变量混淆** —— 那次同时用了
-                # `thinking: disabled`，而「关思考 + 工具」本来就会让 M3 改回文本。
+                # 当时的理由是「MiniMax 没接 tool_choice」，不成立 ——
+                # 它认这个字段。
                 #
-                # 降级等于把「保证」变成「也许」：Phase B 失败会静默退回
-                # 手写 JSON，而那正是本次失败的原因（实测 1/2）。
+                # ⚠️ **但「认」不等于「保证」**（同日 n=10 分变量复测）：
+                #   提示词点名工具 + 开思考 + 强制 → 10/10
+                #   提示词点名工具 + 关思考 + 强制 → 6/10
+                #   提示词点名工具 + 关思考 + 不强制 → 5/10（其中 1 次真编造）
+                #   中性提示 + 开思考 + 强制 → 1/3
+                # ⇒ 强制是**暗示**：真正让 Phase B 成立的是「提示词想要这个工具」
+                #   +「开着思考」，不是 `tool_choice` 本身。
+                #
+                # 仍然不降级：降级等于把「保证」变成「也许」——
+                # Phase B 失败会静默退回手写 JSON，
+                # 而那正是 2026-10-17 那次失败的原因（真实载荷实测 1/2）。
+                # 兜底靠另外两层（Phase A 自愿交卷 + `_parse_json`），不是靠降级。
                 blocks, usage = self._minimax_tools(
                     cfg, system, messages, tools,
                     tool_choice=(forced or {}).get("name"))
@@ -1165,8 +1185,15 @@ class LLMClient:
 
         两层都修了：抽成公共入口（①），数值改走 `_reasoning_tokens`
         并用流式攒下来的思考正文兜底（②）。
+
+        ⚠️ **2026-10-17 再补一处**：读的是 `completion_tokens`，而 Anthropic
+        形状（minimax）报的是 `output_tokens` ⇒ 这里恒为 0 直接 return。
+        `_minimax` 自己有一套按字符算的占比判断，所以那个环节没漏；
+        但统一收口更省心，免得下次换 provider 又错在这里。
         """
-        completion = int((usage or {}).get("completion_tokens") or 0)
+        u = usage or {}
+        completion = int(u.get("completion_tokens") or 0) \
+            or int(u.get("output_tokens") or 0)
         if not completion:
             return
         reasoning = _reasoning_tokens(usage, reasoning_text)
@@ -1592,6 +1619,7 @@ class LLMClient:
                     continue
                 raise RuntimeError(f"MiniMax {r.status_code}: {r.text[:300]}")
             blocks = r.json().get("content") or []
+            stop_reason = r.json().get("stop_reason")
             text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
             think = "".join(b.get("thinking", "") for b in blocks if b.get("type") == "thinking")
             usage = r.json().get("usage") or {}
@@ -1606,15 +1634,26 @@ class LLMClient:
                     self.warnings.append(msg_w)
                     print(f"⚠️  {msg_w}", flush=True)
 
-            if not text:
-                last_reason = "empty"
+            # 🔴 **截断检测（2026-10-17 补，之前这里完全没有）。**
+            # 原来只判 `if not text`，于是被 `max_tokens` 切断的正文
+            # （`write_section` / `write_audit` 最典型：写到一半断在句子中间）
+            # **被当成成功返回** —— `degraded: false`，不报错，不重试。
+            # 换 provider 之前它在 `_openai_compat` 两个分支里是有的，
+            # 这次是切 MiniMax 时漏了：`_is_truncated` 只读 OpenAI 形状的
+            # `completion_tokens` / `finish_reason`，MiniMax 给的是
+            # `output_tokens` / `stop_reason`。字段名已一并补进 `_is_truncated`。
+            if not text or _is_truncated(usage, stop_reason, budget):
+                truncated = bool(text)
+                last_reason = "truncated" if truncated else "empty"
                 if empty_left <= 0:
                     break
                 empty_left -= 1
+                what = (f"被 max_tokens={budget} 截断（有 {len(text)} 字符正文）"
+                        if truncated else f"无可见输出（思考 {len(think)} 字符）")
                 self.warnings.append(
-                    f"[{cfg.stage}] 第 {attempt+1} 次无可见输出（思考 {len(think)} 字符），"
+                    f"[{cfg.stage}] 第 {attempt+1} 次{what}，"
                     f"预算翻倍至 {min(cfg.guard.max_output_tokens, budget*2)} 后重试"
-                    f"（空返回额度还剩 {empty_left}）"
+                    f"（重试额度还剩 {empty_left}）"
                 )
                 budget = min(cfg.guard.max_output_tokens, budget * 2)
                 continue
@@ -1622,9 +1661,9 @@ class LLMClient:
 
         raise EmptyOutput(
             f"环节 {cfg.stage} 的重试额度用尽仍未拿到内容"
-            f"（模型 {cfg.model}，空返回 {cfg.guard.retry_on_empty} 次、"
+            f"（模型 {cfg.model}，空返回/截断重试 {cfg.guard.retry_on_empty} 次、"
             f"连接中断 {drops} 次，最后原因 {last_reason}）。"
-            f"这是 reasoning 模型思考吃光预算的典型失效模式。"
+            f"`empty` = 想得太多把预算吃光；`truncated` = 顶到 max_tokens 被切断。"
         )
 
     # ---------- 工具调用的两个后端 ----------
@@ -1645,11 +1684,22 @@ class LLMClient:
         }
         if tool_choice:
             # Anthropic 形状的强制：**只发那一个工具** + 指名。
-            # 2026-10-17 实测 MiniMax-M3 认这个（单工具 / 两工具都正确选中）。
             #
-            # ⚠️ 我一度测出「强制不工作」，那是**变量混淆**：那次同时用了
-            # `thinking: disabled`，而「关思考 + 工具」本来就会让 M3 改成回文本
-            # （见下面那段）。开着思考再强制，4/4 全部正确。
+            # ⚠️ **这里原来写着「MiniMax-M3 认这个，4/4 全部正确」——已订正。**
+            # 那 4/4 是在**提示词本身就点名要调工具**时测的，混淆了自变量。
+            # 2026-10-17 分变量复测（每格 n=10，`tool_choice` 一律指名单工具）：
+            #
+            #   提示词点名工具 + 开思考 + 强制   → 真调 10/10，零编造
+            #   提示词点名工具 + 关思考 + 强制   → 真调  6/10，回文本 4/10
+            #   提示词点名工具 + 关思考 + 不强制 → 真调  5/10，**真·编造 1/10**
+            #   只说「查一下 X」不点名 + 关思考 → 真调  3/3
+            #   中性提示 + 开思考 + 强制         → 真调  1/3
+            #
+            # ⇒ **`tool_choice` 在 M3 上是暗示，不是保证**：强制 6/10 对不强制
+            #   5/10，差异在噪声内。真正决定成败的是**提示词想不想要这个工具**。
+            # ⇒ 所以 MiniMax 上的「保证」只能来自三层里的另外两层
+            #   （Phase A 自愿交卷 + `_parse_json` 兜底），Phase B 是加分项。
+            #   平台层面（internai/xj189）的强制仍是硬的，两边行为不同，别混记。
             pick = next((t for t in tools or []
                          if isinstance(t, dict) and t.get("name") == tool_choice),
                         None)
@@ -1665,12 +1715,14 @@ class LLMClient:
             payload["system"] = system
         # 思考开关与 `_minimax` 同一套（那里的实测对照表是依据）。
         #
-        # ⚠️ **这里比 `_minimax` 更要紧**：实测 `thinking.type=disabled`
-        # + tools 时，MiniMax-M3 **不调工具，而是回一段文本声称
-        # 「已经按你的要求调用 lookup」并编造查询结果** ——
+        # ⚠️ **这里比 `_minimax` 更要紧**。2026-10-17 首测 n=1：
+        # `thinking.type=disabled` + 工具（且提示词点名要调）时，MiniMax-M3
+        # 回一段文本声称「已经按你的要求调用 lookup」并编造查询结果 ——
         # 比不调用危险得多，因为它把「没查」伪装成「查过了」。
-        # 所以「关思考 + 发工具」这个组合在 MiniMax 上是**错的**，
-        # 由 `run_tool_loop` 在发之前拦住（那里才知道这次真的带了工具）。
+        # 后面 n=10 复现把自变量分开了（表见上面 `tool_choice` 那段）：
+        # 危险格是「**提示词点名工具** + 关思考」，命中率掉到 5~6/10 并出现真编造；
+        # 而「只说『查一下 X』」不点名时，关思考照样 3/3 正常调用。
+        # 由 `run_tool_loop` 在发之前拦住（只有真要发工具的那次调用才知道）。
         if cfg.reasoning_effort:
             payload["thinking"] = {"type": "adaptive"}
             if cfg.thinking_effort:
@@ -1692,7 +1744,22 @@ class LLMClient:
         j = r.json()
         usage = j.get("usage") or {}
         usage["latency_ms"] = int((time.time() - t0) * 1000)
-        return j.get("content") or [], usage
+        blocks_out = j.get("content") or []
+        # ⚠️ **工具参数被截断，这里只告警不失败**（2026-10-17）。
+        # `_openai_compat_forced` 那条路靠 `_reject_broken_args` 硬失败，
+        # 因为 SSEAccum 拼出来的是**字符串**，坏了就是坏了。
+        # Anthropic 形状返回的是**已解析的对象**——JSON 永远合法，
+        # 截断只表现为「少几个字段」，下游 `_normalize_tasks` 照常补齐。
+        # 那时抛异常会把一份可用的任务表变成整环节失败，
+        # 代价大于收益，所以这里选择**说出来**而不是**炸掉**。
+        # ⚠️ 这个缺口是真实存在的：工具侧截断目前只有告警，没有硬防线。
+        if str(j.get("stop_reason") or "") == "max_tokens" and any(
+                b.get("type") == "tool_use" for b in blocks_out):
+            msg_w = (f"[{cfg.stage}] 工具参数被 max_tokens={cfg.max_output_tokens} "
+                     f"截断，任务表可能不完整（stop_reason=max_tokens）")
+            self.warnings.append(msg_w)
+            print(f"⚠️  {msg_w}", flush=True)
+        return blocks_out, usage
 
     def _opencode_tools(self, cfg: StageConfig, system: str | None,
                         messages: list[dict], tools: list[dict]) -> tuple[list, dict]:
