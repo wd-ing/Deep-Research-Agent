@@ -5271,3 +5271,68 @@ JSON 永远合法，截断只表现为「少几个字段」—— 抛 `EmptyOutp
 `reasoning_effort`），对 Anthropic 协议的平台**结构上不适用**。
 现在报 `➖ 不适用`（既不算通过也不算失败），不再混进 ❌ 里。
 —— 讽刺的是那个文件自己的文件头就写着「本项目不手搓」。
+
+---
+
+## 2026-10-18 · 全量 e2e 挖出来的两个洞（都只在全链路跑时才暴露）
+
+### 🔴 坑 A：`summarize` 在 MiniMax 上 **24 次全部 404**
+
+`complete_json_forced` 里写着
+
+    blocks, usage = self._openai_compat_forced(cfg, system, prompt, tool)
+
+**没有 provider 分派**。于是 minimax 的环节会拿 OpenAI 形状拼 URL：
+
+    https://api.minimaxi.com/anthropic/chat/completions  → 404 page not found
+
+`complete_json_forced` 只有 `summarize` 在用（`extract_batch`），
+而这一轮之前所有验证都打在 write_plan* / relevance 上，**够不到它**。
+
+**认这条路的线索**：报错前缀是**小写 `minimax`**（`_openai_compat` 的格式）
+而不是**大写 `MiniMax`**（`_minimax` 的格式）。
+同一批记录里 `relevance` 的 429 前缀就是大写的 `MiniMax`。
+—— **同一个库里两种前缀，就是两条不同代码路径的直接证据。**
+
+修：按 provider 分派，minimax 走 `_minimax_tools`（Anthropic 形状：
+`input_schema` + `{"type":"tool","name":…}`）。
+
+### 🔴 坑 B：护栏只写了一条路
+
+「关思考 + 发工具在 MiniMax 上会编造」这条 guard 原来只在 `run_tool_loop` 里。
+而 `summarize` 走 `complete_json_forced` —— **完全没被覆盖**。
+
+抽出 `_check_minimax_thinking_tools()` 放在 `toolloop.py`，
+`provider.complete_json_forced` 也调它（反向 import，无环）。
+
+**这是这轮第三次栽在同一个形态上**：一次只补一条路。
+（空 `tools` 数组 400、流式分支、截断检测，都是同一类。）
+
+### 配置变更：`summarize` 的 `reasoning_effort: disabled` → `low`
+
+护栏接上之后，`summarize` 在 MiniMax 上**必须开思考才能跑**
+（强制工具调用 + 关思考 = 5~6/10 且编造）。
+
+代价按参考库 189 次调用统计：`summarize` 一轮 15 次（7.9%），
+但输入很大（55,836 token，要读段落原文）。`low` 的思考增量相对
+55.8k 输入可以忽略。**换回 xj189 时可改回 `disabled`**（那条路上没这个问题）。
+
+### 顺带：`test_platform_switch` 的 `OFF_STAGES` 改从配置里读
+
+它硬编码了 7 个环节名，`summarize` 一改就漂 —— 失败原因是**测试自己过期了**，
+不是代码坏了。手抄的清单迟早跟不上配置。
+
+### ⚠️ e2e 第二轮被外部因素打断，不是代码
+
+跑到 extract 阶段时开始刷 429，先 `(2062) 速率限制`（relevance 20/131 失败），
+后来变成 `(2056) Token Plan 用量上限`：
+
+    {"type":"error","error":{"type":"rate_limit_error",
+     "message":"已达到 Token Plan 用量上限：请升级 Token Plan 套餐或购买积分补充用量。 (2056)"}}
+
+**1 token 的请求都被拒**，而 `GET /v1/models` 仍 200 ⇒ 账号是通的、额度用完了。
+**所以这一轮的结论只到 extract，`write_section` / `write_audit` 仍未线上验证过。**
+
+顺带记一条：`relevance` 的 `in=74` **不是退化** —— MiniMax 把缓存命中
+单列成 `cache_read_input_tokens`（那次是 3,456），`input_tokens` 只是未命中部分。
+差点据此误判「outline 又退化了」。

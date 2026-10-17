@@ -54,6 +54,11 @@ from typing import Any, Callable, Iterator, Optional
 
 import httpx
 
+# 「关思考 + 发工具」在 MiniMax 上会编造结果的护栏（2026-10-18 抽出共用）。
+# `toolloop` 不 import 本模块（它的 `llm` 参数是鸭子类型），
+# 所以这里反向 import 不会成环。
+from .toolloop import _check_minimax_thinking_tools  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # 所有环节都要走 guard。曾经只覆盖抽取类环节，结果 write 阶段
@@ -1203,8 +1208,34 @@ class LLMClient:
         }}
         cfg = self.registry.stage(stage)
         t0 = time.time()
+        # 🔴 **这里原来无条件调 `_openai_compat_forced`**（2026-10-18 修）。
+        # 于是 provider=minimax 的环节会拿 OpenAI 形状的端点去拼 URL：
+        #     https://api.minimaxi.com/anthropic/chat/completions  → 404
+        # 全量 e2e 实测：**`summarize` 24 次全部 404**，一个都没成功。
+        # 报错前缀是小写的 `minimax`（`_openai_compat` 的格式）而不是
+        # 大写的 `MiniMax`（`_minimax` 的格式）——**前缀不一致是认这条路的线索**。
+        #
+        # 为什么以前没被发现：`complete_json_forced` 只有 `summarize` 在用，
+        # 而之前所有验证都打在 write_plan* / relevance 上，够不到它。
         try:
-            blocks, usage = self._openai_compat_forced(cfg, system, prompt, tool)
+            if cfg.provider == "minimax":
+                # Anthropic 形状的工具：`input_schema`，不是 OpenAI 的套壳
+                anth = tool["function"]
+                anth_tool = {"name": anth["name"],
+                             "description": anth["description"],
+                             "input_schema": anth["parameters"]}
+                # 与 `run_tool_loop` 共用同一条护栏（理由见那边的注释）
+                _check_minimax_thinking_tools(self, stage, True)
+                blocks, usage = self._minimax_tools(
+                    cfg, system, [{"role": "user", "content": prompt}],
+                    [anth_tool], tool_choice=anth_tool["name"])
+            elif cfg.provider in OPENAI_COMPAT:
+                blocks, usage = self._openai_compat_forced(
+                    cfg, system, prompt, tool)
+            else:
+                raise ConfigError(
+                    f"环节 {stage} 的 provider {cfg.provider} "
+                    f"暂不支持强制 JSON 输出")
         except Exception as e:
             self._record_error(cfg, prompt, e, int((time.time() - t0) * 1000))
             raise

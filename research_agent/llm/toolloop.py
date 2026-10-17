@@ -21,7 +21,52 @@ class ToolProvider(Protocol):
     """一组工具。specs 给出 schema，dispatch 执行调用。"""
 
     def specs(self) -> list[dict]: ...
+
     def dispatch(self, calls: list[dict]) -> list[dict]: ...
+
+
+def _check_minimax_thinking_tools(llm, stage: str, sends_tools: bool) -> None:
+    """🔴 **「关思考 + 要发工具」在 MiniMax 上是错的**——共用护栏。
+
+    实测（2026-10-17，MiniMax-M3，每格 n=10，`tool_choice` 形状一致）：
+
+        提示词点名工具 + 开思考       → 真调 10/10，零编造
+        提示词点名工具 + 关思考       → 真调 5~6/10，回文本 4/10，
+                                      其中出现过「已经调用 lookup」+ 编造查询结果
+        只说「查一下 X」不点名 + 关思考 → 真调 3/3
+
+    ⇒ 危险格是「**提示词点名工具** + 关思考」，真凶是**没有思考**，
+      不是 `tool_choice`（强制 6/10 对不强制 5/10，在噪声内）。
+    ⇒ 本 guard 比真实危险条件**更宽**：它把「不点名 + 关思考」那 3/3 正常的
+      组合也挡住了。宁可多挡——多挡只是多花 token，漏挡是假证据进报告。
+
+    ## 为什么抽成共用函数（2026-10-18）
+
+    这段逻辑原来只写在 `run_tool_loop` 里。而 `summarize` 走的是
+    `complete_json_forced`（`extract_batch` 调的），**完全没被覆盖** ——
+    在它 24 次全部 404 之前，这条组合是「不报错、不拦、也不管」的。
+    两条发工具的路只护一条，正是这轮反复栽的同一个形态。
+
+    ## 为什么拦在调用点而不是 `validate()`
+
+    只有**真的要发工具的那一次调用**才知道这件事。配置层看不到
+    「这个环节用不用工具」——`complete_json` 那条路不发工具，
+    关思考完全没问题。
+    """
+    if not sends_tools:
+        return
+    try:
+        cfg = llm.registry.stage(stage)
+    except Exception:
+        return
+    if cfg.provider == "minimax" and not cfg.reasoning_effort:
+        raise RuntimeError(
+            f"环节 {stage} 在 MiniMax 上同时是「关思考」和「要发工具」——"
+            "**实测真调工具只有 5~6/10，出现过「声称已调用」并编造查询结果**，"
+            "必须开思考（给这个环节配 `reasoning_effort: low` 或更高；"
+            "开思考后同一形状实测 10/10）。"
+            "没有这个问题的模型不受影响。"
+        )
 
 
 def run_tool_loop(
@@ -86,19 +131,13 @@ def run_tool_loop(
     # 才知道这件事。配置层看不到「这个环节用不用工具」。
     # （原先 `validate()` 里那条「minimax 不认 reasoning_effort」的拦截，
     #   在 `_minimax` 学会翻译之后变成了挡住合法配置，已撤销。）
-    try:
-        _cfg = llm.registry.stage(stage)
-    except Exception:
-        _cfg = None
-    if (_cfg is not None and _cfg.provider == "minimax"
-            and not _cfg.reasoning_effort and (final_tool or provider.specs())):
-        raise RuntimeError(
-            f"环节 {stage} 在 MiniMax 上同时是「关思考」和「要发工具」——"
-            "**实测真调工具只有 5~6/10，出现过「声称已调用」并编造查询结果**，"
-            "必须开思考（给这个环节配 `reasoning_effort: low` 或更高；"
-            "开思考后同一形状实测 10/10）。"
-            "没有这个问题的模型不受影响。"
-        )
+    #
+    # ⚠️ **2026-10-18：逻辑抽到 `_check_minimax_thinking_tools()`，
+    # `complete_json_forced` 也调它。** 之前这条只写在 `run_tool_loop` 里，
+    # 而 `summarize` 走的是 `complete_json_forced`（`extract_batch`）——
+    # 护栏覆盖不到。**只补一条路不补另一条，是这轮反复栽的同一个坑。**
+    _check_minimax_thinking_tools(llm, stage,
+                                 bool(final_tool or provider.specs()))
 
     for round_no in range(max_rounds + 1):
         last_round = round_no >= max_rounds

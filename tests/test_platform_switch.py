@@ -82,8 +82,15 @@ check("截断的 JSON 会被抢救成合法对象（所以截断必须另判）"
 print("\n=== ② effort 语义化：切平台后「关思考」是否还关着 ===")
 raw = yaml.safe_load((ROOT / "config" / "models.yaml").read_text(encoding="utf-8"))
 
-OFF_STAGES = ["probe_light", "probe_degraded", "extract", "relevance",
-              "summarize", "dedupe", "session_summary"]
+# ⚠️ **从配置里读，不要手抄**（2026-10-18 改）。
+# 原来是硬编码的 7 个环节名，`summarize` 从 `disabled` 改成 `low` 之后
+# 它还留在名单里，于是这一项每次跑都失败 —— 而失败原因是**测试自己过期了**，
+# 不是代码坏了。手抄的清单迟早跟不上配置。
+raw_stages = raw.get("stages") or {}
+OFF_STAGES = [n for n, s in raw_stages.items()
+              if (s or {}).get("reasoning_effort") == "disabled"]
+assert OFF_STAGES, "配置里一个 `reasoning_effort: disabled` 的环节都没有了 —— " \
+                    "那么这段测试要测的「关思考」语义已经无处可测"
 
 
 def resolve_with(target: str) -> ModelRegistry:

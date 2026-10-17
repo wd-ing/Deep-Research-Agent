@@ -362,15 +362,19 @@ stages:
 
   # 段落概括。批量 12 段，每段一句话，机械生成。
   summarize:
-    # `disabled` 是**平台中性的语义值**，不是字面量：这个环节要「关思考」，
-    # 至于怎么关由平台档案声明（internai 发 none、xj189 干脆不发该字段）。
-    # 写死 none 的话，切到 xj189 会**反向打开思考** —— 那是个静默多烧 token 的陷阱。
+    # ⚠️ **2026-10-18：从 `disabled` 改成 `low`** —— 原因不是省 token，是**正确性**。
     #
-    # ⚠️ **刻意不用 `off` 当这个值**：YAML 1.1 把裸 `off` 解析成布尔 false，
-    # 于是 `== "off"` 判不成立、翻译不发生、字段不发 ⇒ 思考反而默认打开。
-    # 那个坑真踩过一次（tests/test_platform_switch.py 抓出来的）。
-    # 这个环节是纯机械任务，开思考只会白吃预算。
-    reasoning_effort: disabled
+    # 这个环节用 `complete_json_forced`（工具调用强制输出 JSON），
+    # 而 2026-10-17 实测：**MiniMax 上「关思考 + 发工具」是真调 5~6/10，
+    # 出现过模型声称已调用工具并编造查询结果**；开着思考同一形状是 **10/10**。
+    # 护栏 `_check_minimax_thinking_tools` 现在会直接拒绝这个组合，
+    # 所以不配 `reasoning_effort` 的话，`summarize` 在 MiniMax 上**根本跑不起来**。
+    #
+    # 代价（按参考库 189 次调用统计）：`summarize` 一轮只 15 次（占 7.9%），
+    # 但输入很大（55,836 token，因为要读段落原文）。`low` 的思考增量
+    # 相对 55.8k 输入可以忽略。**换回 xj189 时可以改回 `disabled`**
+    # （那条路上关思考+工具没有这个问题）。
+    reasoning_effort: low
     temperature: 0.0
     batch_size: 12
     max_output_tokens: 4096
