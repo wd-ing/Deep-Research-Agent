@@ -1054,6 +1054,84 @@ sec2: ### 2.1 … 2.10  然后又是 ### 2.1 … 2.6     ← 重复
 **排查手法**：改动前先 `git stash` 跑一遍，确认失败**不是自己引入的**，
 再往更早的提交追根因。
 
+### 47. 🔴 桩的形参对不上调用点，测试会**假通过**
+
+④（给 `write_plan_tasks` 挂强制工具交卷）给 `run_tool_loop` 加了
+`final_tool=` 形参。`tests/probe_plan_tasks_toolloop.py` 里的
+`fake_loop` 没跟着加 —— 调用点抛 `TypeError`，
+**被 `node_plan_tasks` 自己的 `try/except` 接住、退回单次调用、
+然后照样打印「✅ 走工具循环」**。
+
+比坑 46 更阴一层：坑 46 是桩**认不出**新 stage，分支被静默跳过；
+坑 47 是桩**根本调不到**，异常被生产代码的容错吃掉，
+而容错本来就该有（分派不是非走工具循环不可）。
+
+**两条手法**：
+
+1. 桩的形参必须**逐字抄**调用点，包括新增的关键字参数。
+2. 光断言「结果好看」不够 —— 要断言**真的走了哪条路**
+   （`tool_choice` 的取值、调用次数、传进去的工具名）。
+   本轮 `tests/test_plan_tasks_forced.py` 场景 ⑪ 就是干这个的：
+   断言 `final_tool` 传下去了、且任务**真的落下来了**
+   （段号和小节 id 都对，而不是「有东西」）。
+
+⚠️ 同理，自己写的探针也可能假通过：本轮 `probe_plan_tasks_forced.py`
+第一版把 `segment` **先过滤再编号**，而生产是**先编号再过滤**——
+段号会整体错位，分派出来的 `S3·5` 指向另一段。**先读生产代码的顺序再抄。**
+
+### 48. 🔴 空 `tools` 数组会被信通院 400（xj189 一直没校验）
+
+```
+internai 400 upstream_request_rejected
+`tools` must not be an empty array. Either provide at least one tool
+or omit the field entirely.
+```
+
+`run_tool_loop` 的最后一轮按设计就是「不带工具」，`_opencode_tools`
+就把空数组原样发了。**这个洞从 2026-10-15 工具循环加回来起就一直躺着**
+—— 与坑 41（第二轮 400）同一形态：**平台的宽松把协议错误盖住了**。
+
+修法两处：
+
+1. `_opencode_tools` / `_minimax_tools`：空列表时**不发 `tools` 字段**。
+2. `run_tool_loop`：有 `final_tool` 时最后一轮改成**只给交卷工具**。
+
+第 2 条顺带治了一个更阴的毛病：提示词写着「调用 `submit_tasks` 交卷」，
+而最后一轮手上没这个工具 → 模型**凭空编一个同名 `tool_call`**。
+实测对照组里真发生了（`tool_calls=['submit_tasks']`，列表里根本没有它）。
+
+⚠️ 写测试时我自己也踩了一次：传 `FINAL` 而不是 `[FINAL]`，
+迭代 dict 得到的是**键**，`to_openai_tools` 全跳过 → 又变回 `tools: []`。
+**测试造出来的报文形状和线上那个 400 一模一样**，差点以为是代码没修。
+
+### 49. A/B 对照只改一半，比没有对照更糟
+
+给「改造前」当对照组时，**只摘了代码没换提示词** ——
+新提示词写着「调用 `submit_tasks` 交卷」，代码却不提供它，
+于是对照组模型开始编造同名工具调用。
+
+它会给出一个**看起来有结论、其实两边都不是要比的东西**的数字。
+凡是改了提示词的改动，对照组要**连提示词一起还原**（`probe_plan_tasks_forced.old_prompt()`）。
+
+### 50. `complete_with_tools` 强制通路的三处「不许假装」
+
+`tool_choice` 传工具名 = 平台必须调它。三个地方必须显式失败而不是降级：
+
+| 情况 | 行为 | 理由 |
+|---|---|---|
+| MiniMax provider | `ConfigError` | 没接 `tool_choice`，降级等于把「保证」变成「也许」 |
+| `tool_choice` 名字不在 `tools` 里 | `ConfigError`（附现有工具名） | 名字拼错会静默变成普通调用 |
+| `arguments` 被 `max_tokens` 截断 | `EmptyOutput`（经 `_reject_broken_args`） | `{}` 会伪装成「成功的空结果」——这正是 `write_plan_tasks` 当年 `tasks=0` 的病根 |
+
+⚠️ 流式与非流式**必须对称**。`_openai_compat_forced` 的流式分支早有
+破参数标记，非流式分支没有 —— 同一条路两种待遇，这类洞只有在
+逐分支核对时才会发现。
+
+⚠️ 还有第四处：**桩要接在正确的方法上**。`write_plan_tasks` 是
+`stream: true`，走 `.stream()` 而不是 `.post()`；第一版只桩了 `.post`，
+于是测试**真的发了一次请求**（拿到 401）。桩没接对位置时，测试会
+悄悄变成一次真实调用 —— 比不写桩更危险。
+
 ---
 
 ## 八、待办

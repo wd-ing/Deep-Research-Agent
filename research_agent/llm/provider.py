@@ -568,8 +568,18 @@ class SSEAccum:
             try:
                 args = json.loads(raw) if raw else {}
             except Exception:
-                # 拼出来的 JSON 坏了：宁可空参数，也不能让整个工具循环崩掉
+                # 拼出来的 JSON 坏了（最常见的原因是**被 max_tokens 截断**）。
+                # 工具循环里宁可空参数也不能崩，所以这里照旧给 `{}`，
+                # **但必须打上标记** —— 强制工具调用那条路（`_openai_compat_forced`）
+                # 会调 `_reject_broken_args()` 把它变成一次显式失败。
+                # 2026-10-17：原来这个 `{}` 是完全静默的，而一旦改用强制输出，
+                # 被截断的 arguments 会伪装成「模型返回了空结果」正常往下走，
+                # 整篇报告静默少一块 —— 正是本项目反复消灭的那类静默失败。
                 args = {}
+                out.append({"type": "tool_use", "id": slot["id"],
+                            "name": slot["name"], "input": args,
+                            "_args_broken": True})
+                continue
             out.append({"type": "tool_use", "id": slot["id"],
                         "name": slot["name"], "input": args})
         return out
@@ -765,6 +775,30 @@ def _anthropic_msgs_to_openai(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _reject_broken_args(blocks: list[dict], stage: str,
+                        finish_reason: str | None = None) -> None:
+    """工具参数拼不成合法 JSON 时**显式失败**，不许它悄悄变成 `{}`。
+
+    2026-10-17 加。强制工具调用（`complete_json_forced`）把「模型只填
+    `arguments` 对象」当稳定性保证，但那个保证有一个前提：
+    **生成过程要没被 `max_tokens` 切断**。一旦截断，
+    `arguments` 必然是半截 JSON，`SSEAccum.blocks()` 按老规矩给 `{}`。
+
+    如果就这么返回，调用方拿到的是「成功的空对象」——
+    分派会变成 `tasks: []`，报告静默变成空。
+    而 `write_plan_tasks` 那个曾经的病根就是这个（`tasks=0`、整篇没正文）。
+    """
+    bad = [b for b in blocks if b.get("_args_broken")]
+    if not bad:
+        return
+    names = ", ".join(str(b.get("name")) for b in bad)
+    raise EmptyOutput(
+        f"环节 {stage} 的工具参数拼不成合法 JSON（工具：{names}，"
+        f"finish_reason={finish_reason}）。"
+        f"最可能的原因是生成被 max_tokens 截断——**这就是「预算不够」而不是"
+        f"「模型返回了空结果」**，所以这里必须失败，不许把 `{{}}` 当结果交出去。")
+
+
 class LLMClient:
     """统一调用入口。厂商差异收敛在这里。"""
 
@@ -871,10 +905,25 @@ class LLMClient:
         system: str | None,
         messages: list[dict],
         tools: list[dict],
+        tool_choice: str | None = None,
     ) -> dict:
         """带工具的一次调用。返回原始 content 块与 usage。
 
-        为什么需要它：一次调用解决不了「我得先看看才决定」的问题。
+        `tool_choice`（2026-10-17 加）传工具名 = **必须**调它，只发那一个工具。
+        不传 = 老规矩，`tools` 里随便挑或直接回文本。
+
+        `tool_choice` 管的是**输出形状**：`run_tool_loop` 原来最后一轮
+        不带工具，于是「最终答案」是让模型手写一整份 JSON 文本——
+        分派环节实测输出 7,135 token，而纯提示词路径的长 JSON 会中途崩
+        （见 `complete_json_forced` 的实测记录）。有了 `tool_choice`，
+        最后一轮改成填 `arguments`，平台在解码层面保证它是合法 JSON。
+
+        ⚠️ **只有 OPENAI_COMPAT 走通了**。MiniMax 分支显式报错而不是
+        悄悄降级成非强制——降级等于把「保证」变成「也许」，而调用方
+        （`run_tool_loop`）会把这次失败退成走上一轮的文本，
+        行为仍然正确，但**不能假装约束生效过**。
+
+        至于**为什么需要工具调用**本身：
         以前的做法是让模型在回复里点名要哪几条的全文（need_full），
         但那要求它在**还没看到全文时**就预测自己需要什么，
         漏了它自己不知道。改成工具后可以边看边决定。
@@ -886,10 +935,32 @@ class LLMClient:
         """
         cfg = self.registry.stage(stage)
         t0 = time.time()
+        forced = None
+        if tool_choice:
+            # `isinstance` 这道防御跟 `to_openai_tools` 保持一致：
+            # `tools` 里混进非 dict 时，抛在这里比在后面某个 `t.get` 上炸好。
+            forced = next((t for t in tools or []
+                           if isinstance(t, dict) and t.get("name") == tool_choice),
+                          None)
+            if forced is None:
+                raise ConfigError(
+                    f"环节 {stage} 要求强制调用工具 {tool_choice}，"
+                    f"但 tools 里没有它（现有："
+                    f"{[t.get('name') for t in tools or []]}）")
         try:
             if cfg.provider in OPENAI_COMPAT:
-                blocks, usage = self._opencode_tools(cfg, system, messages, tools)
+                if forced is not None:
+                    blocks, usage = self._openai_compat_forced(
+                        cfg, system, "", to_openai_tools([forced])[0],
+                        messages=messages)
+                else:
+                    blocks, usage = self._opencode_tools(
+                        cfg, system, messages, tools)
             elif cfg.provider == "minimax":
+                if forced is not None:
+                    raise ConfigError(
+                        f"环节 {stage}：MiniMax 路径还没接 tool_choice 强制，"
+                        f"拒绝假装约束生效")
                 blocks, usage = self._minimax_tools(cfg, system, messages, tools)
             else:
                 raise ConfigError(
@@ -1379,9 +1450,11 @@ class LLMClient:
             "model": cfg.model,
             "max_tokens": cfg.max_output_tokens,
             "temperature": cfg.temperature,
-            "tools": tools,
             "messages": messages,
         }
+        # 同 `_opencode_tools`：空数组要整个省略（见那里的实测记录）。
+        if tools:
+            payload["tools"] = tools
         if system:
             payload["system"] = system
         if cfg.thinking_effort:
@@ -1420,9 +1493,18 @@ class LLMClient:
             msgs = [{"role": "system", "content": system}] + msgs
         payload: dict[str, Any] = {
             "model": cfg.model, "messages": msgs,
-            "tools": to_openai_tools(tools),
             "max_tokens": cfg.max_output_tokens, "temperature": cfg.temperature,
         }
+        # ⚠️ **空 tools 必须整个省略，不能发 `[]`**（2026-10-17 实测撞到）。
+        # `run_tool_loop` 的最后一轮按设计就是「不带工具」，于是这里会发空数组，
+        # 而信通院严格校验：
+        #     400 upstream_request_rejected
+        #     "`tools` must not be an empty array. Either provide at least
+        #      one tool or omit the field entirely."
+        # xj189 不校验块形状，这个洞从 2026-10-15 工具循环加回来起就一直藏着
+        # —— 与坑 41（第二轮 400）同一形态：**平台的宽松把协议错误盖住了**。
+        if tools:
+            payload["tools"] = to_openai_tools(tools)
         if cfg.reasoning_effort:
             payload["reasoning_effort"] = cfg.reasoning_effort
         t0 = time.time()
@@ -1465,7 +1547,13 @@ class LLMClient:
             try:
                 args = json.loads(fn.get("arguments") or "{}")
             except Exception:
+                # 同流式分支：解析失败原来完全静默，这里给 `{}` 并打标记，
+                # 由 `complete_json_forced` 转成显式失败。
                 args = {}
+                blocks.append({"type": "tool_use", "id": tc.get("id"),
+                               "name": fn.get("name"), "input": args,
+                               "_args_broken": True})
+                continue
             blocks.append({"type": "tool_use", "id": tc.get("id"),
                            "name": fn.get("name"), "input": args})
         if msg.get("content"):
@@ -1475,19 +1563,33 @@ class LLMClient:
         return blocks, u
 
     def _openai_compat_forced(self, cfg: StageConfig, system: str | None,
-                              prompt: str, tool: dict) -> tuple[list, dict]:
+                              prompt: str, tool: dict,
+                              messages: list[dict] | None = None) -> tuple[list, dict]:
         """带 `tool_choice` 的强制调用。返回 Anthropic 形状的块。
 
         与 `_opencode_tools` 的区别只有一个：多发 `tool_choice`，
         让平台**强制**模型走工具而不是回文本。这是
         `complete_json_forced` 的后端，见那里的说明。
+
+        ⚠️ **2026-10-17 加了流式分支和 `messages` 参数。**
+        之前只有非流式，于是「用工具调用约束长输出」这条路对
+        `write_plan_tasks`（`stream: true`）**一直没法用** ——
+        我上一轮草草记成「暂不采用」就再没管，那其实是把主线丢了。
+        两个环节拆开之后它是独立 stage，可以单独挂。
         """
         key = os.environ.get(cfg.api_key_env or "", "")
         if not key:
             raise ConfigError(
                 f"未设置 {cfg.api_key_env or '(该阶段未配置 api_key_env)'}")
-        msgs = ([{"role": "system", "content": system}] if system else []) + [
-            {"role": "user", "content": prompt}]
+        if messages is None:
+            msgs = ([{"role": "system", "content": system}] if system else []) + [
+                {"role": "user", "content": prompt}]
+        else:
+            # 工具循环续接：对话里已经带了 tool_use / tool_result，
+            # 必须走同一套协议转换（Anthropic 形状 → OpenAI 形状）
+            msgs = _anthropic_msgs_to_openai(messages)
+            if system:
+                msgs = [{"role": "system", "content": system}] + msgs
         payload: dict[str, Any] = {
             "model": cfg.model, "messages": msgs,
             "tools": [tool],
@@ -1498,6 +1600,29 @@ class LLMClient:
         if cfg.reasoning_effort:
             payload["reasoning_effort"] = cfg.reasoning_effort
         t0 = time.time()
+
+        # ---- 流式分支（2026-10-17 加）----
+        if cfg.stream:
+            payload["stream"] = True
+            payload["stream_options"] = {"include_usage": True}
+            with self._client.stream(
+                    "POST", f"{cfg.base_url}/chat/completions",
+                    headers=self._headers(cfg), json=payload,
+                    timeout=cfg.timeout_s) as resp:
+                if resp.status_code != 200:
+                    body = resp.read().decode("utf-8", "replace")
+                    raise RuntimeError(
+                        f"{cfg.provider} {resp.status_code}: {body[:300]}")
+                acc = SSEAccum(_hook_for(cfg.stage), cfg.stage)
+                for obj in _sse_lines(resp):
+                    acc.feed(obj)
+            usage = dict(acc.usage or {})
+            usage["latency_ms"] = int((time.time() - t0) * 1000)
+            blocks = acc.blocks()
+            # ⚠️ 参数被截断 → `{}` 会伪装成「成功的空结果」。这里必须响。
+            _reject_broken_args(blocks, cfg.stage, acc.finish_reason)
+            return blocks, usage
+
         r = self._client.post(
             f"{cfg.base_url}/chat/completions",
             headers=self._headers(cfg),
@@ -1513,13 +1638,21 @@ class LLMClient:
             try:
                 args = json.loads(fn.get("arguments") or "{}")
             except Exception:
+                # 同上：这个分支以前和流式不对称——流式有标记有拒绝，
+                # 非流式没有，于是「拼不成 JSON」在这条路上是静默的。
                 args = {}
+                blocks.append({"type": "tool_use", "id": tc.get("id"),
+                               "name": fn.get("name"), "input": args,
+                               "_args_broken": True})
+                continue
             blocks.append({"type": "tool_use", "id": tc.get("id"),
                            "name": fn.get("name"), "input": args})
         if msg.get("content"):
             blocks.append({"type": "text", "text": msg["content"]})
         u = j.get("usage") or {}
         u["latency_ms"] = int((time.time() - t0) * 1000)
+        _reject_broken_args(blocks, cfg.stage,
+                            (j["choices"][0].get("finish_reason") or None))
         return blocks, u
 
     # ---------- Gemini（保留，便于将来切回） ----------

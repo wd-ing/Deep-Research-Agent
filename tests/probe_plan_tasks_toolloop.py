@@ -53,9 +53,16 @@ def run(label: str, *, sid: str, stub, expect_ok: bool) -> None:
     orig_tools = W.LLM.complete_json
     calls: dict = {"tool": 0, "single": 0}
 
-    def fake_loop(llm, stage, system, messages, provider, max_rounds=3):
+    def fake_loop(llm, stage, system, messages, provider, max_rounds=3,
+                  final_tool=None):
+        # ⚠️ **形参必须和调用点一模一样**（2026-10-17 踩过）。
+        # `node_plan_tasks` 改成传 `final_tool=` 之后，这里漏了它，
+        # 调用点抛 `TypeError` → 被 `node_plan_tasks` 自己的
+        # except/except 接住 → 退回单次调用 → **照样打印 ✅**。
+        # 签名不匹配的桩不会让测试变红，只会让它测的东西悄悄换成退路。
         calls["tool"] += 1
         calls["max_rounds"] = max_rounds
+        calls["final_tool"] = (final_tool or {}).get("name")
         specs = provider.specs()
         calls["tool_names"] = [s["name"] for s in specs]
         return stub(specs)
@@ -77,6 +84,9 @@ def run(label: str, *, sid: str, stub, expect_ok: bool) -> None:
     print(f"{'✅' if ok else '❌'} {label}")
     print(f"    工具循环调用 {calls['tool']} 次 / 单次调用 {calls['single']} 次"
           f"  max_rounds={calls.get('max_rounds')}")
+    # 形参不匹配时代码会退回单次路径，而 `calls['tool']` 仍是 0 ——
+    # 所以「是不是真走了工具循环」不能靠事件 kind 单独判定。
+    print(f"    final_tool={calls.get('final_tool')}")
     if calls["tool"]:
         print(f"    传进去的工具：{calls.get('tool_names')}")
     print(f"    事件：{ev.get('kind')}  tasks={len(tasks)} "

@@ -59,6 +59,55 @@ _NUM_PREFIX_RE = re.compile(
 LLM = LLMClient()
 
 
+# 分派结果的 schema（2026-10-17 加）。字段与 `_normalize_tasks` 读的
+# 名字一一对应——**那份函数是契约的另一头**，改一边必须改另一边。
+#
+# 为什么不能只靠提示词约束它：纯提示词路径下模型要手写整份 JSON，
+# 实测输出 7,135 token，而长 JSON 会在中途崩（报错在第 630 字符而非结尾，
+# 见 `complete_json_forced` 的记录）。挂成工具之后模型只填 `arguments`，
+# 平台在解码层面保证合法。
+PLAN_TASKS_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "tasks": {
+            "type": "array",
+            "description": "写作任务。上限 15 个。",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "任务 id，形如 t1"},
+                    "covers": {
+                        "type": "array",
+                        "description": "这个任务负责哪几个小节 id（来自大纲）",
+                        "items": {"type": "string"},
+                    },
+                    "mandate": {"type": "string",
+                                "description": "这一块要回答什么问题"},
+                    "segments": {
+                        "type": "array",
+                        "description": "分给这个任务的段号，形如 S3·5",
+                        "items": {"type": "string"},
+                    },
+                    "must_cover": {"type": "array", "items": {"type": "string"}},
+                    "not_yours": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["covers", "mandate", "segments"],
+            },
+        },
+    },
+    "required": ["tasks"],
+}
+
+# Anthropic 形状，与 `EvidenceTools.specs()` 同一套（`run_tool_loop`
+# 内部自己转 OpenAI 形状，别在这里转）。
+SUBMIT_TASKS: dict = {
+    "name": "submit_tasks",
+    "description": "证据读够了就调用它交卷，参数是完整的任务列表。"
+                   "判断依据够了之后不必继续读原文。",
+    "input_schema": PLAN_TASKS_SCHEMA,
+}
+
+
 # ================================================================ 规划
 
 def node_plan_spec(state: WriteState) -> dict:
@@ -105,6 +154,14 @@ def node_plan_tasks(state: WriteState) -> dict:
 
     ⚠️ **仍然只给 82 段概括做初始输入**——工具是"按需往下挖"，
     不是把 119k token 正文一次塞进来（那正是 `dispatch` 里子 agent 的做法）。
+
+    ## 交卷走工具，不走手写 JSON（2026-10-17）
+
+    最后一轮改成 `tool_choice` 强制调 `submit_tasks`，产物由
+    `run_tool_loop` 序列化成 JSON 文本回来，**下游解析路径一个字没改**。
+    实测这条链路上 `plan_tool_reads: 0`（99 段证据一次没取），
+    所以实际发生的几乎总是「第一轮回文本 → 提交轮强制交卷」，
+    代价是多一次调用、收益是那份 7,000 token 的 JSON 不再由模型手写。
     """
     spec = state.get("spec") or {}
     outline = state.get("outline") or []
@@ -125,7 +182,7 @@ def node_plan_tasks(state: WriteState) -> dict:
             text, _, log = run_tool_loop(
                 LLM, "write_plan_tasks", prompts.WRITE_PLAN_TASKS,
                 [{"role": "user", "content": _clip(prompt, 60000)}],
-                tools, max_rounds=MAX_TOOL_ROUNDS)
+                tools, max_rounds=MAX_TOOL_ROUNDS, final_tool=SUBMIT_TASKS)
             _record_tool_use(state, "plan_tasks", log)
         except Exception as e:
             # 工具循环挂了退回单次调用——**不能因此整步失败**：
