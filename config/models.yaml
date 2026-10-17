@@ -73,9 +73,19 @@ providers:
     # `_minimax` 把它翻译成 `thinking.type`（见那儿的实测对照表）。
     # 写成 `none` 反而会让「关思考」这个语义走错字段。
     #
-    # 限流没测过 ⇒ 不设 `rate_limit_per_min`（不设 = 不限流）。
-    # 撞了限流的表现是 HTTP 429，`_retryable_http` 会退避重试；
-    # 真撞上了再按实测填一个数，别先猜。
+    # 限流（2026-10-18 实测定数，不再是「没测过」）：
+    #   6 并发、极小载荷、打满 60 秒 → 3,248 次尝试只成功 **50** 次，
+    #   其余全是 429 `(2062) Token Plan 速率限制`
+    #   ⇒ 续速率就在 **50 次/分钟** 附近（被拒的请求是立刻返回的，
+    #     所以能试出三千多次）
+    #   按 **40/min 配速**发 60 次（用时 89 秒）→ **60/60 全过，零 429**
+    #
+    # ⚠️ **token 维度没验到**：报错写的是「Token Plan **速率**限制」，
+    # 上面两次测的都是极小载荷（输入 ~37 / 输出 ~8 token）。
+    # 真实调用（`write_plan_tasks` 65,536 预算）token 量差几个量级，
+    # 所以 40/min 只保证**请求速率**不撞，token 速率会不会撞**要下一轮实测**。
+    # 这个限制主要保护 relevance 那种高频小调用 —— 上次丢 20/131 的正是它。
+    rate_limit_per_min: 40
   opencode:
     provider: opencode
     base_url: https://api.opencode.ai/v1
@@ -193,7 +203,18 @@ defaults:
   # —— **单点机制一直都在，只是被硬写绕过了**。现在环节一律不写 provider，
   # 由这里统一决定，档案（模型名 / 地址 / 密钥 / 关思考怎么表达）随之继承。
   #
-  # ⚠️ 2026-10-18 切回 `internai`：MiniMax 的 **Token Plan 额度用完了**。
+  # ⚠️ 2026-10-18 **切回 `minimax`**：额度当天一度用尽（见下），
+  #   当晚恢复并实测通过（最小请求 200；生产路径预检 4/4；限流已定数 40/min）。
+  #   ⚠️ **切回来时 `summarize` 的 `reasoning_effort` 必须留在 `low`** ——
+  #   那个 `low` 就是为这条路的「关思考 + 发工具会编造」加的，
+  #   改回 `disabled` 会被 `_check_minimax_thinking_tools` **直接拒绝**，
+  #   `summarize` 一步都跑不了。只有换到 xj189 / internai 时才能改回 `disabled`。
+  #
+  # ⚠️ 当天切回 `internai` 的原因（额度用完的那几个小时）：
+  #   1 token 的请求都被拒：
+  #     {"type":"error","error":{"type":"rate_limit_error",
+  #      "message":"已达到 Token Plan 用量上限：… (2056)"}}
+  #   而 `GET /v1/models` 仍 200 ⇒ 账号是通的，只是额度没了。
   #   1 token 的请求都被拒：
   #     {"type":"error","error":{"type":"rate_limit_error",
   #      "message":"已达到 Token Plan 用量上限：… (2056)"}}
@@ -208,7 +229,7 @@ defaults:
   #   **额度恢复后可以直接切回去**，`providers.minimax` 档案是现成的。
   #
   # 切回去只需改这一行：`provider: internai` 或 `provider: xj189`。
-  provider: internai
+  provider: minimax
   temperature: 0.0
   # 180 秒不够。实测（2026-10-05，R6 三轮真实数据）：
   #   write_audit 平均 132 秒、最长 170 秒 —— 已经贴着天花板
