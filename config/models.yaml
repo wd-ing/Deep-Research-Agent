@@ -193,14 +193,22 @@ defaults:
   # —— **单点机制一直都在，只是被硬写绕过了**。现在环节一律不写 provider，
   # 由这里统一决定，档案（模型名 / 地址 / 密钥 / 关思考怎么表达）随之继承。
   #
-  # ⚠️ 2026-10-17 切到 `minimax`：DeepSeek 额度接近上限，
-  # 而 xj189 尚未恢复。切之前逐项实测过（见 DECISIONS 同日两节）。
+  # ⚠️ 2026-10-18 切回 `internai`：MiniMax 的 **Token Plan 额度用完了**。
+  #   1 token 的请求都被拒：
+  #     {"type":"error","error":{"type":"rate_limit_error",
+  #      "message":"已达到 Token Plan 用量上限：… (2056)"}}
+  #   而 `GET /v1/models` 仍 200 ⇒ 账号是通的，只是额度没了。
+  #   （在这之前还见过 `(2062) 速率限制`：relevance 20/131 失败，
+  #     说明**该平台的限流必须设 `rate_limit_per_min`**，现在还没设。）
+  #   切回来时实测过 internai 7/7 全过（2026-10-18）。
+  #
+  # ⚠️ 2026-10-17 曾切到 `minimax`，理由与实测留在 DECISIONS 同日两节：
   #   Atria-Dawn 限时免费但**不能用**：`none` 90% 失败、`write_plan_tasks` 1/3。
-  #   MiniMax-M3 可用：思考开关两个方向都能控，强制工具调用认，
-  #   真实载荷 99 段 / 3 小节 n=1 全过（164.7 秒，5 任务，小节全覆盖，零编造）。
+  #   MiniMax-M3 本身可用（思考两个方向都能控、流式支持、强制工具调用认），
+  #   **额度恢复后可以直接切回去**，`providers.minimax` 档案是现成的。
   #
   # 切回去只需改这一行：`provider: internai` 或 `provider: xj189`。
-  provider: minimax
+  provider: internai
   temperature: 0.0
   # 180 秒不够。实测（2026-10-05，R6 三轮真实数据）：
   #   write_audit 平均 132 秒、最长 170 秒 —— 已经贴着天花板
