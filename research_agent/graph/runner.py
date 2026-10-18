@@ -34,6 +34,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .nodes import (
     node_apply_revision, node_assess, node_await_approval, node_extract,
+    node_gate,
     node_finalize, node_outline, node_probe, node_retrieve, node_write,
     node_summary,
     route_after_assess, route_after_revision,
@@ -52,6 +53,7 @@ def build_graph(checkpointer):
     g.add_node("await_approval", node_await_approval)
     g.add_node("retrieve", node_retrieve)
     g.add_node("extract", node_extract)
+    g.add_node("gate", node_gate)
     g.add_node("assess", node_assess)
     g.add_node("apply_revision", node_apply_revision)
     g.add_node("write", node_write)
@@ -63,7 +65,10 @@ def build_graph(checkpointer):
     # 审批点在第一次 assess 之后，不在 outline 之后——理由见文件头
     g.add_edge("outline", "retrieve")
     g.add_edge("retrieve", "extract")
-    g.add_edge("extract", "assess")
+    # 段级闸门插在抽取与评估之间：assess 从此在过滤后的真池子上
+    # 判断「材料够不够」，闸门调用也摊进各轮、不再堵在写作头部。
+    g.add_edge("extract", "gate")
+    g.add_edge("gate", "assess")
     g.add_conditional_edges(
         "assess", route_after_assess,
         # 未审批 → 先按材料校准框架（没有 outline_review 时 apply_revision 是空转）

@@ -4,7 +4,7 @@
 分块写作 → 交叉审查 → 带段级引用的报告。
 
 > **接手这个项目前，先读 [`CONTEXT.md`](CONTEXT.md)** ——
-> 架构、仍然有效的决策、61 条踩过的坑、工作约定、已知缺口。
+> 架构、仍然有效的决策、62 条踩过的坑、工作约定、已知缺口。
 >
 > 已知但有意押后的工程欠账在 [`TECH_DEBT.md`](TECH_DEBT.md)。
 
@@ -185,6 +185,6 @@ data/               默认 SQLite 位置（用 RA_DB_PATH 覆盖）
 data/refs/          ★ 真实跑出来的参考库（探针输入 + 实测数字出处，见 CONTEXT 第四节）
 tests/              守门测试 + 生产路径入口
 tests/fixtures/     回放与端到端验的固定数据（replay_server / verify_nature_e2e 读它）
-CONTEXT.md          ★ 交接文档：架构 / 决策 / 61 个坑 / 已知缺口
+CONTEXT.md          ★ 交接文档：架构 / 决策 / 62 个坑 / 已知缺口
 TECH_DEBT.md        已知但有意押后的工程欠账
 ```

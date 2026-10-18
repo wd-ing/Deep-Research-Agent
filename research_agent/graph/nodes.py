@@ -714,6 +714,52 @@ def node_extract(state: ResearchState) -> dict:
     }
 
 
+# ================================================================ 段级闸门
+
+@scoped
+@_timed_node("gate")
+def node_gate(state: ResearchState) -> dict:
+    """段级相关性闸门：每轮抽取之后、assess 之前。
+
+    原先它在 `node_write` 里一次性跑完。两个后果（2026-10-18 实测 v12）：
+
+    1. `assess` 一直在**未过滤的池子**上判断「材料够不够、要不要再搜
+       一轮」——`_segments_for_assess` 的 `WHERE on_topic=1` 形同虚设
+       （`on_topic` 默认 1，唯一标记点在 write），v12 的池子里 41% 是
+       后来被闸门毙掉的段落。
+    2. 192 次闸门调用挤在 write 头部，贴着 rate_limit 墙跑了 4.8 分钟，
+       把真正的写作推迟了。
+
+    挪到每轮抽取之后：`assess` 看到的就是过滤后的真池子，
+    闸门调用也摊进各轮。每段只判一次 —— 靠 `gate_method IS NULL`
+    挑本轮新入库的段，多轮检索不会重复判。
+    """
+    repo = get_repo()
+    sid = state["session_id"]
+    pr = state.get("probe") or {}
+    kws = relevance.build_keywords((pr.get("signals") or {}), state["question"])
+
+    # 闸门要看到**全部**新段落，包括没概括出来的。过滤发生在闸门之后，
+    # 而且只在闸门判定相关之后——不能让「概括失败」把证据变成看不见。
+    segs = [dict(r) for r in repo.q(
+        "SELECT id, source_id, heading_path, content, summary, token_count "
+        "FROM chunk WHERE session_id=? "
+        "AND (gate_method IS NULL OR gate_method='') ORDER BY rowid", (sid,))]
+    if not segs:
+        return {"events": [{"kind": "gate", "round": state.get("round"),
+                            "segments_total": 0, "segments_kept": 0}]}
+
+    gate = relevance.gate_segments(segs, kws, state["question"][:80])
+    repo.mark_chunk_topic(sid, gate["marks"])
+
+    return {"events": [{
+        "kind": "gate", "round": state.get("round"),
+        "segments_total": gate["stats"]["segments"],
+        "segments_kept": gate["stats"]["on_topic"],
+        "gate": gate["stats"],
+    }]}
+
+
 # ================================================================ 缺口评估
 
 def _unused_queries(state: ResearchState) -> set[str]:
@@ -1243,15 +1289,12 @@ def node_write(state: ResearchState) -> dict:
         seg_no[c["source_id"]] = n
         c["ref"] = f"S{src_no.get(c['source_id'], 0)}·{n}"
 
-    # 段级闸门：整篇一起进出太粗，一半讲技术一半讲融资的页面会整篇进来
+    # 段级闸门已在 node_gate（每轮抽取后）跑完并落库——这里直接读
+    # on_topic 标记。闸门不再占写作的时间窗口（v12 里它吃了 4.8 分钟）。
     pr = state.get("probe") or {}
-    kws = relevance.build_keywords((pr.get("signals") or {}), state["question"])
-    # 闸门要看到**全部**段落，包括没概括出来的。过滤发生在闸门之后，
-    # 而且只在闸门判定相关之后——不能让「概括失败」把证据变成看不见。
     segs = [c for c in repo_segments if src_no.get(c["source_id"])]
     n_no_summary = sum(1 for c in segs if not (c.get("summary") or "").strip())
-    gate = relevance.gate_segments(segs, kws, state["question"][:80])
-    repo.mark_chunk_topic(sid, gate["marks"])
+    keep = [c for c in segs if c.get("on_topic")]
 
     # 来源清单也从 src_no 反过来编号。两处各写一遍 enumerate 的话，
     # 改了一处忘了另一处，报告里每个 [Sn·m] 就会指向清单里下一行的来源——
@@ -1266,7 +1309,7 @@ def node_write(state: ResearchState) -> dict:
         session_id=sid, question=state["question"],
         outline=state.get("outline") or [],
         signals=(pr.get("signals") or {}),
-        segments=segs, on_topic=gate["keep"],
+        segments=segs, on_topic=keep,
         src_lines=src_lines,
         # 概括缺失的段数要一路传到报告里。静默丢证据比报错危险得多——
         # 报告看起来完整，实际上缺了料，而且从成品里永远看不出来。
@@ -1280,9 +1323,12 @@ def node_write(state: ResearchState) -> dict:
             "events": (out.get("events") or []) + [
                 {"kind": "write", "round": state.get("round"),
                  "chars": len(md), "sources": len(src_lines),
-                 "segments_total": len(segs), "segments_kept": len(gate["keep"]),
+                 "segments_total": len(segs),
+                 # ⚠️ 不带 segments_kept：闸门结果现在由 node_gate 的
+                 # `kind:"gate"` 事件按轮展示。前端 workflow.ts 判
+                 # `segments_kept !== undefined` 就渲染「证据闸门」，
+                 # 这里再带一遍会渲染出重复的闸门步骤。
                  "segments_without_summary": n_no_summary,
-                 "gate": gate["stats"],
                  "degraded": bool(head)}]}
 
 

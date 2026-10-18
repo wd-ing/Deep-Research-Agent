@@ -157,6 +157,45 @@ def main() -> None:
     print(f"  墙钟总时长 ≈ {total_node:.0f} 秒 "
           f"（{total_node/60:.1f} 分钟），LLM 调用累计 {tot_llm:.0f} 秒")
 
+    # ---------- 6. 对照卡：两库 diff 这一段就能看出改了什么 ----------
+    # 每项一行 key=value，顺序固定。成本优化的 before/after 只看这里，
+    # 不用在全文里捞数字（阶段一改动 0，2026-10-18）。
+    methods = q("SELECT COALESCE(gate_method,'?') m, COUNT(*) n "
+                "FROM chunk WHERE session_id=? GROUP BY m", sid)
+    gm = {r["m"]: r["n"] for r in methods}
+    errs = q("SELECT COUNT(*) n FROM llm_call WHERE session_id=? "
+             "AND status='error'", sid)[0]["n"]
+    calls = q("SELECT COUNT(*) n FROM llm_call WHERE session_id=?", sid)[0]["n"]
+    st = {s["stage"]: s for s in stages}
+    print(f"\n【六】对照卡（before/after 只 diff 这段）")
+    kpi = [
+        ("wall_clock_s",      f"{total_node:.0f}"),
+        ("llm_calls",         calls),
+        ("llm_errors",        errs),
+        ("tokens_in",         tot_in),
+        ("tokens_out",        tot_out),
+        ("cache_read",        tot_cr),
+        ("cache_hit_pct",     f"{hit:.1%}"),
+        ("parallelism",       f"{tot_llm/max(total_node,1):.2f}"),
+        ("retrieve_rounds",   len(retr)),
+        ("gate_rule_free",    gm.get("rule", 0) + gm.get("rule_weak", 0)),
+        ("gate_llm_judged",   gm.get("llm", 0) + gm.get("fallback", 0)),
+        ("gate_degraded",     sum(v for k, v in gm.items()
+                                  if "degraded" in k)),
+        ("gate_off_topic",    n_ch - n_on),
+        ("chunks",            n_ch),
+        ("no_summary",        n_ns),
+        ("report_chars",      rep[0]["L"] if rep else 0),
+        ("relevance_calls",   st.get("relevance", {}).get("n", 0)),
+        ("relevance_in",      st.get("relevance", {}).get("it", 0) or 0),
+        ("summarize_calls",   st.get("summarize", {}).get("n", 0)),
+        ("summarize_in",      st.get("summarize", {}).get("it", 0) or 0),
+        ("write_section_in",  st.get("write_section", {}).get("it", 0) or 0),
+        ("write_section_out", st.get("write_section", {}).get("ot", 0) or 0),
+    ]
+    for k, v in kpi:
+        print(f"  {k}={v}")
+
 
 if __name__ == "__main__":
     main()

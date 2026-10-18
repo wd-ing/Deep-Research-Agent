@@ -121,6 +121,19 @@ function toStep(e: ProgressEntry, seq: number): Step | null {
         detail: detail.length ? detail : undefined,
       }
     }
+    case 'gate': {
+      // 段级相关性闸门（2026-10-18 从 write 头部前移到每轮抽取后）。
+      // by_method 告诉用户多少段是规则免费放行的、多少是 LLM 判的。
+      const bm = (e.gate as { by_method?: Record<string, number> } | undefined)
+        ?.by_method ?? {}
+      const ruleFree = (bm.rule ?? 0) + (bm.rule_weak ?? 0)
+      const judged = (bm.llm ?? 0) + (bm.fallback ?? 0)
+      return {
+        id, label: `证据闸门（第 ${n(e, 'round') ?? '?'} 轮）`,
+        summary: `${n(e, 'segments_kept') ?? '?'}/${n(e, 'segments_total') ?? '?'} 段相关`
+          + ` · 规则放行 ${ruleFree} · LLM 判 ${judged}`,
+      }
+    }
     case 'assess': {
       const thin = (e.thin_sections as string[] | undefined) ?? []
       const gaps = e.gaps as number | undefined

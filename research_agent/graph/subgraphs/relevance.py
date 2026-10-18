@@ -34,6 +34,8 @@ MIN_MENTION_RATIO = 0.15
 # 从 6 降到 4：6 那轮实测撞了 3 次 `HTTP 529 过载/限流`，退避反而更慢。
 # 4 是保守值，**没有实测过 MiniMax 的并发上限**——撞不撞要再跑一轮才知道。
 GATE_WORKERS = 4
+GATE_LLM_BATCH = 12   # 一次调用判几段。和 SUMMARY_BATCH 同口径：
+                      # 每段输入 ≤2000 字符，12 段 ≈ 一次中等大小的调用。
 
 # 通用 AI 词汇在任何相关文章里都会出现，不能当判据。
 # 这些词即使命中也不计入闸门。
@@ -237,15 +239,72 @@ def gate_segments(segments: list[dict], kw: list[str], topic_label: str) -> dict
         else:
             todo.append(i)
 
-    # ---- 第二阶段：只有需要 LLM 的段才并发 ----
+    # ---- 第二阶段：只有需要 LLM 的段才并发，**按批判** ----
+    # 2026-10-18 批量化。原先是逐段调用：v12 一轮 192 次，贴着
+    # rate_limit 墙在 write 头部跑了 4.8 分钟；而 summarize 对同样
+    # 的段是 12 段/批。批量后每段看到的输入与逐段一致（同一份
+    # heading/summary/blob），只是打包进一次调用。
+    #
+    # ⚠️ 下标纪律（和 summarize 同款）：`index` 以输入里的 [n] 为准，
+    # 模型编出不存在的下标 / 漏掉某段，都不能猜——漏掉的段回退到
+    # 逐段判定（旧路径），再不行才按「判不了就放行」处理。
     def _judge(i: int) -> dict:
         blob = _blob(segments[i])
         return _llm_judge_seg(
             segments[i], topic_label, blob, method="fallback" if no_kw else "llm",
             hits=_match(blob, strong), total=len(strong))
 
-    for i, got in zip(todo, parallel_labelled(
-            todo, _judge, workers=GATE_WORKERS, label="闸门判定",
+    def _judge_batch(batch: list[int]) -> dict[int, dict]:
+        parts = []
+        for i in batch:
+            seg = segments[i]
+            blob = _blob(seg)
+            parts.append(
+                f"[{i}] 段落标题：{seg.get('heading_path') or '(无)'}\n"
+                f"这段在讲：{seg.get('summary') or '(无)'}\n"
+                f"原文开头：\n{blob[:2000]}")
+        d = LLM.complete_json(
+            "relevance",
+            f"研究对象：{topic_label}\n\n"
+            f"以下是 {len(batch)} 个候选段落，逐一判定是否相关：\n\n"
+            + "\n\n".join(parts),
+            system=prompts.RELEVANCE_BATCH)
+        method = "fallback" if no_kw else "llm"
+        out: dict[int, dict] = {}
+        want = set(batch)
+        for v in (d or {}).get("verdicts") or []:
+            idx = v.get("index")
+            # 模型给错下标就跳过，不猜（summarize 同款纪律）
+            if not isinstance(idx, int) or idx not in want or idx in out:
+                continue
+            seg = segments[idx]
+            blob = _blob(seg)
+            out[idx] = {"on_topic": bool(v.get("on_topic")),
+                        "method": method,
+                        "hits": _match(blob, strong), "total": len(strong),
+                        "reason": str(v.get("reason") or "")[:200]}
+        return out
+
+    batches = [todo[i:i + GATE_LLM_BATCH]
+               for i in range(0, len(todo), GATE_LLM_BATCH)]
+    batch_results = parallel_labelled(
+        batches, _judge_batch, workers=GATE_WORKERS, label="闸门判定",
+        first_serial=True)
+    stragglers: list[int] = []
+    for batch, got in zip(batches, batch_results):
+        if got is None:
+            # 整批失败——不是放行，是**回退到逐段判定**（旧路径），
+            # 一批失败 ≠ 一批段都被判了相关
+            stragglers.extend(batch)
+            continue
+        for i in batch:
+            if i in got:
+                verdicts[i] = got[i]
+            else:
+                stragglers.append(i)
+
+    for i, got in zip(stragglers, parallel_labelled(
+            stragglers, _judge, workers=GATE_WORKERS, label="闸门判定·补判",
             first_serial=True)):
         # 并发下判定失败的项是 None —— 一律放行（宁可漏杀不可错杀）
         verdicts[i] = got or {"on_topic": True, "method": "llm_degraded",
