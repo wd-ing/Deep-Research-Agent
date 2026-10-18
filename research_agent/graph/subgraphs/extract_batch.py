@@ -15,7 +15,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from ...llm.provider import EmptyOutput, LLMClient, parallel_labelled
+from ...llm.provider import EmptyOutput, LLMClient, fire_progress, parallel_labelled
 from .. import prompts
 from ..state import ExtractBatchState
 
@@ -172,11 +172,31 @@ def _node_extract(state: ExtractBatchState) -> dict:
     async def run():
         sem = asyncio.Semaphore(CONCURRENCY)
 
-        async def one(b):
+        async def one(i, b):
             async with sem:
-                return await asyncio.to_thread(_run_nature_batch, b)
+                try:
+                    out_i, missing = await asyncio.to_thread(_run_nature_batch, b)
+                except Exception as e:
+                    fire_progress("extract", {
+                        "kind": "nature_batch", "batch": i + 1,
+                        "batches": len(batches), "failed": True,
+                        "error": f"{type(e).__name__}: {e}"[:120]})
+                    raise
+                # 每个来源一行：标题 + 性质。25 个来源就是 25 次心跳，
+                # extract 环节不再是一整块黑箱。
+                for it in out_i:
+                    fire_progress("extract", {
+                        "kind": "extract_source", "source_id": it["source_id"],
+                        "title": it.get("title") or "",
+                        "nature": it.get("source_nature") or "unknown"})
+                if missing:
+                    fire_progress("extract", {
+                        "kind": "nature_batch", "batch": i + 1,
+                        "batches": len(batches), "judged": len(out_i),
+                        "missing": len(missing)})
+                return out_i, missing
 
-        return await asyncio.gather(*(one(b) for b in batches),
+        return await asyncio.gather(*(one(i, b) for i, b in enumerate(batches)),
                                     return_exceptions=True)
 
     raw = asyncio.run(run())
@@ -322,6 +342,10 @@ def summarize_segments(items: list[dict]) -> dict:
                 txt = (it.get("summary") or "").strip()
                 if txt:
                     got[batch[idx]["chunk_id"]] = txt
+        # 环节内进度：每批完成推一行（partial 也推——done < of 前端标黄）
+        fire_progress("extract", {"kind": "summarize_batch", "batch": bi + 1,
+                                  "batches": len(batches), "done": len(got),
+                                  "of": len(batch)})
         return got
 
     results = parallel_labelled(
@@ -377,6 +401,9 @@ def summarize_segments(items: list[dict]) -> dict:
     for bi, got in enumerate(results):
         if got is None:
             failed += 1
+            fire_progress("extract", {"kind": "summarize_batch", "batch": bi + 1,
+                                      "batches": len(batches), "failed": True,
+                                      "of": len(batches[bi])})
             print(f"⚠️  段落概括批次 {bi} 彻底失败（抛异常且重试仍不成），"
                   f"这一批的 {len(batches[bi])} 段进不了写作阶段", flush=True)
             continue

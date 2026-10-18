@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ...llm.provider import LLMClient, parallel_labelled
+from ...llm.provider import LLMClient, fire_progress, parallel_labelled
 from .. import prompts
 
 LLM = LLMClient()
@@ -287,14 +287,29 @@ def gate_segments(segments: list[dict], kw: list[str], topic_label: str) -> dict
 
     batches = [todo[i:i + GATE_LLM_BATCH]
                for i in range(0, len(todo), GATE_LLM_BATCH)]
+
+    def _judge_batch_pb(item) -> dict[int, dict]:
+        """`_judge_batch` 的进度包装：每批判完推一行，闸门不再是一块静默。"""
+        bi, batch = item
+        got = _judge_batch(batch)
+        on = sum(1 for v in got.values() if v.get("on_topic"))
+        fire_progress("gate", {"kind": "gate_batch", "batch": bi + 1,
+                               "batches": len(batches), "judged": len(batch),
+                               "on_topic": on, "off_topic": len(batch) - on,
+                               "missing": len(batch) - len(got)})
+        return got
+
     batch_results = parallel_labelled(
-        batches, _judge_batch, workers=GATE_WORKERS, label="闸门判定",
-        first_serial=True)
+        list(enumerate(batches)), _judge_batch_pb,
+        workers=GATE_WORKERS, label="闸门判定", first_serial=True)
     stragglers: list[int] = []
-    for batch, got in zip(batches, batch_results):
+    for bi, (batch, got) in enumerate(zip(batches, batch_results)):
         if got is None:
             # 整批失败——不是放行，是**回退到逐段判定**（旧路径），
             # 一批失败 ≠ 一批段都被判了相关
+            fire_progress("gate", {"kind": "gate_batch", "batch": bi + 1,
+                                   "batches": len(batches), "failed": True,
+                                   "of": len(batch)})
             stragglers.extend(batch)
             continue
         for i in batch:
@@ -303,6 +318,10 @@ def gate_segments(segments: list[dict], kw: list[str], topic_label: str) -> dict
             else:
                 stragglers.append(i)
 
+    if stragglers:
+        # 批量判定没覆盖到的段（整批失败 / 模型漏判下标）回退逐段判。
+        # 报一条而不是每段一条：补判是异常路径，条数本身就够说清楚了。
+        fire_progress("gate", {"kind": "gate_retry", "count": len(stragglers)})
     for i, got in zip(stragglers, parallel_labelled(
             stragglers, _judge, workers=GATE_WORKERS, label="闸门判定·补判",
             first_serial=True)):

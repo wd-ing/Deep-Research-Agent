@@ -22,7 +22,8 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from ...llm.provider import LLMClient, _parse_json, parallel_labelled
+from ...llm.provider import (LLMClient, _parse_json, fire_progress,
+                             parallel_labelled)
 from ...llm.toolloop import run_tool_loop
 from .. import prompts
 from ..state import WriteState
@@ -345,7 +346,17 @@ def node_dispatch(state: WriteState) -> dict:
         t0 = _now()
 
         def _one(t: dict, _b=batch) -> tuple[dict, str | None]:
-            return _run_task(state, t, revise=None)
+            secs, err = _run_task(state, t, revise=None)
+            # 每任务一行：写作环节最长的并行段终于有粒度合适的进度。
+            # 这里就推（fire_progress），不等批收齐——否则 8 个任务还是
+            # 按批到达，用户看到的仍是块而不是流。
+            fire_progress("write", {
+                "kind": "write_task", "task": t["id"],
+                "covers": list(t.get("covers") or []),
+                "ok": bool(secs),
+                "chars": sum(len(str(v)) for v in secs.values()) if secs else 0,
+                "reason": (err or "")[:80]})
+            return secs, err
 
         # 必须走 parallel_labelled：它内部用 submit_run_in_context 在**主线程**
         # 造好 wrapper 再提交，线程不继承 contextvar 这件事才不会漏。
@@ -1234,6 +1245,11 @@ def node_revise(state: WriteState) -> dict:
                     "mandate": "", "must_cover": [], "not_yours": [],
                     "segments": _task_segments_refs(state, tid)},
             revise={"fix": _dumps(asks), "problem": _dumps(asks), "draft": _join(prev)})
+        fire_progress("write", {
+            "kind": "write_task", "task": tid, "covers": covers,
+            "ok": bool(new), "revise": True,
+            "chars": sum(len(str(v)) for v in new.values()) if new else 0,
+            "reason": (err or "")[:80]})
         return tid, new, err
 
     t0 = _now()

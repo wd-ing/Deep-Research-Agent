@@ -90,6 +90,19 @@ function toStep(e: ProgressEntry, seq: number): Step | null {
       }
     case 'outline':
       return { id, label: '定框架', summary: `${n(e, 'sections') ?? '?'} 个小节` }
+    case 'search_query': {
+      // 环节内实时进度（fire_progress，B1）：每条查询返回即发一行，
+      // 检索那几秒不再是黑箱。失败的要标出来——命中 0 和查挂了是两回事。
+      const err = s(e, 'error')
+      return {
+        id, label: `查询 ${n(e, 'i')}/${n(e, 'of')}`,
+        summary: err
+          ? `「${s(e, 'query')}」失败`
+          : `「${s(e, 'query')}」→ 命中 ${n(e, 'hits') ?? '?'}`,
+        warn: !!err,
+        detail: err ? [err] : undefined,
+      }
+    }
     case 'retrieve': {
       const rd = n(e, 'round') ?? 0
       const lines: string[] = []
@@ -100,6 +113,69 @@ function toStep(e: ProgressEntry, seq: number): Step | null {
         id, label: `检索（第 ${rd} 轮）`,
         summary: `搜 ${(q?.zh?.length ?? 0) + (q?.en?.length ?? 0)} 组词 · 命中 ${n(e, 'hits') ?? '?'} · 采用 ${n(e, 'accepted') ?? n(e, 'new_sources') ?? '?'}`,
         detail: lines,
+      }
+    }
+    case 'summarize_batch': {
+      // 概括的批级进度：done < of 是部分失败（下标错位被丢），
+      // failed 是整批重试仍不成——后者那些段落进不了写作阶段。
+      if (e.failed === true) {
+        return {
+          id, label: `段落概括 ${n(e, 'batch')}/${n(e, 'batches')}`,
+          summary: `批次失败，${n(e, 'of')} 段没进写作材料`, warn: true,
+        }
+      }
+      const done = n(e, 'done') ?? 0
+      const of = n(e, 'of') ?? 0
+      return {
+        id, label: `段落概括 ${n(e, 'batch')}/${n(e, 'batches')}`,
+        summary: `${done}/${of} 段`, warn: done < of,
+      }
+    }
+    case 'extract_source': {
+      const title = s(e, 'title') ?? ''
+      const nature = s(e, 'nature') ?? ''
+      return {
+        id, label: '来源判定',
+        summary: `${title.length > 42 ? title.slice(0, 42) + '…' : title} — ${nature}`,
+      }
+    }
+    case 'nature_batch': {
+      // 只有「有缺口」或「整批失败」才发（缺口的来源会归到「未判」组）
+      const missing = n(e, 'missing') ?? 0
+      return {
+        id, label: `来源判定批次 ${n(e, 'batch')}/${n(e, 'batches')}`,
+        summary: e.failed === true
+          ? `批次失败${s(e, 'error') ? `：${s(e, 'error')}` : ''}`
+          : `${missing} 个来源没判出性质`,
+        warn: true,
+      }
+    }
+    case 'gate_batch': {
+      if (e.failed === true) {
+        return {
+          id, label: `闸门判定 ${n(e, 'batch')}/${n(e, 'batches')}`,
+          summary: `批次失败，回退逐段补判`, warn: true,
+        }
+      }
+      return {
+        id, label: `闸门判定 ${n(e, 'batch')}/${n(e, 'batches')}`,
+        summary: `留 ${n(e, 'on_topic') ?? '?'} · 毙 ${n(e, 'off_topic') ?? '?'}`
+          + ((n(e, 'missing') ?? 0) > 0 ? ` · 漏判 ${n(e, 'missing')}` : ''),
+      }
+    }
+    case 'gate_retry':
+      return {
+        id, label: '闸门补判',
+        summary: `${n(e, 'count')} 段回退逐段判定`, warn: true,
+      }
+    case 'write_task': {
+      const covers = ((e.covers as string[] | undefined) ?? []).join('、')
+      const ok = e.ok === true
+      return {
+        id, label: e.revise === true ? '小节返修' : '小节写作',
+        summary: `${s(e, 'task') ?? ''} → ${covers} · ${n(e, 'chars') ?? 0} 字${ok ? '' : ' · 失败'}`,
+        warn: !ok,
+        detail: s(e, 'reason') ? [s(e, 'reason') as string] : undefined,
       }
     }
     case 'extract': {
@@ -166,8 +242,17 @@ function toStep(e: ProgressEntry, seq: number): Step | null {
         detail,
       }
     }
+    case 'write_plan_spec': {
+      const thesis = s(e, 'thesis')
+      return {
+        id, label: '写作规约',
+        summary: thesis ? `论点：${thesis.length > 60 ? thesis.slice(0, 60) + '…' : thesis}` : '规约已生成',
+        warn: !!s(e, 'spec_uncertainty'),
+        detail: s(e, 'spec_uncertainty') ? [`规约存疑：${s(e, 'spec_uncertainty')}`] : undefined,
+      }
+    }
     case 'write_plan_tasks':
-      return { id, label: '制定写作规约', summary: `${n(e, 'kept') ?? n(e, 'tasks')} 个子 agent · ${n(e, 'segments_available')} 段可用` }
+      return { id, label: '任务分派', summary: `${n(e, 'kept') ?? n(e, 'tasks')} 个子 agent · ${n(e, 'segments_available')} 段可用` }
     case 'write_dispatch':
       return { id, label: '并行写作', summary: `${n(e, 'ran')} 个子 agent · 首个 ${n(e, 'first_serial_s')}s`, state: 'done' }
     case 'write_assemble':

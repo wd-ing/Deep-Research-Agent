@@ -148,6 +148,32 @@ def _fire_delta(stage: str, kind: str, chunk: str) -> None:
             pass
 
 
+# 环节内实时进度的回调。形如 fn(session_id, node, event)。
+#
+# 为什么单独开一条路而不挂在 state.events 上：`events` 是节点**跑完**
+# 才随 update 吐出来的（server astream 的 updates 模式）——summarize 一批
+# 12 段、gate 一批 12 段这种「环节内的工作单元」，挂上去对前端等于没有进度，
+# extract 那两三分钟照样是黑箱。想让「每批完成推一行」就必须绕开累加器，
+# 从执行点直接 _emit——和 thinking/draft 增量同一条已验证的链路。
+_PROGRESS_HOOK: ContextVar[Optional[Callable[[str | None, str, dict], None]]] = \
+    ContextVar("_PROGRESS_HOOK", default=None)
+
+
+def fire_progress(node: str, event: dict) -> None:
+    """从环节内部推一条实时进度事件。
+
+    ⚠️ 这条路上的事件**不进 state.events**，所以别再往 events 里塞同一条，
+    否则节点收尾时会被当成「迄今全部」里的一条再推一遍。
+    与 _fire_delta 同款纪律：hook 不在就静默跳过，异常绝不外传。
+    """
+    fn = _PROGRESS_HOOK.get()
+    if fn:
+        try:
+            fn(current_session(), node, event)
+        except Exception:
+            pass
+
+
 # ================================================================ 主动限流
 
 class SendRateLimiter:
@@ -267,6 +293,21 @@ def delta_scope(fn):
         yield
     finally:
         _DELTA_HOOK.reset(token)
+
+
+@contextmanager
+def progress_scope(fn):
+    """在作用域内启用环节内实时进度回调。传 None 等于关掉。
+
+    与 delta_scope 同一对配套：两条都是「执行中就要推出去」的展示通道，
+    都必须在外层（server 的任务作用域）设好，worker 线程靠
+    `submit_run_in_context` / `asyncio.to_thread` 的 contextvar 传播拿到。
+    """
+    token = _PROGRESS_HOOK.set(fn)
+    try:
+        yield
+    finally:
+        _PROGRESS_HOOK.reset(token)
 
 
 @contextmanager

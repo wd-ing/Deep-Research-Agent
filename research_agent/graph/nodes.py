@@ -18,7 +18,7 @@ from typing import Any
 from ..db.repo import get_repo
 from ..ingest.extract import Fetcher
 from ..ingest.split import RecursiveSplitter
-from ..llm.provider import LLMClient, session_scope
+from ..llm.provider import LLMClient, fire_progress, session_scope
 from ..search.base import SearchHit
 from ..search.normalize import content_hash, domain_of, guess_source_type, normalize_url
 from ..search.searxng import SearXNGProvider
@@ -522,12 +522,26 @@ def node_retrieve(state: ResearchState) -> dict:
             out.append(h)
         return out
 
-    async def call(prov, q, lang, lim):
-        return await asyncio.to_thread(prov.search, q, language=lang, limit=lim)
+    all_q = [(q, "zh-CN", 8, SX) for q in queries["zh"]] + \
+            [(q, "en", 6, TV) for q in queries["en"]]
+
+    async def call(prov, q, lang, lim, i):
+        ev = {"kind": "search_query", "i": i + 1, "of": len(all_q),
+              "lang": lang, "query": q}
+        try:
+            res = await asyncio.to_thread(prov.search, q, language=lang, limit=lim)
+            ev["hits"] = len(res)
+            return res
+        except Exception as e:
+            ev["error"] = f"{type(e).__name__}: {e}"[:120]
+            raise
+        finally:
+            # 环节内实时进度：查询一条条回来就一条条推，不等整轮跑完
+            fire_progress("retrieve", ev)
 
     async def run():
-        tasks = [call(SX, q, "zh-CN", 8) for q in queries["zh"]]
-        tasks += [call(TV, q, "en", 6) for q in queries["en"]]
+        tasks = [call(prov, q, lang, lim, i)
+                 for i, (q, lang, lim, prov) in enumerate(all_q)]
         res = await asyncio.gather(*tasks, return_exceptions=True)
         flat: list[SearchHit] = []
         for r in res:

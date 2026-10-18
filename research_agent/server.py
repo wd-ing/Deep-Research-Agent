@@ -852,10 +852,18 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
             _subs.get(sid, set()).discard(q)
             _last_seen[sid] = seen_keys
 
+    def _on_progress(session_id, node, ev):
+        # 环节内实时进度（fire_progress）：原样套上 progress 信封推出去。
+        _emit(session_id or sid, {"kind": "progress", "node": node, "event": ev})
+
     def _task_plain() -> None:
         """原来的 invoke 路径，保留作回退。"""
+        from .llm.provider import progress_scope
         try:
-            _finish(graph().invoke(inp, config=cfg))
+            # 非流式没有订阅者，但 _emit 会把事件落进 sse_event（0009），
+            # 让这条路径也能被 dump_events 完整回放。
+            with progress_scope(_on_progress):
+                _finish(graph().invoke(inp, config=cfg))
         except Exception as e:
             _emit(sid, {"kind": "error", "error": f"{type(e).__name__}: {e}"})
         finally:
@@ -866,7 +874,7 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
         # 推给前端就能实时显示「AI 正在想什么」。
         # 用 contextvar 注册，所以并发子 agent 要靠 submit_run_in_context 继承
         # （provider.py 里写了同一个坑：C1-j）。
-        from .llm.provider import delta_scope
+        from .llm.provider import delta_scope, progress_scope
 
         def _on_delta(session_id, stage, kind, chunk):
             # 增量很碎：**实测平均 7.2 字符/块**（probe_outline 一口气 2,336 块
@@ -880,7 +888,7 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
             buf.setdefault((session_id or sid, stage, kind), []).append(chunk)
 
         async def _with_delta(coro):
-            with delta_scope(_on_delta):
+            with delta_scope(_on_delta), progress_scope(_on_progress):
                 await coro
 
         # 攒够 ~40 字或 0.25 秒就推一次。40 字是「够读一句」的下限，
@@ -947,19 +955,24 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
     seen_keys = _last_seen.get(sid) or set()
 
     async def _go_stream() -> None:
+        from .llm.provider import progress_scope
         nonlocal seen_keys
         try:
-            async for update in (await agraph()).astream(cmd, config=cfg, stream_mode="updates"):
-                for node, delta in (update or {}).items():
-                    if not isinstance(delta, dict):
-                        continue
-                    _emit(sid, {"kind": "node", "node": node})
-                    for e in delta.get("events") or []:
-                        k = _event_key(e)
-                        if k in seen_keys:
+            # 写作阶段在审批之后跑——write_task 这类环节内进度全靠这条链路推
+            with progress_scope(lambda session_id, node, ev: _emit(
+                    session_id or sid,
+                    {"kind": "progress", "node": node, "event": ev})):
+                async for update in (await agraph()).astream(cmd, config=cfg, stream_mode="updates"):
+                    for node, delta in (update or {}).items():
+                        if not isinstance(delta, dict):
                             continue
-                        seen_keys.add(k)
-                        _emit(sid, {"kind": "progress", "node": node, "event": e})
+                        _emit(sid, {"kind": "node", "node": node})
+                        for e in delta.get("events") or []:
+                            k = _event_key(e)
+                            if k in seen_keys:
+                                continue
+                            seen_keys.add(k)
+                            _emit(sid, {"kind": "progress", "node": node, "event": e})
             st = graph().get_state(cfg)
             out = dict(st.values or {})
             _emit(sid, {"kind": "done", "state": {
@@ -974,8 +987,12 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
             _last_seen[sid] = seen_keys
 
     def _go_plain() -> None:
+        from .llm.provider import progress_scope
         try:
-            graph().invoke(cmd, config=cfg)
+            with progress_scope(lambda session_id, node, ev: _emit(
+                    session_id or sid,
+                    {"kind": "progress", "node": node, "event": ev})):
+                graph().invoke(cmd, config=cfg)
             st = graph().get_state(cfg)
             out = dict(st.values or {})
             _emit(sid, {"kind": "done", "state": {
