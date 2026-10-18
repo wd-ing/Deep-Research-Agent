@@ -213,7 +213,7 @@ function SessionRow({
 export function Sidebar({
   list, trash, cur, folders, onPick, onChanged, onNew, pane, onPane,
   lib, libErr, onRetryLib, srcQuery, onSrcQuery, srcCur, onPickSource, onIgnoreSource,
-  onNotify,
+  onNotify, onSettings,
 }: {
   list: SessionSummary[]
   /** 回收站内容。来自 `/api/trash`——不在 `list` 里（那边硬过滤 deleted_at）。 */
@@ -240,6 +240,9 @@ export function Sidebar({
   srcCur: string | null
   onPickSource: (id: string) => void
   onIgnoreSource: (id: string, ignore: boolean, reason: string) => void
+  /** 设置页入口（D1）。挂在侧栏底部——路由跳转的事不归侧栏管，
+   *  这里只负责把「点了」报上去。 */
+  onSettings: () => void
 }) {
   const [filter, setFilter] = useState<Filter>('all')
   const [q, setQ] = useState('')
@@ -447,6 +450,16 @@ export function Sidebar({
           }}
         />
       )}
+
+      {/* 底部工具区：设置（D1）。不抢主列表的注意力，放最底下 */}
+      <div className="mt-auto border-t border-line p-2">
+        <button
+          onClick={onSettings}
+          className="w-full rounded px-2 py-1 text-left text-xs text-muted transition-colors hover:bg-white hover:text-ink"
+        >
+          ⚙ 设置
+        </button>
+      </div>
     </nav>
   )
 }

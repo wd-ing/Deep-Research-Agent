@@ -366,10 +366,20 @@ async function jpatch<T>(url: string, body: unknown): Promise<T> {
   return r.json() as Promise<T>
 }
 
+async function jput<T>(url: string, body: unknown): Promise<T> {
+  const r = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) throw new Error(await errText(r, url))
+  return r.json() as Promise<T>
+}
+
 async function jdel<T>(url: string): Promise<T> {
   const r = await fetch(url, { method: 'DELETE' })
   if (!r.ok) throw new Error(await errText(r, url))
   return r.json() as Promise<T>
 }
 
-export const api = { jget, jpost, jpatch, jdel }
+export const api = { jget, jpost, jpatch, jdel, jput }

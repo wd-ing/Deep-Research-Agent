@@ -11,6 +11,7 @@ import { DebugPanel } from './components/DebugPanel'
 import { RoundChart } from './components/RoundChart'
 import { Sidebar, type Pane } from './components/Sidebar'
 import { SourceDetail } from './components/SourceDetail'
+import { SettingsView } from './views/SettingsView'
 import { NewResearchDialog } from './components/NewResearchDialog'
 
 export default function App() {
@@ -251,11 +252,16 @@ export default function App() {
         srcCur={srcId}
         onPickSource={(id) => nav({ name: 'sources', srcId: id })}
         onIgnoreSource={(id, ignore, reason) => void ignoreSource(id, ignore, reason)}
+        onSettings={() => nav({ name: 'settings' })}
       />
 
       {/* 来源视图占满整个主区域：报告有 2 万字，来源详情是主内容，
-          没必要再套一层会话的头部 */}
-      {pane === 'source' ? (
+          没必要再套一层会话的头部。设置页同理——整页编辑器。 */}
+      {route.name === 'settings' ? (
+        <main className="flex min-w-0 flex-1 flex-col overflow-auto">
+          <SettingsView onNotify={s.notify} />
+        </main>
+      ) : pane === 'source' ? (
         <main className="flex min-w-0 flex-1 flex-col">
           <SourceDetail
             src={srcDetail}

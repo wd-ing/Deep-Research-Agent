@@ -654,6 +654,58 @@ def approval(sid: str) -> dict:
             "approval": payload}
 
 
+# ---------------------------------------------------------------- 设置
+
+MODELS_YAML = REPO_ROOT / "config" / "models.yaml"
+
+
+@app.get("/api/config")
+def get_config() -> dict:
+    """models.yaml 原文 + 当前生效的「环节 → 模型」解析表（设置页用）。
+
+    运行时进程读的是启动时那一次——改了文件**要重启才生效**，
+    前端必须照实说，别做成「保存即生效」的假象。
+    """
+    import yaml
+    text = MODELS_YAML.read_text(encoding="utf-8")
+    # 「当前生效」那份——ModelRegistry 启动时读进的版本。
+    # 解析失败不该挂掉整个端点：文件本身就坏了时更要让人能在页面上看到。
+    stages: dict[str, str] = {}
+    try:
+        from .llm.provider import ModelRegistry
+        reg = ModelRegistry()
+        for name in (reg.raw.get("stages") or {}):
+            cfg = reg.stage(name)
+            stages[name] = f"{cfg.provider} / {cfg.model}"
+    except Exception as e:
+        stages = {"_error": f"配置解析失败：{e}"}
+    return {"path": str(MODELS_YAML), "content": text,
+            "stages": stages, "restart_required": True}
+
+
+class ConfigIn(BaseModel):
+    content: str
+
+
+@app.put("/api/config")
+def put_config(body: ConfigIn) -> dict:
+    """写回 models.yaml。只收 YAML 能解析且带 stages: 的内容——
+    坏配置写进去会让下一次启动直接炸，校验必须在这里拦。"""
+    import yaml
+    content = body.content
+    if not content.strip():
+        raise HTTPException(400, "内容为空")
+    try:
+        parsed = yaml.safe_load(content)
+    except Exception as e:
+        raise HTTPException(400, f"YAML 解析失败，没有写入：{e}")
+    if not isinstance(parsed, dict) or not parsed.get("stages"):
+        raise HTTPException(400, "不像 models.yaml：顶层缺 stages: 映射，没有写入")
+    MODELS_YAML.write_text(content, encoding="utf-8")
+    return {"ok": True, "restart_required": True,
+            "note": "已写回 models.yaml——重启服务后生效"}
+
+
 @app.get("/api/sessions/{sid}/seg_preview")
 def seg_preview(sid: str) -> dict:
     """报告里所有引用段号的**轻量预览**（前端 hover 气泡用）。
