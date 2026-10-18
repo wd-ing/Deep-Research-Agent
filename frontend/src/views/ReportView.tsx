@@ -464,6 +464,75 @@ export function ReportView({
     }
   }, [scrollRef, toc])
 
+  // ---- 查找条（C2）----
+  // 用 CSS Custom Highlight API，不去 React 渲染的 DOM 里插 <mark>——
+  // 动了那棵树，React 下次重渲会对不上。Range + ::highlight 是纯叠加层。
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQ, setFindQ] = useState('')
+  const [matches, setMatches] = useState<Range[]>([])
+  const [cur, setCur] = useState(0)
+  const contentRef = useRef<HTMLDivElement>(null)
+
+  const clearFind = () => {
+    const hi = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights
+    hi?.delete('report-find'); hi?.delete('report-find-cur')
+  }
+
+  const scrollToMatch = (i: number, all: Range[]) => {
+    const r = all[i]
+    if (!r) return
+    setCur(i)
+    const hi = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights
+    const Hl = (window as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight
+    if (hi && Hl) hi.set('report-find-cur', new Hl(r))
+    const el = r.startContainer.parentElement
+    el?.scrollIntoView({ block: 'center' })
+  }
+
+  useEffect(() => {
+    if (!findOpen || !findQ.trim()) {
+      clearFind(); setMatches([]); setCur(0)
+      return
+    }
+    const root = contentRef.current
+    if (!root) return
+    const q = findQ.toLowerCase()
+    const ranges: Range[] = []
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = (node.textContent ?? '').toLowerCase()
+      for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + q.length)) {
+        const r = new Range()
+        r.setStart(node, i); r.setEnd(node, i + q.length)
+        ranges.push(r)
+      }
+    }
+    setMatches(ranges)
+    const hi = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights
+    const Hl = (window as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight
+    if (hi && Hl && ranges.length) hi.set('report-find', new Hl(...ranges))
+    if (ranges.length) scrollToMatch(0, ranges)
+    return clearFind
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [findQ, findOpen])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) {
+        // 报告在自己的滚动容器里，浏览器查找条管不到它的视觉反馈
+        e.preventDefault()
+        setFindOpen(true)
+      }
+      if (e.key === 'Escape') setFindOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      clearFind()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const jump = (id: string) => {
     const h = scrollRef.current?.querySelector(`#${id}`)
     if (!h) return
@@ -480,17 +549,67 @@ export function ReportView({
           原来 IgnoredBanner 也在里面——那是「常驻」的由来：
           它有 6~7 行高，在窄窗口下吃掉约 35% 的阅读高度，
           而报告有 2 万字、要读很久。2026-10-14 用户定：提示不常驻。 */}
-      <div className="sticky top-0 z-20 bg-white/95 backdrop-blur">
+      <div className="sticky top-0 z-20 bg-white/95 backdrop-blur print:hidden">
         <ProgressBar pct={pct} />
-        <div className="mx-auto max-w-3xl px-6">
-          <TocBar
-            toc={toc} active={activeId} open={openToc}
-            onToggle={() => setOpenToc((v) => !v)} onJump={jump}
-          />
+        <div className="mx-auto flex max-w-3xl items-center px-6">
+          <div className="min-w-0 flex-1">
+            <TocBar
+              toc={toc} active={activeId} open={openToc}
+              onToggle={() => setOpenToc((v) => !v)} onJump={jump}
+            />
+          </div>
+          <button
+            onClick={() => setFindOpen(true)}
+            className="ml-2 shrink-0 rounded px-1.5 py-0.5 text-2xs text-muted hover:bg-gray-100 hover:text-ink"
+            title="在报告中查找（⌘F / Ctrl+F）"
+          >
+            查找
+          </button>
         </div>
       </div>
 
-      <div className="mx-auto max-w-3xl px-6 pb-8 pt-4">
+      {/* 查找条（C2）：浮动在右上，不进正文流。带计数和上一个/下一个，
+          匹配高亮走 CSS.highlights 叠加层，不碰 React 的 DOM。 */}
+      {findOpen && (
+        <div className="fixed right-6 top-[72px] z-30 flex items-center gap-1 rounded-md border border-line bg-white px-2 py-1 shadow-md print:hidden">
+          <input
+            autoFocus
+            value={findQ}
+            onChange={(e) => setFindQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && matches.length) {
+                scrollToMatch(
+                  e.shiftKey ? (cur - 1 + matches.length) % matches.length
+                             : (cur + 1) % matches.length, matches)
+              }
+              if (e.key === 'Escape') setFindOpen(false)
+            }}
+            placeholder="在报告中查找"
+            className="w-44 bg-transparent text-xs outline-none"
+          />
+          <span className="shrink-0 text-2xs tabular-nums text-muted">
+            {findQ.trim() ? (matches.length ? `${cur + 1}/${matches.length}` : '无匹配') : ''}
+          </span>
+          <button
+            onClick={() => matches.length && scrollToMatch(
+              (cur - 1 + matches.length) % matches.length, matches)}
+            className="rounded px-1 text-xs text-muted hover:bg-gray-100 hover:text-ink"
+            title="上一个（⇧⏎）"
+          >↑</button>
+          <button
+            onClick={() => matches.length && scrollToMatch(
+              (cur + 1) % matches.length, matches)}
+            className="rounded px-1 text-xs text-muted hover:bg-gray-100 hover:text-ink"
+            title="下一个（⏎）"
+          >↓</button>
+          <button
+            onClick={() => setFindOpen(false)}
+            className="rounded px-1 text-xs text-muted hover:bg-gray-100 hover:text-ink"
+          >×</button>
+        </div>
+      )}
+
+      <div ref={contentRef} className="mx-auto max-w-3xl px-6 pb-8 pt-4">
         {/* 排除提示改成**一次性**：跟着正文流走，滚过去就没了。
             仍然保留是因为它是唯一一处告诉用户「这份报告引用了你后来
             标为不可信的材料」的地方，直接删掉等于让不可信结论悄悄留着。 */}

@@ -1286,6 +1286,8 @@ def node_write(state: ResearchState) -> dict:
         md = (head + "\n# 检索结果\n\n本轮没有可用来源。"
               "可尝试调整检索词或换检索后端。\n")
         repo.save_report(sid, md)
+        repo.x("UPDATE session SET degraded=? WHERE id=?",
+               ("没有可用来源", sid))
         return {"report_markdown": md,
                 "events": [{"kind": "write", "round": state.get("round"),
                             "note": "empty", "sections_written": 0}]}
@@ -1333,6 +1335,16 @@ def node_write(state: ResearchState) -> dict:
     if head:
         md = head + md
     repo.save_report(sid, md)
+    # 降级产出要落进 session 表（C3）：报告正文那句声明是给人读的，
+    # 列表和详情页要标「降级产出」得靠数据。两类降级都记：
+    # 写作规约失败（plan_failed）与主题信息稀薄（probe_degraded）。
+    deg = None
+    if out.get("plan_failed"):
+        deg = f"写作规约失败：{str(out['plan_failed'])[:120]}"
+    elif head:
+        deg = "探针判定：主题公开信息稀薄"
+    if deg:
+        repo.x("UPDATE session SET degraded=? WHERE id=?", (deg, sid))
     return {"report_markdown": md,
             "events": (out.get("events") or []) + [
                 {"kind": "write", "round": state.get("round"),

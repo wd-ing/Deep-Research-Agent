@@ -46,6 +46,9 @@ export interface SessionSummary {
   folder_id?: string | null
   /** 报告写完时生成的结构化摘要（阶段 3 才有值） */
   summary?: { summary: string; key_points?: string[]; gaps?: string[] } | null
+  /** 降级产出原因（C3）：写作规约失败 / 主题信息稀薄 / 没有来源。
+   *  status 是 done 但报告没走正常写作线时，这个字段就是那个真相。 */
+  degraded?: string | null
 }
 
 export interface Folder {

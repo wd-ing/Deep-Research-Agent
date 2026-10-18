@@ -136,7 +136,7 @@ def list_sessions(
     order = "archived_at DESC, created_at DESC" if archived == "1" else "created_at DESC"
     rows = repo.q(
         "SELECT id,title,question,status,cost_tokens,created_at,archived_at,"
-        "       deleted_at,folder_id,summary_json FROM session "
+        "       deleted_at,folder_id,summary_json,degraded FROM session "
         f"WHERE {' AND '.join(where)} ORDER BY {order}", tuple(params))
     out = []
     for r in rows:

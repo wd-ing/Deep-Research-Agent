@@ -114,3 +114,16 @@ body { @apply bg-gray-50 text-ink antialiased; }
   z-index: 10;
   backdrop-filter: saturate(180%) blur(8px);
 }
+
+/* 打印 = 只留报告正文（C1）。
+   页面的布局全是「视口等高 + 内部滚动容器」——打印时不摊平，
+   4 万字报告只会出第一屏。 */
+@media print {
+  .h-screen { height: auto !important; }
+  .overflow-auto, .overflow-hidden { overflow: visible !important; }
+}
+
+/* 查找条的高亮（C2）：淡黄=全部命中，橙=当前那条。
+   CSS Custom Highlight API，React 的 DOM 一下不动。 */
+::highlight(report-find) { background-color: rgba(250, 204, 21, .4); }
+::highlight(report-find-cur) { background-color: rgba(249, 115, 22, .5); }

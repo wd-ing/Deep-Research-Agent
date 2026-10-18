@@ -110,6 +110,12 @@ function SessionRow({
             </span>
           </div>
           <div className="mt-0.5 flex items-center gap-2 pl-3 text-2xs text-muted">
+            {s.degraded && (
+              <span
+                className="rounded bg-amber-100 px-1 text-amber-800"
+                title={s.degraded}
+              >降级产出</span>
+            )}
             {s.status !== 'done' && <span>{s.status}</span>}
             {s.cost_tokens > 0 && <span>{tokens(s.cost_tokens)} token</span>}
             <span>{ago(s.created_at)}</span>
@@ -290,7 +296,7 @@ export function Sidebar({
   }
 
   return (
-    <nav className="flex w-72 shrink-0 flex-col border-r border-line bg-gray-50">
+    <nav className="flex w-72 shrink-0 flex-col border-r border-line bg-gray-50 print:hidden">
       {/* 会话 / 来源 两个视图。同一批数据两种组织方式：
           会话按时间流找「上周那场」，来源按性质找「哪些材料值得信」。 */}
       <div className="flex gap-1 border-b border-line p-2">

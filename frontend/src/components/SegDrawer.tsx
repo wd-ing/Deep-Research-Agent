@@ -25,14 +25,14 @@ export function SegDrawer({
     <>
       {/* 遮罩。z-30 压得住报告顶部的常驻条（那里面 `sticky top-0 z-20`），
           不然点它不会关抽屉、而且上半屏看着没被遮住。 */}
-      <div className="fixed inset-0 z-30 bg-black/20" onClick={onClose} aria-hidden />
+      <div className="fixed inset-0 z-30 bg-black/20 print:hidden" onClick={onClose} aria-hidden />
       <aside
         ref={panel}
         tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label={`段落 ${seg.段号}`}
-        className="fixed right-0 top-0 z-40 flex h-full w-[420px] flex-col border-l border-line bg-white shadow-lg outline-none"
+        className="fixed right-0 top-0 z-40 flex h-full w-[420px] flex-col border-l border-line bg-white shadow-lg outline-none print:hidden"
       >
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
           <span className="text-sm font-medium text-ink">段落 {seg.段号}</span>

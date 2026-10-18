@@ -265,7 +265,7 @@ export default function App() {
         </main>
       ) : (
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-line bg-white px-6 py-3 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+        <header className="flex items-center justify-between border-b border-line bg-white px-6 py-3 shadow-[0_1px_2px_rgba(0,0,0,0.03)] print:hidden">
           <div className="min-w-0">
             <div className="truncate text-sm font-medium">
               {d?.title || d?.question || '深度研究'}
@@ -279,20 +279,62 @@ export default function App() {
                 ].join(' ')} />
                 {d.status}
               </span>
+                {d.degraded && (
+                  <span
+                    className="rounded bg-amber-100 px-1.5 py-0.5 text-2xs text-amber-800"
+                    title={d.degraded}
+                  >降级产出</span>
+                )}
                 {d.cost_tokens > 0 && ` · ${d.cost_tokens.toLocaleString()} token`}
                 {d.sources.length > 0 && ` · ${d.sources.length} 来源`}
               </div>
             )}
           </div>
-          {d && !d.archived_at && d.status === 'done' && (
-            <button
-              onClick={() => void s.archive(d.id).then(refresh).catch(
-                  (e: unknown) => s.notify(`归档失败：${(e as Error).message}`))}
-              className="rounded border border-line px-3 py-1 text-xs text-muted hover:bg-gray-50"
-            >
-              归档（不出现在默认列表）
-            </button>
-          )}
+          <div className="flex shrink-0 items-center gap-2">
+            {d && s.view === 'done' && report && (
+              <>
+                {/* C1 导出：复制 / 下载 / 打印（打印即 PDF）。
+                    clipboard 需要 secure context——localhost 与 https 都是，
+                    file:// 直开才会落空，落空就明说。 */}
+                <button
+                  onClick={() => void navigator.clipboard.writeText(report)
+                    .then(() => s.notify('已复制报告 Markdown'))
+                    .catch(() => s.notify('复制失败：浏览器没给剪贴板权限'))}
+                  className="rounded border border-line px-3 py-1 text-xs text-muted hover:bg-gray-50"
+                >
+                  复制 MD
+                </button>
+                <button
+                  onClick={() => {
+                    const name = `${(d.title || '报告').replace(/[\\/:*?"<>|]/g, '')}.md`
+                    const url = URL.createObjectURL(
+                      new Blob([report], { type: 'text/markdown;charset=utf-8' }))
+                    const a = document.createElement('a')
+                    a.href = url; a.download = name; a.click()
+                    URL.revokeObjectURL(url)
+                  }}
+                  className="rounded border border-line px-3 py-1 text-xs text-muted hover:bg-gray-50"
+                >
+                  下载 .md
+                </button>
+                <button
+                  onClick={() => window.print()}
+                  className="rounded border border-line px-3 py-1 text-xs text-muted hover:bg-gray-50"
+                >
+                  打印 / PDF
+                </button>
+              </>
+            )}
+            {d && !d.archived_at && d.status === 'done' && (
+              <button
+                onClick={() => void s.archive(d.id).then(refresh).catch(
+                    (e: unknown) => s.notify(`归档失败：${(e as Error).message}`))}
+                className="rounded border border-line px-3 py-1 text-xs text-muted hover:bg-gray-50"
+              >
+                归档（不出现在默认列表）
+              </button>
+            )}
+          </div>
         </header>
 
         {/* 检索轮次图。**运行中不显示**——那时候工作流列表正在逐轮叙述
@@ -342,7 +384,7 @@ export default function App() {
         {s.view === 'done' && report && (
           /* 抽屉打开时锁住这个容器——滚的是它，不是 body。
              锁 body 没用：它压根不滚，报告会从抽屉底下划过去。 */
-          <div ref={reportScrollRef} className={s.seg ? 'flex-1 overflow-hidden' : 'flex-1 overflow-auto'}>
+          <div ref={reportScrollRef} className={s.seg ? 'flex-1 overflow-hidden print:overflow-visible' : 'flex-1 overflow-auto print:overflow-visible'}>
             <ReportView
               scrollRef={reportScrollRef}
               markdown={report}
@@ -376,7 +418,7 @@ export default function App() {
 
         {/* 报告的来源清单 */}
         {s.view === 'done' && d && d.sources.length > 0 && (
-          <div className="border-t border-line px-6 py-3 text-xs text-muted">
+          <div className="border-t border-line px-6 py-3 text-xs text-muted print:hidden">
             来源：{d.sources.slice(0, 12).map((x, i) => (
               <span key={x.id} className="mr-3 inline-flex items-center gap-1">
                 <span>[S{i + 1}]</span><NatureBadge nature={x.source_nature} />
@@ -423,7 +465,7 @@ export default function App() {
           aria-live="polite"
           className="fixed bottom-5 left-1/2 z-50 flex max-w-[min(600px,calc(100vw-32px))]
                      -translate-x-1/2 items-start gap-2 rounded-md border border-red-200
-                     bg-white px-3.5 py-2.5 shadow-lg"
+                     bg-white px-3.5 py-2.5 shadow-lg print:hidden"
         >
           <span className="mt-px shrink-0 text-red-500" aria-hidden>⚠</span>
           <span className="min-w-0 flex-1 text-xs leading-relaxed text-ink">{s.notice}</span>
