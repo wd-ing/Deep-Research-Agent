@@ -7,6 +7,7 @@ import { ReportView } from './views/ReportView'
 import { WorkflowView } from './views/WorkflowView'
 import { buildPhases } from './views/workflow'
 import { SegDrawer, NatureBadge } from './components/SegDrawer'
+import { DebugPanel } from './components/DebugPanel'
 import { RoundChart } from './components/RoundChart'
 import { Sidebar, type Pane } from './components/Sidebar'
 import { SourceDetail } from './components/SourceDetail'
@@ -178,6 +179,11 @@ export default function App() {
    *  没有它的话这个窗口里主区域什么都不渲染——看着像点了没反应。 */
   const switching = !!sid && s.view === 'idle' && !d
 
+  // B4 debug 后门：?debug=1 时挂载 thinking/draft 原始流面板。
+  // 在 location.search 里，与 hash 路由互不干扰。
+  const debug = ['1', 'true', 'yes'].includes(
+    new URLSearchParams(window.location.search).get('debug') ?? '')
+
   // ---- B3 离开友好：标签页标题就是状态 ----
   // 一场研究 20+ 分钟，正确姿势包括「你不用盯着」——切走之后
   // 标签页标题要替界面说话。节点名翻译成用户语言，不暴露内部名。
@@ -320,6 +326,7 @@ export default function App() {
               runningSince={s.nodeAt}
               cost={s.cost}
             />
+            {debug && <DebugPanel thinking={s.thinking} draft={s.draft} />}
           </div>
         )}
 
@@ -327,6 +334,8 @@ export default function App() {
           <div className="flex-1 overflow-auto">
             <ApprovalView approval={s.approval} onApprove={() => void s.approve(sid!).catch(
               (e: unknown) => s.notify(`批准失败：${(e as Error).message}`))} />
+            {/* 批准之前想看一眼裁判在想什么——debug 面板挂这儿正好 */}
+            {debug && <DebugPanel thinking={s.thinking} draft={s.draft} />}
           </div>
         )}
 
