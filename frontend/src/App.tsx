@@ -178,6 +178,33 @@ export default function App() {
    *  没有它的话这个窗口里主区域什么都不渲染——看着像点了没反应。 */
   const switching = !!sid && s.view === 'idle' && !d
 
+  // ---- B3 离开友好：标签页标题就是状态 ----
+  // 一场研究 20+ 分钟，正确姿势包括「你不用盯着」——切走之后
+  // 标签页标题要替界面说话。节点名翻译成用户语言，不暴露内部名。
+  useEffect(() => {
+    const NODE_LABEL: Record<string, string> = {
+      probe: '探测', outline: '定框架', retrieve: '检索', extract: '抽取',
+      gate: '证据闸门', assess: '评估', apply_revision: '校准框架',
+      await_approval: '待审批', write: '写作', finalize: '收尾', summary: '收尾',
+    }
+    const t = d?.title || d?.question || '深度研究'
+    if (route.name === 'sources') {
+      document.title = '来源库 · 深度研究'
+    } else if (!sid) {
+      document.title = '深度研究'
+    } else if (s.view === 'running') {
+      document.title = `⏳ ${(s.node && NODE_LABEL[s.node]) || s.node || '启动中'} · ${t}`
+    } else if (s.view === 'awaiting') {
+      document.title = `✋ 待审批 · ${t}`
+    } else if (s.view === 'done') {
+      document.title = `✓ ${t}`
+    } else if (s.view === 'error') {
+      document.title = `✗ 出错 · ${t}`
+    } else {
+      document.title = t
+    }
+  }, [route.name, sid, s.view, s.node, d?.title, d?.question])
+
   /** 引用 hover 预览。**只在有报告时取**：没有报告就没有引用可 hover。
    *  换会话时先清空——留着上一场的预览，新报告里的段号
    *  恰好同名就会显示别人的内容（段号是按 rowid 编的，

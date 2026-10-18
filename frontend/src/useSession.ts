@@ -35,6 +35,26 @@ async function jpost<T>(url: string, body?: unknown): Promise<T> {
   return r.json() as Promise<T>
 }
 
+/** 系统通知（B3 离开友好）。只在「用户不盯着这个标签页」时发——
+ *  正看着时还弹通知只是吵。不支持/没授权就静默跳过。 */
+function sysNotify(title: string, body: string): void {
+  try {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return
+    if (document.hasFocus()) return
+    new Notification(title, { body })
+  } catch { /* 平台不支持就当没这功能 */ }
+}
+
+/** 在用户**点了启动/批准**这种主动作时才申请通知权限——
+ *  时机和意图相关，接受率比页面加载就弹高得多。 */
+export function askNotifyPermission(): void {
+  try {
+    if ('Notification' in window && Notification.permission === 'default') {
+      void Notification.requestPermission()
+    }
+  } catch { /* 同上 */ }
+}
+
 /** `done` 之后图还会停在审批点（interrupt），所以收到 done 不能就断定结束。
  *  轮询 approval，拿到 payload 才切到 awaiting。 */
 export function useSession(sid: string | null) {
@@ -83,22 +103,25 @@ export function useSession(sid: string | null) {
 
   /** 返回后端看到的会话状态——SSE 断线时的兜底轮询靠它判断该不该停。
    *  拉 `/api/sessions/{id}` 是 110 KB，每 4 秒一次太重，所以走 approval 这个
-   *  便宜端点（后端在那里顺带回了 status）。 */
+   *  便宜端点（后端在那里顺带回了 status 和 cost_tokens）。
+   *  `waiting` 一并回：done 事件后要靠它分辨「停在了审批点」还是「真跑完了」。 */
   const loadApproval = useCallback(async (id: string) => {
     try {
       const r = await jget<{
         waiting: boolean; approval?: ApprovalPayload; status?: string | null
+        cost_tokens?: number | null
       }>(`/api/sessions/${id}/approval`)
+      if (typeof r.cost_tokens === 'number') setCost(r.cost_tokens)
       if (r.waiting && r.approval) {
         setApproval(r.approval)
         setView('awaiting')
       } else {
         setApproval(null)
       }
-      return r.status ?? null
+      return { status: r.status ?? null, waiting: !!(r.waiting && r.approval) }
     } catch {
       // 轮询失败不是致命错误：网络抖一下不该把界面搞崩
-      return null
+      return { status: null, waiting: false }
     }
   }, [])
 
@@ -201,13 +224,22 @@ export function useSession(sid: string | null) {
             void (async () => {
               const d = await track(loadDetail(sid)).catch(() => null)
               if (d) setCost(d.cost_tokens ?? null)
-              // done 之后可能还停在审批点（interrupt），所以要问一次
-              await loadApproval(sid)
+              // done 之后可能还停在审批点（interrupt），所以要问一次。
+              // 两种结束语义不同，通知文案也要分开：
+              // 停在审批点 = 「等你批准」，跑完 = 「报告好了」。
+              const r = await loadApproval(sid)
+              const t = d?.title || d?.question || sid
+              sysNotify(
+                r.waiting ? '研究框架待审批' : '研究完成',
+                r.waiting ? `「${t}」的框架已校准好，等你批准开始写作`
+                          : `「${t}」的报告已生成`,
+              )
             })()
             break
           case 'error':
             setError(ev.error)
             setView('error')
+            sysNotify('研究出错', (ev.error ?? '').slice(0, 120))
             break
         }
       }
@@ -244,8 +276,8 @@ export function useSession(sid: string | null) {
         // 现在：已有一个就别再开；跑完了就地自停（后端在 approval 里回了 status）。
         if (timerRef.current !== null) return
         timerRef.current = window.setInterval(() => {
-          void loadApproval(sid).then((status) => {
-            if (status !== 'done') return
+          void loadApproval(sid).then((r) => {
+            if (r.status !== 'done') return
             if (timerRef.current !== null) {
               window.clearInterval(timerRef.current)
               timerRef.current = null
@@ -268,6 +300,7 @@ export function useSession(sid: string | null) {
   }, [sid, loadApproval, loadDetail, track])
 
   const start = useCallback(async (id: string) => {
+    askNotifyPermission()
     setView('running'); setProgress([]); setError(null)
     setApproval(null); setThinking({}); setDraft('')
     setNodeAt(Date.now())
@@ -275,6 +308,7 @@ export function useSession(sid: string | null) {
   }, [])
 
   const approve = useCallback(async (id: string) => {
+    askNotifyPermission()
     setView('running'); setApproval(null)
     await track(jpost(`/api/sessions/${id}/approve`, { approved: true }))
   }, [])
