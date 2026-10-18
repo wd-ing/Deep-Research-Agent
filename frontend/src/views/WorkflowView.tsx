@@ -64,8 +64,28 @@ function Elapsed({ since }: { since: number }) {
   )
 }
 
+/** 流式文字：行**首次挂载**且环节在跑时把摘要逐段打出（~30ms 一跳），
+ *  之后保持全文。只在活跃环节启用——回看/已完成会话不该整屏重打一遍。
+ *  `prefers-reduced-motion` 下直接全显。 */
+function useTypewriter(text: string, enabled: boolean): string {
+  const reduced =
+    typeof window !== 'undefined'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const [n, setN] = useState(() => (enabled && !reduced ? 0 : text.length))
+  useEffect(() => {
+    if (!enabled || reduced) { setN(text.length); return }
+    if (n >= text.length) return
+    const step = Math.max(2, Math.ceil(text.length / 22))
+    const t = window.setTimeout(
+      () => setN((v) => Math.min(text.length, v + step)), 28)
+    return () => window.clearTimeout(t)
+  }, [n, text, enabled, reduced])
+  return enabled && !reduced ? text.slice(0, n) : text
+}
+
 /** 环节组里的一条明细（三级）：比父行轻一档，⚠️ 用琥珀色透出来。 */
-function ChildRow({ c }: { c: Step }) {
+function ChildRow({ c, animate }: { c: Step; animate?: boolean }) {
+  const shown = useTypewriter(c.summary, !!animate)
   return (
     <li className="text-xs leading-5">
       <div className="flex items-baseline gap-2">
@@ -75,7 +95,7 @@ function ChildRow({ c }: { c: Step }) {
         <span className={[
           'min-w-0 flex-1 truncate',
           c.warn ? 'text-amber-700' : 'text-muted',
-        ].join(' ')}>{c.summary}</span>
+        ].join(' ')}>{shown}</span>
       </div>
       {c.detail?.map((d, i) => (
         <div key={i} className="pl-4 text-2xs leading-5 text-muted/80">· {d}</div>
@@ -88,10 +108,13 @@ function ChildRow({ c }: { c: Step }) {
  *  `live` = 本环节组的孩子还在往里流（它是当前阶段的最后一个
  *  非 running 步骤）——此时保持展开看流；不再是最后一个时自动收拢。 */
 function StepRow({
-  step, labelW, runningSince, live,
+  step, labelW, runningSince, live, animate,
 }: {
   step: Step; labelW: string; runningSince: number | null; live: boolean
+  /** 所属大环节在跑 → 本行首次挂载时摘要逐字打出 */
+  animate?: boolean
 }) {
+  const shownSummary = useTypewriter(step.summary, !!animate)
   const kids = step.children ?? []
   const hasKids = kids.length > 0
   const running = step.state === 'running'
@@ -142,7 +165,7 @@ function StepRow({
             {step.label}
           </span>
           <span className="min-w-0 flex-1 truncate text-xs leading-5 text-muted/90">
-            {step.summary}
+            {shownSummary}
           </span>
           {running && (
             <span className="shrink-0 text-2xs text-live">
@@ -169,7 +192,7 @@ function StepRow({
           /* L3 明细：缩进 + 左侧引导竖线，明确「属于上一行的环节」。
              墨系 border-line 不用蓝——层级是结构不是链接。 */
           <ul className="wf-detail ml-1 mt-1 space-y-1 rounded-r-md border-l-2 border-line bg-gray-50/60 py-1.5 pl-3 pr-2.5">
-            {kids.map((c) => <ChildRow key={c.id} c={c} />)}
+            {kids.map((c) => <ChildRow key={c.id} c={c} animate={animate} />)}
           </ul>
         )}
         {show && (
@@ -257,7 +280,7 @@ function PhaseRail({
 
 /** 一个大环节。**标题吸顶**——滚过长规划时仍知道自己在哪一段。 */
 function PhaseBlock({
-  phase, defaultOpen, isLast, runningSince, openSignal,
+  phase, defaultOpen, isLast, runningSince, openSignal, active,
 }: {
   phase: Phase
   defaultOpen: boolean
@@ -265,12 +288,13 @@ function PhaseBlock({
   runningSince: number | null
   /** 进度轨点了「跳过来」：变化时强制展开（展开后再滚，顺序不能反） */
   openSignal: number
+  /** 这是不是当前在跑的大环节。⚠️ 不能从 steps 里推——LLM 调用间隙
+   *  （assess 一次 ~77s）steps 里既没有 running 行也没有 _live 组，
+   *  从 steps 推就会「绿灯只在事件到达的瞬间亮一下，一静默就全灰」。 */
+  active: boolean
 }) {
   const [open, setOpen] = useState(defaultOpen)
-  // `_live` 合成组长（正在收明细的流式组）也算在跑——它没有 running
-  // state（否则进不了 lastReal），但它存在本身就是「这环节在干活」。
-  const running = phase.steps.some(
-    (s) => s.state === 'running' || s.kind === '_live')
+  const running = active
   // ⚠️ 计数要把收进组里的明细行也算上——它们折起来了不代表不存在
   const warns = phase.steps.reduce(
     (a, s) => a + (s.warn && s.state !== 'running' ? 1 : 0)
@@ -342,7 +366,8 @@ function PhaseBlock({
             {phase.steps.map((s) => (
               <StepRow key={s.id} step={s} labelW={labelW}
                 runningSince={runningSince}
-                live={running && s.id === lastReal?.id} />
+                live={running && s.id === lastReal?.id}
+                animate={running} />
             ))}
           </ul>
         </div>
@@ -435,6 +460,7 @@ export function WorkflowView({
           isLast={i === phases.length - 1}
           runningSince={runningSince}
           openSignal={openSig[p.key] ?? 0}
+          active={running && i === phases.length - 1}
         />
       ))}
       {/* 活性信号：累计 token。SSE 不推这个（频率不值一条事件），
