@@ -108,7 +108,10 @@ function StepRow({
 
   return (
     <li className="wf-step relative flex gap-3 py-[5px] pl-1">
-      <Dot state={step.state} warn={step.warn || kidWarns > 0} />
+      {/* live = 本环节最新产出行：流式期间它就是「当前在跑的点」，
+          给绿呼吸点——原来只有阶段头和收尾合成行是绿的，
+          中途的活跃组全是灰点，看不出在动。 */}
+      <Dot state={running || live ? 'running' : undefined} warn={step.warn || kidWarns > 0} />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           {/* 可收起的行先给一个 chevron——原来只有尾部的「N 条」chip，
@@ -131,7 +134,7 @@ function StepRow({
             className={[
               'shrink-0 truncate text-sm',
               step.warn ? 'font-medium text-amber-700' : 'text-ink',
-              running ? 'text-live' : '',
+              running || live ? 'text-live' : '',
             ].join(' ')}
             style={{ width: labelW }}
             title={step.label}

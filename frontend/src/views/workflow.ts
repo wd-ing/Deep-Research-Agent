@@ -385,23 +385,46 @@ const CHILD_TO_PARENT: Record<string, string> = {
   gate_retry: 'gate',
 }
 
+/** 合成组长的行标签——真组长还没落地时，明细先挂在这行下面缩进显示。 */
+const LIVE_GROUP_LABEL: Record<string, string> = {
+  retrieve: '检索进行中',
+  extract: '抽取进行中',
+  gate: '闸门判定中',
+  write_revise: '返修进行中',
+}
+
 function groupSteps(steps: Step[]): Step[] {
   const out: Step[] = []
-  const pending = new Map<string, Step[]>()
+  /** pk → 正在收明细的合成组长（**已经在 `out` 里**，明细一来就缩进挂上，
+   *  不再是「先平铺、组长落地再收进去」——后者会让行在执行中跳位）。 */
+  const liveGroup = new Map<string, Step>()
   let lastDispatch: Step | undefined
   const flush = (pk: string, parent: Step) => {
-    const kids = pending.get(pk)
-    if (kids?.length) {
-      parent.children = kids
-      pending.delete(pk)
+    const g = liveGroup.get(pk)
+    if (g) {
+      if (g.children?.length) parent.children = g.children
+      const idx = out.indexOf(g)
+      if (idx >= 0) out.splice(idx, 1)   // 真组长原位替换合成组长
+      liveGroup.delete(pk)
     }
+  }
+  const groupFor = (pk: string, seq: number): Step => {
+    let g = liveGroup.get(pk)
+    if (!g) {
+      g = {
+        id: `live-${pk}-${seq}`, label: LIVE_GROUP_LABEL[pk] ?? '处理中',
+        summary: '', children: [],
+      }
+      liveGroup.set(pk, g)
+      out.push(g)
+    }
+    return g
   }
   for (const st of steps) {
     const k = st.kind ?? ''
     if (k === 'write_task') {
       if (st.revise) {
-        const b = pending.get('write_revise') ?? []
-        b.push(st); pending.set('write_revise', b)
+        groupFor('write_revise', out.length).children!.push(st)
       } else if (lastDispatch) {
         ;(lastDispatch.children ??= []).push(st)
       } else {
@@ -411,16 +434,15 @@ function groupSteps(steps: Step[]): Step[] {
     }
     const pk = CHILD_TO_PARENT[k]
     if (pk) {
-      const b = pending.get(pk) ?? []
-      b.push(st); pending.set(pk, b)
+      groupFor(pk, out.length).children!.push(st)
       continue
     }
     flush(k, st)
     if (k === 'write_dispatch') lastDispatch = st
     out.push(st)
   }
-  // 组长没等到的孤儿明细照常平铺——中途断掉的 run 宁可显示也不藏
-  for (const kids of pending.values()) out.push(...kids)
+  // 组长没等到的孤儿组留着不动：中途断掉的 run 宁可显示也不藏，
+  // 合成组长行（`live-*`）本身就是「这轮没收口」的如实呈现。
   return out
 }
 

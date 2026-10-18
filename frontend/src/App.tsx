@@ -331,6 +331,10 @@ export default function App() {
           <div className="flex shrink-0 items-center gap-2">
             {d && s.view === 'done' && report && (
               <>
+                {/* 报告是终点不是终点——流程还在后面一页能回看 */}
+                <button className="btn-ghost" onClick={() => s.setView('flow')}>
+                  <Icon name="chevrons-left" size={13} />回看流程
+                </button>
                 {/* C1 导出：复制 / 下载 / 打印（打印即 PDF）。
                     clipboard 需要 secure context——localhost 与 https 都是，
                     file:// 直开才会落空，落空就明说。 */}
@@ -439,9 +443,21 @@ export default function App() {
 
         {/* 待审批时**只显示审批视图**——规划环节已经跑完，
             审批页本身就是结论，不需要再叠一层工作流 */}
-        {(s.view === 'running'
+        {(s.view === 'running' || s.view === 'flow'
           || (s.view === 'idle' && sid && !report)) && (
           <div className="flex-1 overflow-auto">
+            {/* flow = done 之后回来看流程：顶部留一个回去的口 */}
+            {s.view === 'flow' && (
+              <div className="sticky top-0 z-30 flex items-center justify-between
+                              border-b border-line bg-white/95 px-6 py-2 backdrop-blur">
+                <span className="text-xs text-muted">研究流程（已完成）</span>
+                {report && (
+                  <button className="btn-ghost" onClick={() => s.setView('done')}>
+                    查看报告 →
+                  </button>
+                )}
+              </div>
+            )}
             <WorkflowView
               phases={phases}
               running={s.view === 'running'}

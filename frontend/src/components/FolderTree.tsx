@@ -411,9 +411,9 @@ export function FolderTree({
         <span className="text-2xs text-muted">文件夹</span>
         <button
           onClick={() => setCreating({ parent: null })}
-          className="rounded px-1 text-2xs text-muted hover:bg-white hover:text-ink"
+          className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-2xs text-muted transition-colors hover:bg-white hover:text-ink"
           title="新建顶层文件夹"
-        >+ 新建</button>
+        ><Icon name="plus" size={11} />新建</button>
       </div>
 
       {/* 「全部」放在树外面——它不是文件夹 */}

@@ -27,9 +27,11 @@ body { @apply bg-paper text-ink antialiased; }
  *  现在改成「白底 + 左侧 2px 竖条」：竖条是明确的方向性标记，
  * 在灰底上不依赖阴影就能读出来；`shadow-sm` 由此专职浮层。 */
 .sel {
-  background-color: #FCFBF7;
+  /* 选中态：暖调深纸色底（比 paper2 深一档）+ 墨色字。
+     不用 accent 蓝竖条——蓝在本设计里只表示「可点链接」，
+     选中是状态不是链接，蓝色竖条和暖纸语言打架。 */
+  background-color: #EFE9DC;
   color: #26221D;
-  box-shadow: inset 2px 0 0 0 #2E50C8;
 }
 
 /* **表格**——只用横线，不用竖线。

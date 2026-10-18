@@ -1,7 +1,9 @@
 /** 后端数据形状。字段全部来自真实运行（session s_557e7fdec792 的 SSE 流与表结构），
  *  不确定的地方标了 `?`，不要凭想象加字段。 */
 
-export type View = 'idle' | 'running' | 'awaiting' | 'done' | 'error'
+/** `flow`：done 之后「回看流程」用的浏览态——渲染 WorkflowView 但
+ *  不当成在跑（不追加「收尾中」合成行、不自动展开最后一节）。 */
+export type View = 'idle' | 'running' | 'awaiting' | 'done' | 'error' | 'flow'
 
 /** `/api/sessions/{sid}/trace` 的一轮。
  *

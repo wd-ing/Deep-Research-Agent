@@ -20,6 +20,34 @@ const HOVER_DELAY = 250
  *  所以先把围栏代码块剔掉。行内反引号没剔（react-markdown 的 `code` 同样不转换），
  *  v5 真实报告实测围栏 0 / 反引号 0，这里对得上。
  */
+/** 剥掉写作子图泄漏进报告的装配痕迹：
+ *  - `# secN` 任务标题行（是内部任务名，不是报告内容）
+ *  - 包着 `# secN` 的 ```markdown 围栏对（剥后内容恢复正常渲染，
+ *    否则整节显示成一大坨等宽代码块）
+ *  存量报告（v13 及以前）带这个残留；后端 assemble 已修但旧数据
+ *  不会重写，渲染层兜一道。 */
+function cleanReportMd(md: string): string {
+  const SEC_HDR = /^#\s*sec\d/
+  const lines = md.split('\n')
+  const out: string[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]
+    if (/^```(?:markdown)?\s*$/.test(l)) {
+      let j = i + 1
+      while (j < lines.length && !/^```\s*$/.test(lines[j])) j++
+      const block = lines.slice(i + 1, j)
+      if (j < lines.length && block.some((b) => SEC_HDR.test(b))) {
+        out.push(...block.filter((b) => !SEC_HDR.test(b)))
+        i = j
+        continue
+      }
+    }
+    if (SEC_HDR.test(l)) continue
+    out.push(l)
+  }
+  return out.join('\n')
+}
+
 function refCounts(markdown: string): Map<string, number> {
   const m = new Map<string, number>()
   for (const x of markdown.replace(/```[\s\S]*?```/g, '').matchAll(REF_RE)) {
@@ -285,7 +313,7 @@ function mdComponents(
     h3: ({ children }: { children?: ReactNode }) => (
       <h3 id={idOf(children)} className={compact
         ? 'scroll-mt-24 text-sm font-medium'
-        : '-ml-3 mb-2 mt-6 scroll-mt-24 border-l-2 border-accent/40 pl-3 text-base font-semibold'
+        : '-ml-3 mb-2 mt-6 scroll-mt-24 border-l-2 border-ink/30 pl-3 text-base font-semibold'
       }>{R(children)}</h3>
     ),
     p: ({ children }: { children?: ReactNode }) => (
@@ -418,10 +446,11 @@ export function ReportView({
   scrollRef: React.RefObject<HTMLDivElement | null>
 }) {
   const parts = useMemo(() => {
+    const clean = cleanReportMd(markdown)
     // 「存疑与未完成」是系统主动声明的弱点，要和正文视觉区分开
-    const i = markdown.indexOf('## 存疑与未完成')
-    if (i < 0) return { body: markdown, doubt: '' }
-    return { body: markdown.slice(0, i), doubt: markdown.slice(i) }
+    const i = clean.indexOf('## 存疑与未完成')
+    if (i < 0) return { body: clean, doubt: '' }
+    return { body: clean.slice(0, i), doubt: clean.slice(i) }
   }, [markdown])
 
   // ⚠️ `compact` 只改标题/段落的尺寸，**引用拦截两段都用**。

@@ -82,8 +82,8 @@ export function TocBar({
                   'block w-full truncate rounded px-2 py-1 text-left text-xs',
                   t.level === 3 ? 'pl-5 text-muted' : 'font-medium text-ink',
                   t.id === active
-                    ? 'bg-accent/10 text-accent shadow-[inset_2px_0_0_0_#2E50C8]'
-                    : 'hover:bg-gray-50',
+                    ? 'bg-black/[.055] text-ink'
+                    : 'hover:bg-black/[.03]',
                 ].join(' ')}
               >{t.text || '（无标题）'}</button>
             </li>

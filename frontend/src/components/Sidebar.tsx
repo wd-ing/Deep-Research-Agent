@@ -68,8 +68,9 @@ function SessionRow({
   return (
     <div
       className={[
-        'group relative mb-0.5 rounded-md px-3 py-2 transition-colors',
-        active ? 'sel' : 'hover:bg-white',
+        'group relative mb-1.5 rounded-md border px-3 py-2 transition-colors',
+        // 卡片化：paper2 轨道上的纸卡。选中=白卡+accent 竖条+蓝描边。
+        active ? 'sel border-ink/25 shadow-soft' : 'border-line/70 bg-white/70 hover:border-line hover:bg-white hover:shadow-soft',
       ].join(' ')}
     >
       {editing ? (
@@ -325,7 +326,7 @@ export function Sidebar({
           aria-pressed={pane === 'session'}
           className={[
             'mb-1 flex h-8 w-8 items-center justify-center rounded text-sm transition-colors',
-            pane === 'session' ? 'sel text-ink' : 'text-muted hover:bg-white hover:text-ink',
+            pane === 'session' ? 'bg-ink text-paper shadow-sm' : 'text-muted hover:bg-white hover:text-ink',
           ].join(' ')}
         ><Icon name="chat" size={16} /></button>
         <button
@@ -334,7 +335,7 @@ export function Sidebar({
           aria-pressed={pane === 'source'}
           className={[
             'mb-1 flex h-8 w-8 items-center justify-center rounded text-sm transition-colors',
-            pane === 'source' ? 'sel text-ink' : 'text-muted hover:bg-white hover:text-ink',
+            pane === 'source' ? 'bg-ink text-paper shadow-sm' : 'text-muted hover:bg-white hover:text-ink',
           ].join(' ')}
         ><Icon name="book" size={16} /></button>
         <button
@@ -363,20 +364,24 @@ export function Sidebar({
     <nav className="flex w-72 shrink-0 flex-col border-r border-line bg-paper2 print:hidden">
       {/* 会话 / 来源 两个视图。同一批数据两种组织方式：
           会话按时间流找「上周那场」，来源按性质找「哪些材料值得信」。 */}
-      <div className="flex gap-1 border-b border-line p-2">
-        {([['session', '对话'], ['source', '来源库']] as const).map(([k, label]) => (
-          <button
-            key={k}
-            onClick={() => onPane(k)}
-            // 原来只靠底色表示选中，读屏用户完全听不出当前在哪个视图
-            aria-pressed={pane === k}
-            className={[
-              'flex-1 rounded px-2 py-1 text-xs transition-colors',
-              pane === k ? 'sel font-medium'
-                         : 'text-muted hover:bg-white',
-            ].join(' ')}
-          >{label}</button>
-        ))}
+      <div className="border-b border-line p-2">
+        {/* 段落控件：激活态用墨色填充（和新建研究的墨色主按钮同一语言），
+            不走 .sel 左竖条——那是列表选中态，用在开关上是误用。 */}
+        <div className="flex gap-0.5 rounded-lg bg-black/[.045] p-1">
+          {([['session', '对话'], ['source', '来源库']] as const).map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => onPane(k)}
+              // 原来只靠底色表示选中，读屏用户完全听不出当前在哪个视图
+              aria-pressed={pane === k}
+              className={[
+                'flex-1 rounded-md px-2 py-1 text-xs transition-colors',
+                pane === k ? 'bg-ink font-medium text-paper shadow-sm'
+                           : 'text-muted hover:text-ink',
+              ].join(' ')}
+            >{label}</button>
+          ))}
+        </div>
       </div>
 
       {pane === 'source' ? (
@@ -392,12 +397,8 @@ export function Sidebar({
       <div className="space-y-2 p-3">
         <button
           onClick={onNew}
-          // ⚠️ 原来是**满屏最重的元素**（实心蓝 + 阴影 + 按下缩放），
-          // 比报告里任何一个标题都重。这个按钮并不常按（一场研究十几分钟才开一次），
-          // 而内容才是要看很久的东西——所以降成描边：还找得到，但不抢。
-          className="flex w-full items-center justify-center rounded-md border border-accent/40 bg-white px-3 py-2 text-sm
-                     font-medium text-accent transition-colors
-                     hover:border-accent hover:bg-accent/5"
+          // 墨色实心——和首页欢迎面板的主按钮、段落控件激活态同一语言。
+          className="btn-primary w-full px-3 py-2 text-sm"
         ><Icon name="plus" size={14} className="-ml-0.5 mr-0.5" />新建研究</button>
         <div className="relative">
           <Icon name="search" size={13}
@@ -409,7 +410,7 @@ export function Sidebar({
             className="w-full rounded-md border border-line bg-white py-1.5 pl-8 pr-2.5 text-sm outline-none focus:border-accent"
           />
         </div>
-        <div className="flex gap-1">
+        <div className="flex gap-0.5 rounded-lg bg-black/[.045] p-1">
           {([['all', '全部'], ['running', '进行中'], ['archived', '已归档'], ['trash', '回收站']] as const)
             .map(([k, label]) => (
               <button
@@ -417,8 +418,9 @@ export function Sidebar({
                 onClick={() => setFilter(k)}
                 aria-pressed={filter === k}
                 className={[
-                  'flex-1 rounded px-1 py-1 text-2xs transition-colors',
-                  filter === k ? 'sel font-medium' : 'text-muted hover:bg-white',
+                  'flex-1 rounded-md px-1 py-1 text-2xs transition-colors',
+                  filter === k ? 'bg-ink font-medium text-paper shadow-sm'
+                               : 'text-muted hover:text-ink',
                 ].join(' ')}
               >{label}</button>
             ))}
@@ -455,8 +457,10 @@ export function Sidebar({
                 key={h.id}
                 onClick={() => onPick(h.id)}
                 className={[
-                  'mb-0.5 w-full rounded-md px-3 py-2 text-left hover:bg-white',
-                  h.id === cur ? 'sel' : '',
+                  'mb-1.5 w-full rounded-md border px-3 py-2 text-left transition-colors',
+                  h.id === cur
+                    ? 'sel border-ink/25 shadow-soft'
+                    : 'border-line/70 bg-white/70 hover:border-line hover:bg-white hover:shadow-soft',
                 ].join(' ')}
               >
                 <div className="flex items-center gap-1.5">

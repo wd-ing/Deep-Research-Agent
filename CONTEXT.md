@@ -1699,6 +1699,35 @@ emoji 渲染随平台漂移、笔画粗细不一、不能控制颜色尺寸。
 **验证**：build + tsc 过；vite 进程走 launchd 自愈（kill -9 后
 ~10s 端口恢复），tailwind.config 改动需要重启 vite 才生效。
 
+### 73. done 不落视图 + 流式归组前置 + 报告残留清理（2026-10-18）
+
+**两个 done 缺口**（用户报「收尾一直卡住、看不到报告」）：
+- 前端 SSE `done` 处理链全程没人 `setView('done')`——live 视角
+  view 永远卡 `'running'`，呼吸点一直闪。修在 `loadApproval` 的
+  `status==='done'` 分支：done 事件/断线轮询/刷新三条路都受益。
+- 回放器续跑只落 DB 没发 `done` 事件，前端连处理链都进不去。补上。
+
+**回放会话克隆真数据**：`_start` 把 donor 的 report+source+chunk
+克隆进新会话（段号靠 rowid 次序算——`ORDER BY rowid` 是刚需，
+`ORDER BY id` 是随机 hex 序；source_id 要重映射防主键撞；
+donor 必须限定「有 source」，否则克隆到克隆、断链）。
+
+**流式归组**（用户要求「明细出现时就缩进，不是跑完才收进去」）：
+`groupSteps` 把 pending 桶换成**合成组长**（`live-N` id，
+label「检索进行中」等）——首个明细到达即入组缩进显示；
+真组长落地时原位替换，孩子移交。终态结构与原来一致
+（esbuild 直跑 fixture 验证：0 残留合成组长）。
+
+**活跃点**：StepRow 的 `live`（本环节最新产出行）现在也驱动
+Dot/标签绿色——原来只有阶段头和收尾合成行是绿的。
+
+**报告残留**：v13 存量报告里有装配泄漏（```` ```markdown ````
+围栏包住 `# secN` 任务头，整节渲染成代码块）。DB 存量已清
+（全部 report 行 41270→41171）；渲染层 `cleanReportMd` 兜底。
+
+**新增 `flow` view**：报告头部「← 回看流程」→ WorkflowView 以
+`running=false` 全折叠回看；顶部 sticky 条给「查看报告 →」回程。
+
 ---
 
 ## 九、工作约定
