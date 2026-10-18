@@ -267,7 +267,10 @@ function PhaseBlock({
   openSignal: number
 }) {
   const [open, setOpen] = useState(defaultOpen)
-  const running = phase.steps.some((s) => s.state === 'running')
+  // `_live` 合成组长（正在收明细的流式组）也算在跑——它没有 running
+  // state（否则进不了 lastReal），但它存在本身就是「这环节在干活」。
+  const running = phase.steps.some(
+    (s) => s.state === 'running' || s.kind === '_live')
   // ⚠️ 计数要把收进组里的明细行也算上——它们折起来了不代表不存在
   const warns = phase.steps.reduce(
     (a, s) => a + (s.warn && s.state !== 'running' ? 1 : 0)

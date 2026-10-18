@@ -414,6 +414,10 @@ function groupSteps(steps: Step[]): Step[] {
       g = {
         id: `live-${pk}-${seq}`, label: LIVE_GROUP_LABEL[pk] ?? '处理中',
         summary: '', children: [],
+        // ⚠️ 不能给 state:'running'：lastReal 只认非 running 步骤，
+        // 给了它这行就进不了「最新产出行」——live/green 会错落到前一行。
+        // 用 kind 标记，PhaseBlock 拿它认「这环节有组在收明细 = 在跑」。
+        kind: '_live',
       }
       liveGroup.set(pk, g)
       out.push(g)
