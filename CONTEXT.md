@@ -1420,10 +1420,13 @@ JSON，char 6962 处坏一次 → 整条写作线退化成 6.9k 占位报告
 里过 checkpointer）——与 checkpoints.db 膨胀同根，治疗见
 TECH_DEBT #1，不是顺手能改的。
 
-**又一个小瑕疵（未修，先记）**：个别小节的成品把
-` ```markdown ` 围栏和 `# secN` 原始标题漏进了终稿
-（本报告 2 处）——assemble 的标题降级没兜住「整段包在代码块里」
-这种形态。
+**小瑕疵已修**：个别小节的成品把 ` ```markdown ` 围栏和 `# secN`
+原始标题漏进终稿（本报告 2 处）。两个根因都堵上了：① 装配前加
+`_unwrap_fence` 剥整包围栏（只剥「首行开尾行闭」的整包壳，
+节内真代码块不动，剥壳数进 `fences_unwrapped` 事件字段）；
+② `HEADING_RE` 从 `#{2,6}` 放宽到 `#{1,6}`，`_NUM_PREFIX_RE`
+的 `secN` 分支补全角冒号形态（实测 `sec3：`）。`_demote_headings`
+与 `_count_demoted` 顺带补了围栏感知（代码块里的 `##` 不再误降）。
 
 **重跑工具**：`tests/rerun_write.py <sid> [db]` —— 从
 checkpoints.db 里 `next==('write',)` 的快照分叉续跑 write→finalize→
@@ -1461,7 +1464,7 @@ summary，前面节点不重复。**教训：checkpoint 断点续跑本来就是
 | 前端写作阶段 | **回放服务只测得到审批为止**（坑 25），写作阶段从没被前端测过 |
 | `bad_assignment` / `spec_conflict` 两类审查 | 仍无真实数据 |
 | 写作段 ~90s 非 LLM 静默 | **未定位**——候选是 checkpointer 序列化大 state，与 TECH_DEBT #1 同根 |
-| assemble 清标题不干净 | 小节成品把 ` ```markdown ` 围栏 + `# secN` 漏进终稿（v13 报告 2 处） |
+| assemble 清标题不干净 | **已修**（坑 64：剥整包围栏 + `#` 级标题进重编 + `secN：` 全角冒号），待下次真跑观察 `fences_unwrapped` |
 
 ---
 

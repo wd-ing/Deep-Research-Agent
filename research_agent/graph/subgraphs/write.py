@@ -41,8 +41,11 @@ SEG_REF_RE = re.compile(r"\[S(\d+)·(\d+)\]")          # 段级引用 S3·5
 SEG_REF_LOOSE_RE = re.compile(r"\[S\d+[^\]]*?\]")     # 自创写法
 SRC_REF_RE = re.compile(r"\[S(\d+)\]")               # 旧的来源级写法，不允许
 
-# 行首标题：只认 2~6 级，后面必须跟空格。`#######` 与 `#标题` 都不算。
-HEADING_RE = re.compile(r"^(#{2,6})\s+(.*)$")
+# 行首标题：1~6 级都算，后面必须跟空格。`#######` 与 `#标题` 不算。
+# 为什么 1 级也算：小节内容永远在 `## {节标题}` 之下，草稿里出现 `#`
+# 一律是模型自造的错位标题，要进降级/重编——v13 实测 `# secN xxx`
+# 一级标题不认就直接原样漏进终稿（坑 64）。
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 # 子 agent 自造的编号前缀。v5 实测四种形态全出现过：
 #   「一、」「五、」中文数字 / 「4.」「2 」阿拉伯数字 / 「1.1」「2.3.1」多级 / 「sec3」
 # 数字后必须有空白（中文数字则须跟顿号/点）。这一条是防误伤的关键：
@@ -52,7 +55,7 @@ _NUM_PREFIX_RE = re.compile(
     r"^(?:"
     r"[一二三四五六七八九十百]+[、.．][ \t]*"       # 一、/ 五、 中文数字后通常不留空格
     r"|\d+(?:\.\d+)*[、.．]?[ \t]+"                # 1 / 4. / 1.1 / 2.3.1（可无标点但必须有空白）
-    r"|sec\d+[ \t]+"                               # sec3
+    r"|sec\d+(?:[ \t]+|[：:][ \t]*)"               # sec3 / sec3： ——全角冒号是实测形态
     r")", re.IGNORECASE)
 
 LLM = LLMClient()
@@ -649,6 +652,7 @@ def node_assemble(state: WriteState) -> dict:
     demoted = 0
     _renumber_stats["stripped"] = 0
     _renumber_stats["leads"] = 0
+    _renumber_stats["fences"] = 0
     for sec_no, sec in enumerate(state.get("outline") or [], 1):
         sid = sec.get("id")
         chunks = []
@@ -694,7 +698,8 @@ def node_assemble(state: WriteState) -> dict:
                     "tasks": len(drafts), "failed": len(failed),
                     "warnings": len(warnings), "headings_demoted": demoted,
                     "headings_renumbered": _renumber_stats["stripped"],
-                    "lead_headings_dropped": _renumber_stats["leads"]}],
+                    "lead_headings_dropped": _renumber_stats["leads"],
+                    "fences_unwrapped": _renumber_stats["fences"]}],
     }
 
 
@@ -709,7 +714,15 @@ def _count_demoted(raw: Any) -> int:
         raw = "\n".join(v for v in raw.values() if isinstance(v, str))
     if not isinstance(raw, str):
         return 0
-    return sum(1 for line in raw.splitlines() if re.match(r"^##(?!#)\s+", line))
+    n = 0
+    in_fence = False
+    for line in raw.splitlines():
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence and re.match(r"^##(?!#)\s+", line):
+            n += 1
+    return n
 
 
 def _raw_body(draft: Any, sid: str) -> str:
@@ -717,6 +730,35 @@ def _raw_body(draft: Any, sid: str) -> str:
     if isinstance(draft, dict):
         return (draft.get(sid) or "").strip()
     return (draft or "").strip()
+
+
+def _unwrap_fence(body: str) -> str:
+    """整节草稿被模型包在一层 ```markdown … ``` 围栏里时，剥掉那层壳。
+
+    v13 实测形态（坑 64）：子 agent 把整份小节产出包在 ```markdown 里交回。
+    不剥的话，下游把所有内容当代码块——标题降级、编号重排、secN 剥前缀
+    全部失效（围栏内是「代码」，不该被处理），`# secN` 和围栏线
+    原样漏进终稿。
+
+    只剥「第一条非空行开围栏、最后一条非空行闭围栏」的整包壳；
+    中段出现的围栏不动——节里真放代码块是允许的。
+    剥壳要计数：程序替模型擦了几次屁股必须看得见。
+    """
+    if "```" not in body:
+        return body
+    lines = body.splitlines()
+    i, j = 0, len(lines) - 1
+    while i <= j and not lines[i].strip():
+        i += 1
+    while j >= i and not lines[j].strip():
+        j -= 1
+    if i >= j:
+        return body
+    if (re.match(r"^```\w*\s*$", lines[i].strip())
+            and lines[j].strip() == "```"):
+        _renumber_stats["fences"] += 1
+        return "\n".join(lines[i + 1:j])
+    return body
 
 
 def _section_body(draft: Any, sid: str, sec_no: int = 1,
@@ -729,8 +771,9 @@ def _section_body(draft: Any, sid: str, sec_no: int = 1,
     `counters` 由调用方持有并在**同一节的任务之间复用** ——
     一节可能由多个任务拼成，编号要跨任务连续（见 `_renumber_headings`）。
     """
-    return _renumber_headings(_demote_headings(_raw_body(draft, sid)),
-                              sec_no, counters)
+    return _renumber_headings(
+        _demote_headings(_unwrap_fence(_raw_body(draft, sid))),
+        sec_no, counters)
 
 
 def _demote_headings(body: str) -> str:
@@ -749,7 +792,15 @@ def _demote_headings(body: str) -> str:
     #   · `###` 及更深是模型正当使用的层次，不该动
     #   · 句子里、URL 里、代码块里的 `##` 不该动
     out = []
+    in_fence = False
     for line in body.splitlines():
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence:
+            out.append(line)
+            continue
         m = re.match(r"^(##)(?!#)(\s+)", line)
         if m:
             line = "###" + m.group(2) + line[m.end():]
@@ -899,7 +950,7 @@ def _lead_text(raw: str) -> str:
 
 # 程序动过正文的量，要让人看得见——否则「模型写错格式、程序替它擦屁股」
 # 这件事会静悄悄地消失（同 `_count_demoted` 的理由）。
-_renumber_stats: dict[str, int] = {"stripped": 0, "leads": 0}
+_renumber_stats: dict[str, int] = {"stripped": 0, "leads": 0, "fences": 0}
 
 
 def _assemble_warnings(bodies: dict, drafts: dict, by_task: dict) -> list[str]:
