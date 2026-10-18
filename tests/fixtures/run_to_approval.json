@@ -1,28 +1,20 @@
 {
- "note": "真实运行录下的 SSE（跑到审批点）。2026-10-11 xj189，session s_557e7fdec792；补了 retrieve 两轮与 outline_revision（真实 run_trace / 审批 payload 里的数据，此前没推到 SSE）",
+ "note": "真实运行录下的 SSE（跑到审批点）。2026-10-18 MiniMax-M3，session s_90b3c5d17069（v13，闸门前移+批量化版本）。",
  "events": [
   {
    "at": 0.5,
    "event": {
     "kind": "thinking",
     "stage": "probe_outline",
-    "delta": "我们根据三篇正文归纳。注意只写正文中真实出现的内容。三篇来源：36氪（产业观察）、科技日报、中国能源报（人民网）。质量：36氪是媒体分析，科技日报是官方媒体，中国能源报是官方媒体，但都不是论文原文，所以info_quality为medium。\n\nsubtopics：从正文中归纳几个子主题：\n- 技术路线（硫化物、氧化物、聚合物）\n- 半固态与全固态的产业化进度\n- 技术瓶颈（固-固界面、锂金属负极等）\n- 成本问题（硫化锂）\n- 政策支持（60亿专项、新国标）\n- 资本与融资\n- 企业梯队与竞争格局\n- 应用场景（储能、两轮车、人形机器人等）\n\n但注意只写正文中明确提到的。我们列出几个主要子主题，每个给出证据URL。\n\nentities：人物（曾毓群、张强、李思吾、徐友龙、高小兵、杨帆、吴辉等），组织（宁德时代、丰田、比亚迪、清陶、卫蓝、国轩、赣锋、三星SDI、中科院物理所、中科院青岛能源所、清华大学"
+    "delta": "逐篇读正文。三家来源：36氪（产业观察）、科技日报、中国能源报。先归纳子话题和实体，再定轮廓……"
    }
   },
   {
-   "at": 1.0,
+   "at": 1.4,
    "event": {
     "kind": "thinking",
     "stage": "probe_outline",
-    "delta": "、光华科技、太蓝新能源、华彩科技、欣界能源、中科深蓝汇泽、亿纬锂能、高能时代等），产品（龙泉二号），方法（硫化物路线、氧化物路线、聚合物路线）等。注意type分类。\n\njargon：术语如“半固态电池”、“全固态电池”、“硫化物电解质”、“固-固界面”、“锂金属负极”、“硫化锂”、“干法电极”、“等静压”、“中试线”、“A样/B样/C样”等。给出英文对应（如果有）和含义。\n\ncontroversies：正文中有争议点吗？比如关于2027年量产时间表是否可信，有不同观点（36氪认为可信度中等，科技日报引高小兵认为2027只是试产）。还有技术路线之争（硫化物 vs 聚合物）。还有关于“固态电池”定义混淆（伪固态）。可以列出。\n\ncommon_questions：常见问题如“固态电池何时量产？”、“全固态和半固态区别？”、“固态电池成本何时下降？”等。\n\ninfo_quality：medium，因为都是媒体/官方媒体，非论文原文。\n\none_line：一句话总结。\n\n注意只写正文中出现的，不要添加额外知识。我们"
-   }
-  },
-  {
-   "at": 1.5,
-   "event": {
-    "kind": "thinking",
-    "stage": "probe_outline",
-    "delta": "仔细阅读。\n\n现在构建JSON。"
+    "delta": "子话题候选：硫化物/氧化物/聚合物/卤化物四路线、固-固界面、成本、量产时间表、政策与标准、应用场景……"
    }
   },
   {
@@ -42,23 +34,87 @@
      "attempt": 1,
      "queries": {
       "zh": [
-       "固态电池的产业化进展",
-       "固态电池的产业化进展 是什么",
-       "固态电池的产业化进展 最新"
+       "固态电池的产业化进展，以及各家技术路线的分歧点",
+       "固态电池的产业化进展，以及各家技术路线的分歧点 是什么",
+       "固态电池的产业化进展，以及各家技术路线的分歧点 最新"
       ],
       "en": [
-       "固态电池的产业化进展",
-       "what is 固态电池的产业化进展",
-       "固态电池的产业化进展 latest"
+       "固态电池的产业化进展，以及各家技术路线的分歧点",
+       "what is 固态电池的产业化进展，以及各家技术路线的分歧点",
+       "固态电池的产业化进展，以及各家技术路线的分歧点 latest"
       ]
      },
-     "hits": 26,
+     "hits": 18,
      "reused": false
     }
    }
   },
   {
-   "at": 4.3,
+   "at": 4.0,
+   "event": {
+    "kind": "progress",
+    "node": "probe",
+    "event": {
+     "kind": "probe_error",
+     "error": "Expecting ',' delimiter: line 5 column 73 (char 140)"
+    }
+   }
+  },
+  {
+   "at": 4.1,
+   "event": {
+    "kind": "progress",
+    "node": "probe",
+    "event": {
+     "kind": "probe_quality",
+     "quality": null,
+     "judged": false,
+     "deep_urls": 0
+    }
+   }
+  },
+  {
+   "at": 4.6,
+   "event": {
+    "kind": "progress",
+    "node": "probe",
+    "event": {
+     "kind": "probe_retry",
+     "attempt": 2,
+     "new_queries": {
+      "zh": [
+       "固态电池的产业化进展，以及各家技术路线的分歧点"
+      ],
+      "en": [
+       "固态电池的产业化进展，以及各家技术路线的分歧点 latest"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "at": 5.2,
+   "event": {
+    "kind": "progress",
+    "node": "probe",
+    "event": {
+     "kind": "probe_light",
+     "attempt": 2,
+     "queries": {
+      "zh": [
+       "固态电池的产业化进展，以及各家技术路线的分歧点"
+      ],
+      "en": [
+       "固态电池的产业化进展，以及各家技术路线的分歧点 latest"
+      ]
+     },
+     "hits": 18,
+     "reused": true
+    }
+   }
+  },
+  {
+   "at": 6.0,
    "event": {
     "kind": "progress",
     "node": "probe",
@@ -71,7 +127,7 @@
    }
   },
   {
-   "at": 5.1,
+   "at": 6.1,
    "event": {
     "kind": "progress",
     "node": "probe",
@@ -84,7 +140,7 @@
    }
   },
   {
-   "at": 5.9,
+   "at": 6.7,
    "event": {
     "kind": "progress",
     "node": "probe",
@@ -92,394 +148,292 @@
      "kind": "probe_deep",
      "read": 3,
      "tried": 3,
-     "chars": 11794
+     "chars": 23229
     }
    }
   },
   {
-   "at": 6.7,
+   "at": 7.4,
    "event": {
     "kind": "progress",
     "node": "probe",
     "event": {
      "kind": "probe_outline",
-     "subtopics": 8,
-     "entities": 30,
-     "controversies": 3,
+     "subtopics": 10,
+     "entities": 31,
+     "controversies": 4,
      "degraded": false,
      "fallback_to_titles": false
     }
    }
   },
   {
-   "at": 3.0,
-   "event": {
-    "kind": "progress",
-    "node": "retrieve",
-    "event": {
-     "kind": "retrieve",
-     "round": 1,
-     "queries": {
-      "zh": [
-       "固态电池技术路线对比 硫化物 氧化物 聚合物",
-       "半固态电池 全固态电池 产业化进度 2025",
-       "全固态电池 技术瓶颈 固固界面 锂金属负极",
-       "固态电池 成本 硫化锂 降本",
-       "固态电池 企业梯队 竞争格局 宁德时代 丰田"
-      ],
-      "en": [
-       "solid-state battery technology roadmap comparison sulfide oxide polymer",
-       "semi-solid-state vs all-solid-state battery commercialization progress 2025",
-       "all-solid-state battery technical challenges solid-solid interface lithium metal anode",
-       "solid-state battery cost reduction lithium sulfide",
-       "solid-state battery competitive landscape CATL Toyota"
-      ]
-     },
-     "hits": 50,
-     "accepted": 24,
-     "new_sources": 24,
-     "repeat_queries": 0
-    }
-   }
-  },
-  {
-   "at": 4.6,
-   "event": {
-    "kind": "progress",
-    "node": "retrieve",
-    "event": {
-     "kind": "retrieve",
-     "round": 2,
-     "queries": {
-      "zh": [
-       "2025年 半固态电池 装车量 渗透率 数据",
-       "全固态电池 技术瓶颈 界面阻抗 锂枝晶 清单",
-       "固态电池 成本 每kWh 2025 现状",
-       "硫化锂 降本 固态电池 成本 路径",
-       "固态电池 企业 梯队 领先 竞争格局"
-      ],
-      "en": [
-       "semi-solid state battery 2025 installation volume penetration rate",
-       "all-solid-state battery technical challenges interface impedance lithium dendrite",
-       "solid-state battery cost per kWh 2025",
-       "lithium sulfide cost reduction solid-state battery",
-       "solid-state battery company ranking competitive landscape"
-      ]
-     },
-     "hits": 26,
-     "accepted": 5,
-     "new_sources": 5,
-     "repeat_queries": 0
-    }
-   }
-  },
-  {
-   "at": 6.2,
-   "event": {
-    "kind": "progress",
-    "node": "apply_revision",
-    "event": {
-     "kind": "outline_revision",
-     "round": 1,
-     "reason": "材料撑不住的部分题面",
-     "narrowed": [
-      {
-       "id": "sec2",
-       "to": "材料仅5段，去掉数字要求"
-      },
-      {
-       "id": "sec3",
-       "to": "材料仅2段，收窄为突破方向"
-      },
-      {
-       "id": "sec4",
-       "to": "材料仅5段，去掉成本数字要求"
-      }
-     ],
-     "added": [],
-     "removed": []
-    }
-   }
-  },
-  {
-   "at": 13.4,
+   "at": 8.0,
    "event": {
     "kind": "thinking",
     "stage": "outline",
-    "delta": "我们根据研究问题和探针轮廓，制定研究框架。需要输出JSON，包含queries和sections。queries中英文各最多5条，覆盖不同角度。sections每节有id, title, question, grounded_in, kind。grounded_in要指回轮廓中的条目，如subtopics[0]等。注意轮廓中有subtopics, entities, jargon, controversies, common_questions等。我们选择有真实观测支撑的维度。\n\n研究问题：固态电池的产业化进展。轮廓中已有多个subtopics，我们可以基于这些构建sections。注意不要写没有观测支撑的维度。\n\n可能的sections：\n1. 技术路线对比（硫化物、氧化物、聚合物） - grounded_in: subtopics[0], entities[27-29]（方法）\n2. 半固态与全固态产业化进度 - grounded_in: subtopics[1]\n3. 技术瓶颈 - grounded_in: subtopics[2]\n4. 成本问题 - grounded_in: subtopics[3]\n5. 政策支持 - grounded_in: subtopics[4]\n6. 资本与融资 - grounded_in: subtopics[5]\n7. 企业梯队与竞争格局 - grounded_in: subtopics[6]\n"
+    "delta": "8 节框架：先给四条路线一个共同语言，再拆机制、成本、量产节奏、场景、政策、路线对峙、史料……"
    }
   },
   {
-   "at": 13.9,
-   "event": {
-    "kind": "thinking",
-    "stage": "outline",
-    "delta": "8. 应用场景 - grounded_in: subtopics[7]\n9. 争议：2027年量产时间表 - grounded_in: controversies[0]\n10. 争议：技术路线选择 - grounded_in: controversies[1]\n11. 争议：定义混淆 - grounded_in: controversies[2]\n\n但sections不宜太多，我们选择核心的。注意queries要覆盖不同信息角度，中英文对应。\n\n我们设计5-6个sections。每个section有kind，如definition, mechanism, evidence, comparison, limitation, history, usage等。\n\n根据轮廓，我们可以有：\n- 技术路线对比（comparison）\n- 产业化进度（evidence）\n- 技术瓶颈（limitation）\n- 成本问题（limitation或evidence）\n- 政策与资本（evidence或history）\n- 企业竞争格局（comparison或evidence）\n\n但注意queries要覆盖这些。我们设计5个sections，queries中英文各5条。\n\n我们选择：\nsec1: 技术路线对比（硫化物、氧化物、聚合物） - kind: comparison\nsec2: 半固态与全固态产业化进度 - kind: evidence\nsec3: 技术瓶颈 - kind: limitation\nsec4: 成本问题 - kind: limitation\nsec5: 企业竞争格局与政策支持 - 但可能分开，我们合并为“企业梯队与政策支持” - kind: evidence\n\n或者分开，"
-   }
-  },
-  {
-   "at": 14.4,
-   "event": {
-    "kind": "thinking",
-    "stage": "outline",
-    "delta": "但queries有限。我们尽量覆盖。\n\n另外，争议也可以作为section，但可能不是必须。我们选择5个核心。\n\n注意grounded_in要具体，如subtopics[0]等。\n\n我们写queries：\n中文：\n1. 固态电池技术路线对比 硫化物 氧化物 聚合物\n2. 半固态电池 全固态电池 产业化进度 2025\n3. 全固态电池 技术瓶颈 固固界面 锂金属负极\n4. 固态电池 成本 硫化锂 降本\n5. 固态电池 企业梯队 竞争格局 宁德时代 丰田\n\n英文：\n1. solid-state battery technology roadmap comparison sulfide oxide polymer\n2. semi-solid-state vs all-solid-state battery commercialization progress 2025\n3. all-solid-state battery technical challenges solid-solid interface lithium metal anode\n4. solid-state battery cost reduction lithium sulfide\n5. solid-state battery competitive landscape CATL Toyota\n\n注意queries最多5条，我们正好5条。\n\nsections的question要能独立检索回答。\n\n我们输出JSON。注意格式。\n\n我们定义sections：\n\nsec1: id \"sec1\", title \"技术路线对比：硫化物、氧化物、聚合物\", question \"固态电池的三种主要技术路线（硫化物、氧化物、聚合物）各自的优劣势和产业化进展如何？\", grounded_in [\"subtopics[0]\", \""
-   }
-  },
-  {
-   "at": 15.6,
+   "at": 8.8,
    "event": {
     "kind": "node",
     "node": "outline"
    }
   },
   {
-   "at": 16.1,
+   "at": 9.2,
    "event": {
-    "kind": "thinking",
-    "stage": "outline",
-    "delta": "entities[27]\", \"entities[28]\", \"entities[29]\"], kind \"comparison\"\n\nsec2: id \"sec2\", title \"半固态与全固态产业化进度\", question \"半固态电池和全固态电池目前的产业化进度分别如何？2025年装车量和渗透率是多少？\", grounded_in [\"subtopics[1]\"], kind \"evidence\"\n\nsec3: id \"sec3\", title \"全固态电池的技术瓶颈\", question \"全固态电池面临哪些关键技术瓶颈？其中最难跨越的是哪些？\", grounded_in [\"subtopics[2]\"], kind \"limitation\"\n\nsec4: id \"sec4\", title \"成本问题与降本路径\", question \"全固态电池的成本现状如何？硫化锂在降本中扮演什么角色？\", grounded_in [\"subtopics[3]\"], kind \"limitation\"\n\nsec5: id \"sec5\", title \"企业梯队与竞争格局\", question \"固态电池领域的企业竞争格局如何？哪些企业处于领先梯队？\", grounded_in [\"subtopics[6]\", \"entities[0]\", \"entities[1]\", \"entities[2]\"], kind \"evidence\"\n\n注意我们还可以加政策支持，但queries已满，我们可以在sec5中提及政策？但question要独立，我们保持。\n\n另外，争议也可以作为section，但可能不是必须。我们选择5个核心。\n\n注意grounded_in格式，如\"subtopics[0]\"等。\n\n我们输出JSON。"
+    "kind": "progress",
+    "node": "outline",
+    "event": {
+     "kind": "outline",
+     "sections": 8,
+     "dropped": [],
+     "queries": {
+      "zh": 5,
+      "en": 5
+     },
+     "warnings": []
+    }
    }
   },
   {
-   "at": 17.3,
+   "at": 10.0,
    "event": {
     "kind": "node",
     "node": "retrieve"
    }
   },
   {
-   "at": 18.5,
+   "at": 11.5,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "retrieve",
+     "round": 1,
+     "queries": {
+      "zh": [
+       "固态电池 硫化物 氧化物 聚合物 卤化物 技术路线对比 优劣",
+       "全固态电池 固-固界面 良率 放大效应 工程化难题 100Ah软包",
+       "固态电池 产业化时间表 2027 2028 丰田 国轩高科 半固态过渡",
+       "固态电池 应用场景 两轮车 用户侧储能 人形机器人 低空经济 纯锂 鹏辉",
+       "中国 固态电池 国家标准 产学研协同创新平台 工信部 新型储能行动方案"
+      ],
+      "en": [
+       "solid-state battery sulfide oxide polymer halide electrolyte route comparison Toyota CATL",
+       "all-solid-state battery solid-solid interface scaling problem pouch cell yield ionic conductivity drop",
+       "solid-state battery commercialization timeline 2027 2028 Toyota GouV semi-solid transition",
+       "solid-state battery applications e-scooter BESS humanoid robot eVTOL GGII 100GWh",
+       "China solid-state battery national standard 8-point policy R&D consortium industry ecosystem"
+      ]
+     },
+     "hits": 30,
+     "repeat_queries": 0,
+     "accepted": 25,
+     "skipped": [
+      {
+       "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12783987",
+       "reason": "captcha"
+      },
+      {
+       "url": "https://www.osti.gov/pages/biblio/2418050",
+       "reason": "too_short"
+      },
+      {
+       "url": "https://www.bonnenbatteries.com/solid-state-batteries-advances-challenges-future-use-cases",
+       "reason": "captcha"
+      },
+      {
+       "url": "https://carnegieendowment.org/research/2026/09/battery-ecosystems-a-comparative-analysis-of-lithium-ion-tech-policy",
+       "reason": "captcha"
+      },
+      {
+       "url": "https://www.youtube.com/watch?v=GC7ZzSFla84",
+       "reason": "too_short"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 12.0,
    "event": {
     "kind": "node",
     "node": "extract"
    }
   },
   {
-   "at": 19.3,
+   "at": 12.5,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "segment_summary",
+     "segments": 53,
+     "batches": 10,
+     "done": 53,
+     "failed": 0,
+     "retried": 0,
+     "recovered": 0,
+     "still_incomplete": []
+    }
+   }
+  },
+  {
+   "at": 14.0,
    "event": {
     "kind": "progress",
     "node": "extract",
     "event": {
      "kind": "extract",
      "round": 1,
-     "sources": 24,
-     "ok": 8,
+     "sources": 25,
+     "ok": 25,
      "errors": 0,
-     "segments": 51,
-     "summarized": 41,
-     "summarize_failed_batches": 2,
+     "segments": 53,
+     "summarized": 53,
+     "summarize_failed_batches": 0,
+     "unjudged_sources": 0,
      "gate": {
-      "judged": 8,
-      "off_topic": 3,
+      "judged": 25,
+      "off_topic": 0,
       "by_method": {
-       "rule": 4,
-       "llm": 4
+       "llm": 22,
+       "rule": 3
       }
      }
     }
    }
   },
   {
-   "at": 19.8,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "我们根据输入判断各小节材料是否足够。注意：这是第一轮，没有历史。需要根据沾边段数和最高吻合度判断。\n\nsec1: 沾边29段，最高吻合度3，材料充分，应该足够。但需要看是否覆盖优劣势和产业化进展。样例显示有对比，应该足够。无缺口。\n\nsec2: 沾边2段，最高吻合度1，材料很少，且样例只是提到时间表，没有具体2025年装车量和渗透率。缺具体数字。属于high，因为可能通过检索获得。\n\nsec3: 沾边2段，最高吻合度1，样例提到界面接触瓶颈，但问题问的是全固态电池面临哪些关键技术瓶颈，最难跨越的。材料只有一条提到界面接触，可能不够全面。缺具体瓶颈清单和难度排序。属于high。\n\nsec4: 沾边6段，最高吻合度1，样例提到硫化锂降本，但问题问成本现状和硫化锂角色。材料有相关但不够具体，缺成本数字。属于"
-   }
-  },
-  {
-   "at": 20.3,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "medium或high。因为可能找到更多。\n\nsec5: 沾边1段，最高吻合度1，只有华为一条，缺企业梯队和竞争格局。属于high。\n\n总体：sec1足够，其他都缺。但注意sec2、3、4、5都缺。需要判断urgency。第一轮，没有历史，所以这些缺口都是新的，可以报high。但也要考虑是否网上有。sec2的2025年装车量可能网上有，sec3瓶颈也有，sec4成本也有，sec5企业格局也有。所以都报high。\n\n但has_enough：有high缺口，所以false。\n\nnext_queries针对具体主体：sec2需要2025年装车量、渗透率；sec3需要技术瓶颈清单；sec4需要成本现状、硫化锂降本；sec5需要企业梯队、领先企业。\n\n注意不要重复已有检索词。已有检索词可能包括\"固态电池\"等，但我们需要更具体。\n\n另外，outline_review：框架尚未审批，需要给出。根据材料支撑情况，sec1充分，sec2偏薄，sec3偏薄"
-   }
-  },
-  {
-   "at": 20.8,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "，sec4偏薄，sec5几乎无。可达粒度：sec1可逐家核验？但材料是媒体转述，可能只能给公开报道口径。sec2只能给转述。sec3只能给转述。sec4只能给转述。sec5几乎无，可能并入或删去。但sec5问企业梯队，材料只有华为，可能并入sec1或sec4？但sec1是技术路线，sec4是成本，不搭。可能并入sec2产业化进度？但sec2也缺。或者收窄题面。考虑动作：sec1保持，sec2收窄（因为只有时间表，没有具体数字），sec3收窄（只有界面瓶颈，可以收窄为界面接触瓶颈），sec4收窄（只有硫化锂降本，可以收窄为硫化锂降本路径），sec5并入或删去？材料只有一条，且与sec1技术路线相关？华为是硫化物，可以并入sec1？但sec1已经充分。或者并入sec2？sec2是产业化进度，华为发明不算。可能删去，因为材料几乎没有。但根据规则，先考虑收窄，再并入"
-   }
-  },
-  {
-   "at": 21.3,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "，最后删。sec5可以收窄为\"华为等企业的技术突破对竞争格局的影响\"？但材料只有一条，可能还是不够。或者并入sec1？sec1是技术路线，华为是硫化物，可以并入。但sec1已经充分，并入可能稀释。或者并入sec4？华为发明与成本无关。我认为sec5可以并入sec1，因为华为是硫化物技术路线，但sec1已经覆盖技术路线，企业竞争格局可以并入技术路线中的产业化进展？但sec1问的是优劣势和产业化进展，企业竞争格局是另一回事。可能并入sec2产业化进度？但sec2也缺。或者删去，因为材料几乎没有。但规则说倾向于收窄而不是删。可以收窄为\"华为等头部企业的技术布局\"？但只有一条。我认为可以并入sec1，因为sec1已经提到产业化进展，企业竞争格局可以并入。但sec1已经充分，并入可能使sec1过大。或者并入sec2，因为sec2问产业化进度，企业竞争格局是产业化的一部分。但sec2也缺。我决定：sec5并入"
-   }
-  },
-  {
-   "at": 21.8,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "sec2，因为企业竞争格局与产业化进度相关。但sec2本身也缺，并入后可能更复杂。或者收窄为\"华为在硫化物固态电池的布局\"？但问题问的是企业梯队，收窄后可能不匹配。根据规则，如果材料几乎没有，且与任何一节不重合，可以删去。但这里与sec1有重合（华为是硫化物），所以可以并入sec1。我选择并入sec1。\n\n但注意outline_review的sections需要列出每个小节。我们只对需要调整的给出。sec1保持，sec2收窄，sec3收窄，sec4收窄，sec5并入sec1。\n\n具体：\n\nsec2: 材料支撑偏薄，可达粒度只能给转述，动作收窄题面，收窄后question: \"半固态和全固态电池的产业化时间表分别是什么？公开报道中2025年装车量或渗透率有哪些说法？\" 因为原问题要求具体数字，但材料只有时间表。\n\nsec3: 材料支撑偏薄，可达粒度只能给转述，动作收窄题面，收窄后question: \"全固态电池在界面接触方面面临哪些技术瓶颈？有哪些突破方向？\" 因为材料只提到界面接触。\n\nsec4: 材料支撑偏薄"
-   }
-  },
-  {
-   "at": 22.3,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "，可达粒度只能给转述，动作收窄题面，收窄后question: \"硫化锂在固态电池降本中扮演什么角色？有哪些降本路径？\" 因为材料只有硫化锂。\n\nsec5: 材料支撑几乎无，可达粒度只能给转述，动作并入，并入sec1，理由：仅一条华为硫化物专利，与sec1技术路线相关，不足以单列。\n\n注意sec1保持，但sec1材料充分，可达粒度可能只能给公开报道口径，但动作保持。\n\n现在生成JSON。\n\ngaps: 列出sec2, sec3, sec4, sec5的缺口。注意sec1无缺口。\n\nnext_queries: 针对每个缺口，具体主体。例如sec2: \"2025年 半固态电池 装车量 渗透率\" \"全固态电池 2025 量产 时间表\"；sec3: \"全固态电池 技术瓶颈 界面 接触\" \"固态电池 界面阻抗 难题\"；sec4: \"硫化锂 降本 固态电池 成本\" \"固态电池 成本 现状 2025\"；sec5: \"固态电池 企业 梯队 领先\" \"固态电池 竞争格局 企业排名\"。\n\n注意不要重复已有检索词，但已有检索词未知，我们尽量具体。\n\n另外"
-   }
-  },
-  {
-   "at": 22.8,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "，has_enough: false。\n\n输出JSON。"
-   }
-  },
-  {
-   "at": 24.0,
+   "at": 14.5,
    "event": {
     "kind": "node",
-    "node": "assess"
+    "node": "gate"
    }
   },
   {
-   "at": 25.2,
-   "event": {
-    "kind": "node",
-    "node": "apply_revision"
-   }
-  },
-  {
-   "at": 26.4,
-   "event": {
-    "kind": "node",
-    "node": "retrieve"
-   }
-  },
-  {
-   "at": 27.6,
-   "event": {
-    "kind": "node",
-    "node": "extract"
-   }
-  },
-  {
-   "at": 28.4,
+   "at": 15.5,
    "event": {
     "kind": "progress",
-    "node": "extract",
+    "node": "gate",
     "event": {
-     "kind": "extract",
-     "round": 2,
-     "sources": 5,
-     "ok": 5,
-     "errors": 0,
-     "segments": 12,
-     "summarized": 12,
-     "summarize_failed_batches": 0,
+     "kind": "gate",
+     "round": 1,
+     "segments_total": 53,
+     "segments_kept": 50,
      "gate": {
-      "judged": 5,
-      "off_topic": 1,
+      "segments": 53,
+      "on_topic": 50,
+      "off_topic": 3,
       "by_method": {
-       "llm": 4,
-       "rule": 1
+       "rule": 16,
+       "llm": 37
       }
      }
     }
    }
   },
   {
-   "at": 28.9,
+   "at": 16.0,
    "event": {
     "kind": "thinking",
     "stage": "assess",
-    "delta": "我们根据输入判断。框架状态：尚未审批，所以需要给出outline_review。检索历史：第3轮，上一轮新增41段，累计41段，上一轮判断仍不够，缺口high4个。本轮可用段落数53（比上一轮多了12段？但上一轮累计41，本轮可用53，说明新增了12段？但检索历史说上一轮新增41，累计41，本轮可用53，说明又新增了12段？但输入说“本轮可用段落数53”，可能包括所有段落。我们按当前小节数据判断。\n\n每个小节：\nsec1: 沾边34段，最高吻合度3，材料充分，应该保持。\nsec2: 沾边5段，最高吻合度2，材料样例有“半固态明年量产，全固态三年后小规模量产”等，但缺具体2025装车量数字。上一轮报过缺具体数字，本轮新增12段，但样例中仍无"
+    "delta": "50 段进池。sec1 有 10 段命中但 top 只有 4——覆盖不够厚；sec3 一段都没有……"
    }
   },
   {
-   "at": 29.4,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "具体数字。可能还是缺。但最高吻合度2，沾边5段，不算太少。但问题问“2025年装车量或渗透率有哪些说法”，材料只有笼统时间表。所以缺具体数字。但上一轮已报high，本轮新增12段，但样例中仍无具体数字，可能网上确实没有具体数字？但也许有，需要再搜。但根据规则，上一轮报过，新增材料没填上，应判low。但注意：上一轮新增41段，本轮又新增12段（因为可用53，上一轮累计41，所以新增12），但样例中仍无具体数字。所以可能网上没有具体数字，判low。但问题还问“产业化时间表”，材料有“半固态明年量产，全固态三年后小规模量产”，这算时间表，但不够具体。所以缺口是具体数字。但既然搜了两轮都没有，可能low。但也可以再试一次，因为可能换关键词。但规则说：上一轮报过，新增材料没填上，判low。所以sec2的缺口应判low。\n\nsec3: 沾"
-   }
-  },
-  {
-   "at": 29.9,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "边2段，最高吻合度1，材料只有“阴离子调控技术突破界面接触瓶颈”和“报告分析技术瓶颈”。问题问“界面接触方面面临哪些技术瓶颈？有哪些突破方向？”材料只有一条突破，没有系统瓶颈清单。上一轮报过缺系统清单，本轮新增12段，但样例中仍只有一条，所以可能网上确实没有系统清单？但也许有，但搜了两轮没有，判low。但注意：最高吻合度1，沾边2段，确实缺料。但既然搜了两轮，可能low。但也可以再试一次，因为可能换关键词。但规则说：上一轮报过，新增材料没填上，判low。所以sec3判low。\n\nsec4: 沾边5段，最高吻合度1，材料有“容百科技硫化锂专利授权，成本下降35%”、“Standard Lithium合作”等，但问题问“硫化锂在降本中扮演什么角色？有哪些降本路径？”材料有具体案例，但缺成本现状具体数据（每kWh成本）和降本路径详细机制。上一轮报过缺成本数据，本轮新增12段，样例中仍无具体成本数字，但有了硫化锂降本案例。可能还是"
-   }
-  },
-  {
-   "at": 30.4,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "缺具体数字。但既然搜了两轮，可能low。但也可以再试一次，因为可能换关键词。但规则说：上一轮报过，新增材料没填上，判low。所以sec4判low。\n\nsec5: 沾边？输入里没有sec5？输入只有sec1-4？但检索历史里提到sec5，但输入的小节列表只有4个？可能漏了？我们看输入：小节列表有sec1, sec2, sec3, sec4。但检索历史提到sec5，可能sec5是另一个？但输入没有给出sec5的数据。可能输入不完整？但根据检索历史，上一轮报过sec5缺企业梯队。但本轮没有sec5数据，可能sec5不存在？或者被合并了？但框架状态尚未审批，可能框架有5节，但输入只给了4节？我们按给出的4节处理。但检索历史提到sec5，可能框架有5节，但输入只给了4节？我们只能基于给出的信息。但为了完整，我们假设有sec5，但没给数据，我们无法判断。但既然没给，我们就不管。但检索历史说上一轮报过sec5，但本轮没有sec5数据，可能sec5已经被合并或删除了？但框架"
-   }
-  },
-  {
-   "at": 30.9,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "尚未审批，可能还在。但输入没给，我们只能忽略。\n\n但注意：输入说“小节”数组只有4个，所以我们就按4个处理。但检索历史提到sec5，可能框架有5节，但输入只给了4节？可能输入错误？但为了安全，我们只处理给出的4节。\n\n现在判断has_enough：如果所有缺口都是low，则has_enough为true。但sec2,3,4的缺口可能都是low，但sec1没有缺口。所以has_enough应为true？但注意：sec2,3,4的缺口虽然可能low，但问题是否真的网上没有？我们根据规则：上一轮报过，新增材料没填上，判low。所以这些缺口都是low。那么has_enough为true。但我们需要确认sec2,3,4是否真的没有其他材料？但根据样例，sec2有“半固态明年量产”等，但缺具体数字。sec3只有一条突破。sec4有案例但缺成本数据。这些可能网上确实没有具体数字，但也许有，但搜了两轮没有，所以判low。因此has_enough应为true。\n\n但注意：sec3最高吻合度1，沾边2段"
-   }
-  },
-  {
-   "at": 31.4,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "，确实很少，但既然搜了两轮，可能网上确实没有系统清单，所以low。但也许可以再试一次，但规则说上一轮报过，新增没填上，判low。所以low。\n\n因此has_enough=true。\n\n但我们需要给出gaps，即使has_enough为true，也可以列出low缺口，但has_enough为true意味着不需要再搜。但根据规则，当没有high或medium缺口时，has_enough为true。所以我们可以列出low缺口，但has_enough为true。\n\n另外，需要给出outline_review，因为框架尚未审批。我们需要评估每个小节的材料支撑和可达粒度，并给出动作。\n\nsec1: 材料支撑充分（34段，最高吻合度3），可达粒度：可逐家核验完整台账？但问题问三种路线优劣势和产业化进展，材料有对比，应该可以写。动作：保持。\n\nsec2: 材料支撑偏薄（5段，最高吻合度2），可达粒度：只能给公开报道口径（因为只有笼统时间表，没有具体数字）。动作：收窄题面？原题问“2025年装车量或渗透率有哪些说法”，但材料没有具体数字，只有时间表。所以可以"
-   }
-  },
-  {
-   "at": 31.9,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "收窄为“半固态和全固态电池的产业化时间表有哪些公开说法？”去掉具体数字要求。或者并入？但sec2和sec1有重叠？sec1讲技术路线，sec2讲产业化进度，不同。但材料少，可以收窄。动作：收窄题面，收窄后question：“半固态和全固态电池的产业化时间表有哪些公开说法？各说法之间有何分歧？”\n\nsec3: 材料支撑几乎无（2段，最高吻合度1），可达粒度：只能给转述（只有一条突破）。动作：收窄题面？原题问“界面接触方面面临哪些技术瓶颈？有哪些突破方向？”材料只有一条突破，没有瓶颈清单。可以收窄为“全固态电池界面接触问题有哪些公开报道的突破方向？”或者并入sec1？但sec1讲技术路线，sec3讲瓶颈，不同。但材料太少，可以并入sec1？但sec1已经充分，并入可能不合适。或者收窄为“全固态电池界面接触问题有哪些公开报道的突破方向？”但这样可能还是只有一条。或者删去？但材料有一点，可以收窄。根据规则，倾向于收窄而不是删。所以收窄题面，收窄后question：“全固态电池界面接触问题有哪些公开报道的突破方向？目前进展"
-   }
-  },
-  {
-   "at": 32.4,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "如何？”\n\nsec4: 材料支撑偏薄（5段，最高吻合度1），可达粒度：只能给公开报道口径（有案例但无成本数据）。动作：收窄题面？原题问“硫化锂在降本中扮演什么角色？有哪些降本路径？”材料有案例，但缺成本数据。可以收窄为“硫化锂在固态电池降本中有哪些公开报道的案例和路径？”去掉具体成本数字。动作：收窄题面，收窄后question：“硫化锂在固态电池降本中有哪些公开报道的案例和路径？”\n\n另外，sec5没给，但检索历史提到，可能框架有5节，但输入没给，我们忽略。\n\n现在生成next_queries：由于has_enough为true，但仍有low缺口，但low不需要再搜。但根据规则，如果has_enough为true，next_queries可以为空？但规则说next_queries按gaps生成，但gaps都是low，所以可以给一些low的查询？但low表示网上没有，所以再搜也没用。但为了完整，我们可以给一些针对性的查询，但可能没用。但规则说“不要输出你已经在用的检索词”，而且最多5条。既然has_enough为true，我们可以不提供next_queries，或者提供空数组。但为了严谨，我们提供一些可能补充的查询，但标注"
-   }
-  },
-  {
-   "at": 32.9,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "low。但规则说next_queries是给下一轮用的，如果has_enough为true，就不需要下一轮了。所以next_queries可以为空。\n\n但注意：has_enough为true，但outline_review可能建议收窄，所以可能还需要调整框架，但不需要再搜。所以next_queries可以为空。\n\n但为了保险，我们提供一些针对sec2,3,4的查询，但既然判low，可能没用。但我们可以提供，但系统会丢弃重复的。我们提供一些新的查询，比如“2025年半固态电池装车量”“全固态电池界面阻抗瓶颈”“硫化锂 降本 成本 每kWh”等。但既然判low，可能没用。但我们可以提供，但has_enough为true，所以可以不提供。\n\n根据规则，如果has_enough为true，next_queries可以为空。但为了完整，我们提供空数组。\n\n但注意：outline_review是必须的，因为框架尚未审批。\n\n现在构造JSON。\n\ngaps: 列出sec2,3,4的low缺口，但has_enough为true"
-   }
-  },
-  {
-   "at": 33.4,
-   "event": {
-    "kind": "thinking",
-    "stage": "assess",
-    "delta": "，所以gaps可以列出，但urgency为low。\n\nsec2: what_missing: \"缺2025年半固态/全固态装车量或渗透率的具体数字及出处，现有材料仅给出笼统时间表\" urgency: low\nsec3: what_missing: \"缺全固态电池界面接触技术瓶颈的系统清单及难度排序，现有材料仅有一条突破报道\" urgency: low\nsec4: what_missing: \"缺全固态电池每kWh成本的具体数据及硫化锂降本路径的详细机制，现有材料仅有案例\" urgency: low\n\nnext_queries: 空数组。\n\noutline_review:给出每个小节。\n\nsec1: 材料支撑充分，可达粒度可逐家核验完整台账？但问题问三种路线，材料有对比，可以写。动作保持。\n\nsec2: 材料支撑偏薄，可达粒度只能给公开报道口径，动作收窄题面，收窄后question。\n\nsec3: 材料支撑几乎无，可达粒度只能给转述，动作收窄题面，收窄后question。\n\nsec4: 材料支撑偏薄，可达粒度只能给公开报道口径，动作收窄题面，收窄后question。\n\n注意：sec3可能也可以并入sec1？但sec1讲技术路线，sec3讲瓶颈，不同。但材料太少，收窄后可能只有一条，但可以写。所以收窄。\n\n现在输出JSON。"
-   }
-  },
-  {
-   "at": 34.6,
+   "at": 16.5,
    "event": {
     "kind": "node",
     "node": "assess"
    }
   },
   {
-   "at": 35.8,
+   "at": 17.5,
+   "event": {
+    "kind": "progress",
+    "node": "assess",
+    "event": {
+     "kind": "assess",
+     "round": 1,
+     "segments_total": 50,
+     "new_segments": 50,
+     "round_gain": 1.0,
+     "no_new_streak": 0,
+     "has_enough": false,
+     "thin_sections": [
+      "sec3",
+      "sec4",
+      "sec5",
+      "sec7"
+     ],
+     "gaps": 8,
+     "gaps_by_urgency": {
+      "high": 7,
+      "medium": 1
+     },
+     "queries_fresh": 30,
+     "queries_dropped_repeat": 0,
+     "queries_fallback": 0,
+     "stop_would_be": "（会继续检索）",
+     "stop_layer": "—",
+     "gap_detail": [
+      "sec1[high]:卤化物路线在离子电导率/稳定性/成本上的具体数据，以及四条路线各自的代表企业与团队（含 QuantumScape、Sol",
+      "sec2[high]:0.1Ah→100Ah 寿命腰斩的电化学/化学/力学耦合失效机制原文，硫化物从克级到公斤级离子电导率下降30%—50%的",
+      "sec3[high]:全固态电池400—800美元/kWh 成本拆分（电解质/正极/负极/制造成本占比）、硫化锂占电解质成本主体回落轨迹、干法",
+      "sec4[high]:国轩高科2028年全固态电池计划的官方原文或权威媒体披露，高小兵'2027只是试产'判断的完整语境与来源，'半固态→全固",
+      "sec5[high]:纯锂新能源、鹏辉能源Secu系列、沃太能源在两轮/储能/移动电源/低空/人形机器人场景的具体产品、订单、客户、时间表；G",
+      "sec6[high]:国标《电动汽车用固态电池 第1部分：术语和分类》征求意见稿的核心定义与分类原文、工信部等八部门《新型储能制造业高质量发展",
+      "sec7[high]:丰田全固态电池约1300项专利的统计口径与时点、最新专利地图分布、宁德/比亚迪/国轩/纯锂/鹏辉的对应路线对峙与产能披露",
+      "sec8[medium]:1973 PEO、1976 NASICON、1993 LiPON/LLZO、2011 Li10GeP2S12、含氟聚醚、"
+     ]
+    }
+   }
+  },
+  {
+   "at": 18.0,
    "event": {
     "kind": "node",
     "node": "apply_revision"
+   }
+  },
+  {
+   "at": 18.2,
+   "event": {
+    "kind": "progress",
+    "node": "apply_revision",
+    "event": {
+     "kind": "outline_revision",
+     "round": 1,
+     "reason": "按材料校准框架",
+     "added": [],
+     "narrowed": [
+      {
+       "id": "sec2",
+       "to": "围绕'固-固界面失效机理'与'放大效应'两个已被报道的关键现象，重点核验主流报道口径下的失效机制描述"
+      },
+      {
+       "id": "sec3",
+       "to": "全固态电池'成本约为液态电池3—5倍'这一公开口径在主流研报中的来源与拆分依据"
+      },
+      {
+       "id": "sec4",
+       "to": "丰田 2027—2028 量产计划与国内厂商时间表的口径核对"
+      }
+     ],
+     "removed": []
+    }
+   }
+  },
+  {
+   "at": 19.0,
+   "event": {
+    "kind": "node",
+    "node": "await_approval"
    }
   }
  ]

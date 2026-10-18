@@ -68,6 +68,13 @@ def _emit(thread_id: str, event: dict) -> None:
             q.put_nowait(event)
         except queue.Full:
             pass
+    # 落库（0009）：每次真跑自动沉淀可回放的事件流，
+    # tests/dump_events.py 直接导出成 fixture。SSE 本来就是尽力送达，
+    # 所以这里也绝不能反过来弄挂一次运行。
+    try:
+        get_repo().save_sse_event(thread_id, event)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------- API

@@ -224,7 +224,7 @@ def main() -> None:
     print(f"  库     {db}")
     print(f"  倍速   {args.speed}{'（瞬间发完）' if args.speed <= 0 else ''}")
     print(f"  事件   到审批点 {n1} 条 + 写完 {n2} 条")
-    print(f"  审批   4 节框架，3 节带修订说明，可信度 satisfied")
+    print(f"  审批   8 节框架，6 节带材料校准说明，可信度仍在补充材料")
     print(f"\n  前端连 http://127.0.0.1:5180")
     uvicorn.run(srv.app, host="127.0.0.1", port=args.port, log_level="warning")
 

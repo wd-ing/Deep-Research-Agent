@@ -164,6 +164,25 @@ class Repo:
         self.x("UPDATE session SET cost_tokens = cost_tokens + ?, updated_at=? WHERE id=?",
                (tokens, now(), session_id))
 
+    # ---------- SSE 事件流（0009，回放 fixture 的自动来源） ----------
+
+    def save_sse_event(self, session_id: str, event: dict) -> None:
+        """把一条推给前端的 SSE 事件落库。排序靠自增 id；`at` 用毫秒精度
+        （`now()` 的秒级会让一簇并发事件挤在同一时刻，回放时分不出先后）。
+
+        无外键：这是日志表，session 被删后留下的孤儿事件无妨；
+        反过来，一条 emit 绝不能因为 FK 而丢。"""
+        import json
+        self.x(
+            "INSERT INTO sse_event(session_id, at, kind, node, event_json) "
+            "VALUES (?,?,?,?,?)",
+            (session_id,
+             datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+             str(event.get("kind") or "?"),
+             event.get("node"),
+             json.dumps(event, ensure_ascii=False, default=str)),
+        )
+
     # ---------- 会话管理（2026-10-12 产品化） ----------
 
     def update_session(self, session_id: str, **fields) -> None:

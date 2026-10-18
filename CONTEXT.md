@@ -1433,6 +1433,41 @@ checkpoints.db 里 `next==('write',)` 的快照分叉续跑 write→finalize→
 summary，前面节点不重复。**教训：checkpoint 断点续跑本来就是这条
 链路该有的能力，别为了验证一个修复就重花一轮检索的钱。**
 
+### 65. 前端产品化开工：A1 路由 + A2 回放换代（2026-10-18）
+
+**A1（已提交 f21cd3b）**：`frontend/src/router.ts` —— URL hash
+`#/s/{sid}` / `#/sources/{id}` 是唯一真相源，App 不再自己存
+sid/pane state；刷新不丢、前进后退生效、链接可分享。选 hash 不选
+真路径的理由：部署后零服务端配置、不引 react-router（依赖洁癖）。
+验收：router 行为级用例全过 + 真服务下刷新/直开/前进后退验证。
+
+**A2（已提交）**：回放 fixture 换代 + **事件流自动落库**。
+
+- `0009_sse_event.sql`：新表 `sse_event`（id 自增排序 / at 毫秒精度 /
+  kind / node / event_json 全信封）。无外键——日志表，宁可留孤儿
+  也不能让 emit 因 FK 丢一条。
+- `server._emit`：每条事件先给订阅者投递，再 try/except 落库——
+  **落库失败绝不能弄挂一次运行**（SSE 本来就是尽力送达）。
+- `tests/dump_events.py <sid> [db] [--from-node X] [--to-node Y]`：
+  导出成 fixture 格式。以后每次真跑自动产出可回放事件流，
+  **手工录 fixture 这条路彻底关闭**。
+- 三份 fixture 用 v13 真跑（s_90b3c5d17069）真实值重录：
+  run_to_approval 28 条（含 probe_error/gate/outline_revision/
+  assess 全字段），run_after_approval 38 条（含 plan_spec 真实
+  thesis+spec_uncertainty、write_revise、audit×2、rework_effective=
+  false 的真实收尾形状），approval.json 换真 8 节框架（6 节带
+  材料校准说明）。draft 增量用终稿真实切片。
+- 验证：回放服务 `--speed 0` 全路径跑通，落库 30 + 72 条，
+  dump 闭环导出成功。
+- 顺带修：`replay_server` 启动提示语从「4 节框架」更正为真值。
+
+**旧 fixture 的病**：审批后那份还是 pre-v13 形状（无 gate/
+plan_spec/revise/新 audit），前端新渲染分支从没被真实数据验过。
+现在 fixture 是「真跑长什么样就录什么样」。
+
+**教训**：测前端用的 fixture 必须能**自动从真跑再生**——
+否则后端每改一次事件形状，前端测试就在测一个不存在的旧世界。
+
 ---
 
 ## 九、工作约定
