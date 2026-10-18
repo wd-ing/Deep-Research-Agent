@@ -310,7 +310,7 @@ export function Sidebar({
   // 没有列表的「会话视图」没有内容可看。
   if (collapsed) {
     return (
-      <nav className="flex w-11 shrink-0 flex-col items-center border-r border-line bg-gray-50 py-2 print:hidden">
+      <nav className="flex w-11 shrink-0 flex-col items-center border-r border-line bg-paper2 py-2 print:hidden">
         <button
           onClick={onToggleCollapse}
           title="展开侧栏"
@@ -357,7 +357,7 @@ export function Sidebar({
   }
 
   return (
-    <nav className="flex w-72 shrink-0 flex-col border-r border-line bg-gray-50 print:hidden">
+    <nav className="flex w-72 shrink-0 flex-col border-r border-line bg-paper2 print:hidden">
       {/* 会话 / 来源 两个视图。同一批数据两种组织方式：
           会话按时间流找「上周那场」，来源按性质找「哪些材料值得信」。 */}
       <div className="flex gap-1 border-b border-line p-2">

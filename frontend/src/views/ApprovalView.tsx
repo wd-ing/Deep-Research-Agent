@@ -71,7 +71,7 @@ export function ApprovalView({
       <div className="mt-8 flex justify-end">
         <button
           onClick={onApprove}
-          className="rounded bg-accent px-5 py-2 text-sm text-white hover:bg-blue-700"
+          className="btn-primary px-5 py-2 text-sm"
         >
           通过，开始写作
         </button>

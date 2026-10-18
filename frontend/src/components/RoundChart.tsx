@@ -26,8 +26,8 @@ const PAD = { l: 34, r: 12, t: 14, b: 24 }
 const PLOT_W = W - PAD.l - PAD.r
 const PLOT_H = H - PAD.t - PAD.b
 
-const C_HIT = '#93c5fd'
-const C_ACCEPT = '#2563eb'
+const C_HIT = '#A8B8E8'
+const C_ACCEPT = '#2E50C8'
 const C_TOTAL = '#f59e0b'
 
 function fmt(n: number): string {
@@ -89,7 +89,7 @@ const Chart = ({ rounds }: { rounds: TraceRound[] }) => {
         <line
           key={gy}
           x1={PAD.l} x2={W - PAD.r} y1={gy} y2={gy}
-          stroke="#e5e7eb" strokeWidth={1}
+          stroke="#E6E1D7" strokeWidth={1}
           strokeDasharray={i === 0 ? undefined : '2 3'}
         />
       ))}

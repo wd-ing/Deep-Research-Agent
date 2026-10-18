@@ -70,7 +70,7 @@ export function SegDrawer({
           )}
         </div>
         {seg.概括 && (
-          <div className="border-b border-line bg-blue-50 px-4 py-2 text-xs text-blue-900">
+          <div className="border-b border-line bg-paper2 px-4 py-2 text-xs text-muted">
             <span className="font-medium">概括：</span>{seg.概括}
           </div>
         )}

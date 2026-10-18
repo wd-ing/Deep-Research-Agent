@@ -348,7 +348,7 @@ export function FolderTree({
             // 用 inset 阴影画指示线而不是 border：border 会让行高多 2px，
             // 拖拽过程中整棵树抖一下。
             style={dropHere ? {
-              boxShadow: `inset 0 ${dropHere === 'before' ? '2px' : '-2px'} 0 0 #2563eb`,
+              boxShadow: `inset 0 ${dropHere === 'before' ? '2px' : '-2px'} 0 0 #2E50C8`,
             } : undefined}
             className={[
               'group/row flex items-center rounded pr-1 transition-colors',

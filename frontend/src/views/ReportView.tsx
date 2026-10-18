@@ -260,7 +260,7 @@ function mdComponents(
     ids.get(textOf(c).replace(/\[S\d+·\d+\]/g, '').trim()) ?? undefined
   return {
     h1: ({ children }: { children?: ReactNode }) => (
-      <h1 className={compact ? 'mb-2 text-base font-semibold' : 'mb-4 text-xl font-semibold'}>
+      <h1 className={compact ? 'mb-2 text-base font-semibold' : 'mb-4 font-serif text-2xl font-medium'}>
         {R(children)}
       </h1>
     ),
@@ -270,8 +270,9 @@ function mdComponents(
           ? 'mb-2 mt-3 scroll-mt-24 text-sm font-semibold'
           // 大环节标题下压一条线：43 个标题滚过去时靠这条线分段。
           // `scroll-mt-24` 是给顶部常驻区（进度条+目录条）让位——
-          // 不加的话点目录跳过来，标题正好藏在常驻条底下
-          : 'mb-3 mt-8 scroll-mt-24 border-b border-line pb-1 text-lg font-semibold'
+          // 不加的话点目录跳过来，标题正好藏在常驻条底下。
+          // font-serif：报告的节标题用衬线是「文档感」的签名件。
+          : 'mb-3 mt-9 scroll-mt-24 border-b border-line pb-1.5 font-serif text-xl font-medium'
       }>{R(children)}</h2>
     ),
     // ⚠️ **层级原来是倒置的**：正文 16px，而 h3 只有 14px——小节标题

@@ -301,7 +301,10 @@ export default function App() {
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-between border-b border-line bg-white px-6 py-3 shadow-[0_1px_2px_rgba(0,0,0,0.03)] print:hidden">
           <div className="min-w-0">
-            <div className="truncate text-sm font-medium">
+            <div className={[
+              'truncate text-sm font-medium',
+              report && s.view === 'done' ? 'font-serif text-base' : '',
+            ].join(' ')}>
               {d?.title || d?.question || '深度研究'}
             </div>
             {d && (
@@ -383,7 +386,8 @@ export default function App() {
         {s.view === 'idle' && !sid && (
           <div className="flex flex-1 items-start justify-center overflow-auto px-6 py-14">
             <div className="w-full max-w-xl">
-              <h1 className="text-xl font-medium text-ink">深度研究</h1>
+              {/* 衬线标题是「文档感」的签名件——首页先立住这个气质 */}
+              <h1 className="font-serif text-2xl font-medium text-ink">深度研究</h1>
               <p className="mt-2 max-w-md text-sm leading-6 text-muted">
                 提出一个问题，agent 会做多轮检索和评估，产出带逐句引用的长报告。
                 一场研究约 20–30 分钟，过程中随时可以离开，完成后回来看结果。

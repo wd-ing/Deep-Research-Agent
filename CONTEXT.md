@@ -1642,6 +1642,34 @@ L2 环节组（粗粒度事件当「组长」）→ L3 明细行（细粒度事�
 （上半尾一条 + 下半头一条），界面上「评估（第1轮）」出现两次——
 这是录制接缝的数据事实，真实新跑不会有，不修。
 
+### 71. 视觉重构：暖纸文档感（2026-10-18，用户选 C）
+
+四选一的方向题（Linear 深色 / Stripe 冷灰 / Notion-Readwise 暖纸 /
+编辑杂志风），用户选暖纸——产品本质是「交付一份 4 万字报告」，
+阅读面 > 监控面。
+
+**最大杠杆是 token 重映射，不是逐文件改**：
+- `gray` 整阶换成 warm stone（40+ 处 gray-* 一键变暖）；
+  `white` 重定义成 `#FCFBF7` 暖白；新增 `paper #F8F6F0`（主底）/
+  `paper2 #EFEBE2`（侧栏，拉出桌面/纸张两层关系）。
+- ink `#26221D`、muted `#7C756C`、line `#E6E1D7`、accent `#2E50C8`
+  （蓝保留，cream 上的蓝就是 Notion 味）、live `#3E8F4F`。
+
+**签名件**：
+- **衬线**只用在报告 h1/h2 + 首页欢迎标题 + 报告态页头——
+  `fontFamily.serif` 走系统栈（Songti SC/STSong/Noto Serif/Georgia），
+  不引外部字体（依赖洁癖+离线）。
+- **主按钮改墨色实心**（Things/Craft 式）：彩留给「可点」语义，
+  纸面上的主行动用墨。
+- `::selection` 暖米 #E8DFCB——默认蓝底白字和纸底打架。
+
+**踩的坑**：`.btn` 原来裸写在 unlayered 层，优先级**高于**
+utilities——`btn-primary px-5` 里的 px-5 是死代码（审批页
+「通过」按钮的大 padding 一直没生效）。挪进 `@layer components`
+后 utilities 才能正常覆盖。
+
+打印强制回纯白 `body`（纸色不打印）。
+
 ---
 
 ## 九、工作约定

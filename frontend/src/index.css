@@ -3,10 +3,14 @@
 @tailwind utilities;
 
 html, body, #root { height: 100%; margin: 0; }
-body { @apply bg-gray-50 text-ink antialiased; }
+body { @apply bg-paper text-ink antialiased; }
+
+/* 选中文字也带纸感——默认蓝底白字和暖纸底打架 */
+::selection { background: #E8DFCB; }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { @apply rounded bg-gray-300; }
+::-webkit-scrollbar-thumb:hover { @apply bg-gray-400; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ============================================================
@@ -23,9 +27,9 @@ body { @apply bg-gray-50 text-ink antialiased; }
  *  现在改成「白底 + 左侧 2px 竖条」：竖条是明确的方向性标记，
  * 在灰底上不依赖阴影就能读出来；`shadow-sm` 由此专职浮层。 */
 .sel {
-  background-color: #fff;
-  color: #1a1a1a;
-  box-shadow: inset 2px 0 0 0 #2563eb;
+  background-color: #FCFBF7;
+  color: #26221D;
+  box-shadow: inset 2px 0 0 0 #2E50C8;
 }
 
 /* **表格**——只用横线，不用竖线。
@@ -70,15 +74,21 @@ body { @apply bg-gray-50 text-ink antialiased; }
    同一个「次要按钮」至少有三种高度/两种字色。收成三档：
    ============================================================ */
 
+/* ⚠️ 必须进 @layer components：裸写在 unlayered 时优先级反而高过
+   `px-5` 这类 utilities——`btn-primary px-5` 里 px-5 会变死代码
+   （审批页「通过」按钮就踩了这个：看着写了大 padding 实际没生效）。 */
+@layer components {
 /* 基底：所有按钮共用的尺寸与过渡。不用在 className 里再写高度。 */
 .btn {
   @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5
          text-xs font-medium transition-colors select-none
          disabled:cursor-not-allowed disabled:opacity-40;
 }
-/* 主行动：一个屏最多一个（批准研究 / 保存 / 新建） */
+/* 主行动：一个屏最多一个（批准研究 / 保存 / 新建）。
+   Things/Craft 签名件：**墨色实心按钮**——纸面上的主行动用墨不用彩，
+   彩留给「可点」语义（链接/焦点）。 */
 .btn-primary {
-  @apply btn bg-accent text-white hover:bg-blue-700 active:bg-blue-800;
+  @apply btn bg-ink text-paper hover:bg-gray-700 active:bg-gray-800;
 }
 /* 次要行动：导出、归档、还原——看得见但不抢眼 */
 .btn-ghost {
@@ -94,13 +104,14 @@ body { @apply bg-gray-50 text-ink antialiased; }
 .btn-danger-solid {
   @apply btn bg-red-600 text-white hover:bg-red-700;
 }
+}
 /* 键盘可达性的底线：Tab 过来要看得见焦点在哪 */
 .btn:focus-visible,
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid #2E50C8;
   outline-offset: 1px;
 }
 
@@ -176,10 +187,11 @@ textarea:focus-visible {
 
 /* 打印 = 只留报告正文（C1）。
    页面的布局全是「视口等高 + 内部滚动容器」——打印时不摊平，
-   4 万字报告只会出第一屏。 */
+   4 万字报告只会出第一屏。纸色不打印——打印机要的是真白。 */
 @media print {
   .h-screen { height: auto !important; }
   .overflow-auto, .overflow-hidden { overflow: visible !important; }
+  body { background: #fff !important; }
 }
 
 /* 查找条的高亮（C2）：淡黄=全部命中，橙=当前那条。
