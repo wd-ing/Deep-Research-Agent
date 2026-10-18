@@ -1580,6 +1580,32 @@ fixture（用户拍板的方案一，不是等下次真跑）。
 SSE 落库实测 20 query + 41 source + 24 summary + 9 gate + 11 task
 （含 3 条 revise），批准→done 一次到位无回环。
 
+### 69. 开发服务改 launchd 常驻（2026-10-18）
+
+**反复踩的坑**：`nohup cmd &` 起的 vite/回放服务挂在 agent shell
+会话树下，会话回收、终端关闭、休眠唤醒都可能把它们带走——
+一周内 5180 失联三次，每次根因不同（IPv6-only 绑定 / 进程树被
+收 / 僵死 wedged）。`nohup` 只挡 SIGHUP，挡不住这些。
+
+**方案**：`~/Library/LaunchAgents/com.devin.dra.{replay,vite}.plist`
+——RunAtLoad + KeepAlive + ThrottleInterval=10，崩溃后 ~10s 自动
+拉起，重启/登出自动恢复，不再依赖任何终端。vite 用 node 绝对路径
+直跑 `frontend/node_modules/vite/bin/vite.js`（绕开 nvm PATH 依赖）。
+
+**回放 db 挪位**：`/tmp/ra_v13_gate.db` → `data/refs/ra_v13_gate.db`
+——/tmp 重启即失，launchd 常驻服务不能指向它。
+
+管理命令：
+```bash
+launchctl list | grep dra            # 状态（PID/上次退出码）
+launchctl unload/load -w <plist>     # 停/启
+tail -f ~/Library/Logs/dra-{replay,vite}.log
+```
+
+注意：KeepAlive 下 `kill` 不是停机方式（会被自动拉起），停服要
+用 unload。**这两个 agent 是开发便利设施，不属于仓库内容**——
+plist 存在 ~/Library，换机/换人要重建。
+
 ---
 
 ## 九、工作约定
