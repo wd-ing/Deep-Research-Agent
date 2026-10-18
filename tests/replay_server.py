@@ -130,12 +130,17 @@ def install(srv, speed: float) -> dict:
                 # 真图跑完由 nodes.finish_session 落 'done'——回放绕过真节点，
                 # 不补这一句会话在列表里永远是 running。
                 srv.get_repo().finish_session(tid, "done")
-            if isinstance(input, dict):
-                # run 收尾：告诉前端图跑完了
-                srv._emit(tid, {"kind": "done", "state": {
-                    "report": "（回放模式：报告在左侧已有的会话里）",
-                    "report_chars": 0, "round": 2, "url_count": 29,
-                }})
+            # ⚠️ done 事件**两条路都要发**（2026-10-18 修）：
+            # 原来只在 `isinstance(input, dict)`（首跑）发，续跑批完只落了
+            # DB 状态没发事件——前端收不到 done 就一直停在 'running'，
+            # 「收尾中」呼吸点永远闪、报告永远不翻出来。
+            md_row = srv.get_repo().q1(
+                "SELECT markdown FROM report WHERE session_id=?", (tid,))
+            md = md_row["markdown"] if md_row else ""
+            srv._emit(tid, {"kind": "done", "state": {
+                "report": md or "（回放模式：报告在左侧已有的会话里）",
+                "report_chars": len(md), "round": 2, "url_count": 29,
+            }})
             return
             yield  # noqa: E501 —— 仅为让它成为 async generator
 
@@ -230,6 +235,52 @@ def main() -> None:
         sid = repo.create_session(f"【回放 {n}】{stamp} 固态电池的产业化进展",
                                   "固态电池的产业化进展")
         state["sessions"].append(sid)
+        # 克隆 donor 的 report + source + chunk 进新会话：回放跑完报告页
+        # 要有真东西看（原来只发占位提示，done 之后是空的）。
+        # ⚠️ 三处顺序都不能错（段号 S{源序}·{段序} 靠 rowid 次序算）：
+        #   source 按 rowid 排 → S 编号不变；source_id 要重映射
+        #   （id 是 TEXT 主键，原样复制会撞键）；
+        #   chunk 按 **rowid** 排——按 id 排是随机 hex 序，段号会乱。
+        # donor 必须是有 source 的会话：之前的回放会话也有 report+chunk，
+        # 按 created_at 最新会克隆到「克隆的克隆」——来源为空、段号断链。
+        donor = repo.q1(
+            "SELECT session_id FROM report "
+            "WHERE session_id IN (SELECT DISTINCT session_id FROM source) "
+            "ORDER BY created_at DESC LIMIT 1")
+        if donor and donor["session_id"] != sid:
+            import uuid as _uuid
+            ds = donor["session_id"]
+            rid = f"r_{sid}"
+            repo.x("INSERT INTO report (id, session_id, markdown, created_at) "
+                   "SELECT ?, ?, markdown, ? FROM report WHERE session_id=?",
+                   (rid, sid, _dt.datetime.now().isoformat(), ds))
+            src_map: dict[str, str] = {}
+            src_cols = None
+            for srow in repo.q(
+                    "SELECT * FROM source WHERE session_id=? ORDER BY rowid", (ds,)):
+                nid = f"src_{_uuid.uuid4().hex[:12]}"
+                src_map[srow["id"]] = nid
+                if src_cols is None:
+                    src_cols = [c for c in srow.keys()
+                                if c not in ("id", "session_id")]
+                repo.x(
+                    f"INSERT INTO source (id, session_id, {', '.join(src_cols)})"
+                    f" VALUES ({', '.join('?' * (len(src_cols) + 2))})",
+                    (nid, sid, *[srow[c] for c in src_cols]))
+            ck_cols = None
+            for crow in repo.q(
+                    "SELECT * FROM chunk WHERE session_id=? ORDER BY rowid", (ds,)):
+                if ck_cols is None:
+                    ck_cols = [c for c in crow.keys()
+                               if c not in ("id", "session_id",
+                                            "report_id", "source_id")]
+                repo.x(
+                    f"INSERT INTO chunk (id, session_id, report_id, source_id,"
+                    f" {', '.join(ck_cols)})"
+                    f" VALUES ({', '.join('?' * (len(ck_cols) + 4))})",
+                    (f"c_{_uuid.uuid4().hex[:12]}", sid, rid,
+                     src_map.get(crow["source_id"], crow["source_id"]),
+                     *[crow[c] for c in ck_cols]))
         return {"ok": True, "session_id": sid,
                 "note": "前端选中这个会话就能看到回放；或直接 POST /run"}
 

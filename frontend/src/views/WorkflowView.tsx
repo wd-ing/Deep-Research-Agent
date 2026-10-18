@@ -111,6 +111,22 @@ function StepRow({
       <Dot state={step.state} warn={step.warn || kidWarns > 0} />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
+          {/* 可收起的行先给一个 chevron——原来只有尾部的「N 条」chip，
+              行首看不出「这行能点开」。 */}
+          {collapsible && !running ? (
+            <button
+              onClick={() => setOpen((o) => !o)}
+              aria-label={open ? '收起明细' : '展开明细'}
+              className={[
+                '-ml-1 -mr-1 shrink-0 rounded text-muted/70 transition-transform duration-150 hover:text-ink',
+                open ? 'rotate-90' : '',
+              ].join(' ')}
+            >
+              <Icon name="chevron-right" size={10} />
+            </button>
+          ) : (
+            <span className="-ml-1 -mr-1 inline-block w-[10px] shrink-0" aria-hidden />
+          )}
           <span
             className={[
               'shrink-0 truncate text-sm',
@@ -147,12 +163,14 @@ function StepRow({
           )}
         </div>
         {hasKids && open && (
-          <ul className="wf-detail mt-1 space-y-1 rounded-md bg-gray-50/80 px-2.5 py-1.5">
+          /* L3 明细：缩进 + 左侧引导竖线，明确「属于上一行的环节」。
+             墨系 border-line 不用蓝——层级是结构不是链接。 */
+          <ul className="wf-detail ml-1 mt-1 space-y-1 rounded-r-md border-l-2 border-line bg-gray-50/60 py-1.5 pl-3 pr-2.5">
             {kids.map((c) => <ChildRow key={c.id} c={c} />)}
           </ul>
         )}
         {show && (
-          <ul className="wf-detail mt-1 space-y-1 rounded-md bg-gray-50/80 px-2.5 py-1.5">
+          <ul className="wf-detail ml-1 mt-1 space-y-1 rounded-r-md border-l-2 border-line bg-gray-50/60 py-1.5 pl-3 pr-2.5">
             {step.detail!.map((d, i) => (
               <li key={i} className="text-xs leading-5 text-muted">· {d}</li>
             ))}

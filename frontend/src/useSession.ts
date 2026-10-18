@@ -122,6 +122,11 @@ export function useSession(sid: string | null) {
       // 但万一后端状态不一致，「跑完了」该比「在等审批」更有发言权。
       if (r.status === 'done') {
         setApproval(null)
+        // ⚠️ 这条原来只清 approval 不翻 view——SSE `done` 事件的处理链
+        // （loadDetail + loadApproval）全程没人 setView('done')，
+        // 于是直播视角下 view 永远卡在 'running'：「收尾中」的呼吸点
+        // 一直闪、报告永远不翻出来，只有重新点开会话才正常。
+        setView('done')
       } else if (r.waiting && r.approval) {
         setApproval(r.approval)
         setView('awaiting')
