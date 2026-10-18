@@ -154,10 +154,18 @@ def install(srv, speed: float) -> dict:
 
             真跑时它是 `Interrupt.value`；回放要的是**同一个形状**，
             而 `server.approval()` 只读这一个属性，所以造个壳就够。
+
+            ⚠️ **已批准的会话必须不再返回 interrupt**（2026-10-18 修）：
+            原来无条件返回，前端兜底轮询每 4s 拉一次 `/approval`，
+            done 之后照样拿到 waiting=true → 又被拽回审批页 →
+            再点批准再放一遍写作 → 无限循环。
             """
+            tid = (config or {}).get("configurable", {}).get("thread_id")
+            waiting = tid not in state["approved"]
             class _S:
                 values = {}
-                interrupts = [type("I", (), {"value": approval})()]
+                interrupts = ([type("I", (), {"value": approval})()]
+                              if waiting else [])
             return _S()
 
     fake = FakeGraph()

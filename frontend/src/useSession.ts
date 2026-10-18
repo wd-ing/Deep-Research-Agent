@@ -116,7 +116,13 @@ export function useSession(sid: string | null) {
         cost_tokens?: number | null
       }>(`/api/sessions/${id}/approval`)
       if (typeof r.cost_tokens === 'number') setCost(r.cost_tokens)
-      if (r.waiting && r.approval) {
+      // ⚠️ done 优先于 waiting（2026-10-18 修）：回放器的 get_state 曾在
+      // 批过之后照样返回 interrupt，done 的会话被这个轮询一次次拽回
+      // 审批页 → 再批 → 再放写作 → 无限循环。真图批完 interrupt 会消失，
+      // 但万一后端状态不一致，「跑完了」该比「在等审批」更有发言权。
+      if (r.status === 'done') {
+        setApproval(null)
+      } else if (r.waiting && r.approval) {
         setApproval(r.approval)
         setView('awaiting')
       } else {
