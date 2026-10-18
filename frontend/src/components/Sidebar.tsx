@@ -199,7 +199,7 @@ function SessionRow({
 export function Sidebar({
   list, trash, cur, folders, onPick, onChanged, onNew, pane, onPane,
   lib, libErr, onRetryLib, srcQuery, onSrcQuery, srcCur, onPickSource, onIgnoreSource,
-  onNotify, onSettings, collapsed, onToggleCollapse,
+  onNotify, onSettings, onReplay, collapsed, onToggleCollapse,
 }: {
   list: SessionSummary[]
   /** 回收站内容。来自 `/api/trash`——不在 `list` 里（那边硬过滤 deleted_at）。 */
@@ -229,6 +229,8 @@ export function Sidebar({
   /** 设置页入口（D1）。挂在侧栏底部——路由跳转的事不归侧栏管，
    *  这里只负责把「点了」报上去。 */
   onSettings: () => void
+  /** 「演示回放」入口。null = 连的不是回放服务器，按钮整个不出现。 */
+  onReplay: (() => void) | null
   /** 折叠态（视觉轮 E2）：侧栏收成 44px 图标轨，读报告时让出宽度。
    *  状态在 App 持有——不进 URL：折叠是临时偏好，不该污染可分享链接。 */
   collapsed: boolean
@@ -337,10 +339,18 @@ export function Sidebar({
           title="新建研究"
           className="mt-1 flex h-8 w-8 items-center justify-center rounded text-sm text-accent transition-colors hover:bg-white"
         >＋</button>
+        <div className="mt-auto" />
+        {onReplay && (
+          <button
+            onClick={onReplay}
+            title="演示回放（约 80 秒）"
+            className="flex h-8 w-8 items-center justify-center rounded text-sm text-muted transition-colors hover:bg-white hover:text-ink"
+          >▶</button>
+        )}
         <button
           onClick={onSettings}
           title="设置"
-          className="mt-auto flex h-8 w-8 items-center justify-center rounded text-sm text-muted transition-colors hover:bg-white hover:text-ink"
+          className="flex h-8 w-8 items-center justify-center rounded text-sm text-muted transition-colors hover:bg-white hover:text-ink"
         >⚙</button>
       </nav>
     )
@@ -532,7 +542,8 @@ export function Sidebar({
         />
       )}
 
-      {/* 底部工具区：设置（D1）+ 折叠（E2）。不抢主列表的注意力，放最底下 */}
+      {/* 底部工具区：设置（D1）+ 折叠（E2）+ 回放（仅回放服务器可见）。
+          不抢主列表的注意力，放最底下 */}
       <div className="mt-auto flex items-center gap-1 border-t border-line p-2">
         <button
           onClick={onSettings}
@@ -540,6 +551,15 @@ export function Sidebar({
         >
           ⚙ 设置
         </button>
+        {onReplay && (
+          <button
+            onClick={onReplay}
+            title="演示回放：放一遍 v13 真跑的事件流（零 token，约 80 秒）"
+            className="shrink-0 rounded px-2 py-1 text-xs text-muted transition-colors hover:bg-white hover:text-ink"
+          >
+            ▶ 回放
+          </button>
+        )}
         <button
           onClick={onToggleCollapse}
           title="收起侧栏（专注阅读）"

@@ -46,6 +46,27 @@ export default function App() {
   // 侧栏折叠（E2 专注阅读）：内存态即可——不进 URL，
   // 「我暂时想宽点看报告」不该变成分享链接的一部分。
   const [sideCollapsed, setSideCollapsed] = useState(false)
+  // 回放模式探测：/api/replay/state 只在回放服务器上存在。
+  // null=还没探完/真后端（按钮不显示）；false=探测失败。
+  const [replayOn, setReplayOn] = useState(false)
+  useEffect(() => {
+    api.jget('/api/replay/state').then(() => setReplayOn(true)).catch(() => {})
+  }, [])
+
+  /** 「演示回放」：建回放会话 + 启动 + 跳过去。只出现在回放模式。
+   *  speed=0.6：fixture 时间轴是压缩过的（19s+29s），1.0 会闪完，
+   *  0.6 全程约 80 秒——够看清每个环节在干什么。 */
+  async function runReplay() {
+    try {
+      const r = await api.jpost<{ session_id: string }>('/api/replay/start?speed=0.6')
+      await refresh()
+      nav({ name: 'session', sid: r.session_id })
+      void s.start(r.session_id).catch((e: unknown) =>
+        s.notify(`回放会话已建好，但启动失败：${(e as Error).message}`))
+    } catch (e) {
+      s.notify(`起不了回放：${(e as Error).message}`)
+    }
+  }
 
   // 报告正文的滚动容器。目录跳转、阅读进度、当前节高亮全靠它——
   // 滚动的是这个容器，不是报告自己（报告是里面一块静态内容）。
@@ -257,6 +278,7 @@ export default function App() {
         onPickSource={(id) => nav({ name: 'sources', srcId: id })}
         onIgnoreSource={(id, ignore, reason) => void ignoreSource(id, ignore, reason)}
         onSettings={() => nav({ name: 'settings' })}
+        onReplay={replayOn ? runReplay : null}
         collapsed={sideCollapsed}
         onToggleCollapse={() => setSideCollapsed((v) => !v)}
       />

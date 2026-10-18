@@ -196,14 +196,20 @@ def main() -> None:
     from research_agent.db.repo import get_repo
 
     @srv.app.post("/api/replay/start")
-    def _start() -> dict:
+    def _start(speed: float | None = None) -> dict:
         """建一个会话，让前端连它就能看到回放。
 
         标题带序号 + 时间：回放会连着建好几条，全叫同一个名字的话
         侧边栏里根本分不出哪条是哪条（实测踩过，攒到 9 条全一样）。
+
+        `?speed=` 按次调倍速：服务用 `--speed 0` 起来测终态，
+        前端的「演示回放」按钮想要有节奏地看时传 `?speed=8` 之类即可，
+        不用为看演示重启服务。
         """
         from research_agent.db.repo import get_repo
         import datetime as _dt
+        if speed is not None:
+            state["speed"] = speed
         repo = get_repo()
         n = len(state["sessions"]) + 1
         stamp = _dt.datetime.now().strftime("%H:%M:%S")
@@ -215,6 +221,8 @@ def main() -> None:
 
     @srv.app.get("/api/replay/state")
     def _st() -> dict:
+        """探测口：真后端没有这个路由（404）。
+        前端启动时探它，通了就显示「演示回放」按钮。"""
         return {"sessions": state["sessions"], "speed": state["speed"]}
 
     db = os.environ.get("RA_DB_PATH") or "(默认)"
