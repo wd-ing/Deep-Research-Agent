@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSession, api } from './useSession'
+import { nav, useRoute } from './router'
 import type { Folder, SessionSummary, SourceLibrary, SourceDetailRow, SegPreviews } from './types'
 import { ApprovalView } from './views/ApprovalView'
 import { ReportView } from './views/ReportView'
@@ -12,20 +13,24 @@ import { SourceDetail } from './components/SourceDetail'
 import { NewResearchDialog } from './components/NewResearchDialog'
 
 export default function App() {
-  const [sid, setSid] = useState<string | null>(null)
+  // ⚠️ sid / pane / srcCur 不是 state——它们由 URL hash 派生（router.ts）。
+  //  想切换就 nav()，hashchange 会回流驱动这里的重渲染。
+  //  这样刷新/前进后退/深链/分享链接全部免费。
+  const route = useRoute()
+  const sid = route.name === 'session' ? route.sid : null
+  const pane: Pane = route.name === 'sources' ? 'source' : 'session'
+  const srcId = route.name === 'sources' ? route.srcId ?? null : null
   const [list, setList] = useState<SessionSummary[]>([])
   const [trash, setTrash] = useState<SessionSummary[]>([])
   const [folders, setFolders] = useState<Folder[]>([])
   const s = useSession(sid)
 
   // ---- 来源库（产品化阶段 4）----
-  const [pane, setPane] = useState<Pane>('session')
   const [lib, setLib] = useState<SourceLibrary | null>(null)
   /** 失败原因单独存。`lib === null` 既表示「加载中」也表示「加载失败」，
    *  只靠它判断的话来源库列表会永远停在「来源库加载中…」。 */
   const [libErr, setLibErr] = useState<string | null>(null)
   const [srcQ, setSrcQ] = useState('')
-  const [srcCur, setSrcCur] = useState<string | null>(null)
   const [srcDetail, setSrcDetail] = useState<SourceDetailRow | null>(null)
 
   // ---- 引用 hover 预览（seg_preview）----
@@ -80,7 +85,6 @@ export default function App() {
   }, [pane, srcQ, refreshLib])
 
   const pickSource = useCallback(async (id: string) => {
-    setSrcCur(id)
     try { setSrcDetail(await api.jget<SourceDetailRow>(`/api/sources/${id}`)) }
     catch (e) {
       setSrcDetail(null)
@@ -89,6 +93,21 @@ export default function App() {
       s.notify(`打不开这个来源：${(e as Error).message}`)
     }
   }, [s.notify])
+
+  // URL 是来源选中态的真相源：进入 #/sources/{id} 就取详情，
+  // 离开来源视图或 hash 没带 id 就清掉——深链进来和点列表走同一条路。
+  useEffect(() => {
+    if (!srcId) { setSrcDetail(null); return }
+    let alive = true
+    void api.jget<SourceDetailRow>(`/api/sources/${srcId}`)
+      .then((d) => { if (alive) setSrcDetail(d) })
+      .catch((e) => {
+        if (!alive) return
+        setSrcDetail(null)
+        s.notify(`打不开这个来源：${(e as Error).message}`)
+      })
+    return () => { alive = false }
+  }, [srcId, s.notify])
 
   /** 标记 / 取消排除。三处视图都读这个状态，必须一起刷新：
    *  来源库列表、当前打开的来源详情、以及**当前会话的报告提示条**
@@ -107,21 +126,20 @@ export default function App() {
       await refreshLib(srcQ)
       // 按**刚改的那条**判断要不要刷详情，不是按「当前选中的那条」。
       // 两者可以不是一回事：在列表里标记 A，右边打开的却是 B。
-      // 早前写成 `if (srcCur) pickSource(srcCur)`，结果是「切到对话页再回来」
-      // 时 srcCur 已清空，刷新被整段跳过，详情页留着改之前的旧数据。
       if (srcDetail?.id === id) await pickSource(id)
       if (sid) await s.loadDetail(sid)
     },
     [refreshLib, srcQ, srcDetail, pickSource, sid, s.loadDetail, s.notify],
   )
 
-  /** 报告提示条上的来源名 → 跳来源库并选中它（兑现「可在来源库中查看」） */
+  /** 报告提示条上的来源名 → 跳来源库并选中它（兑现「可在来源库中查看」）。
+   *  跳转走 nav()——hash 变化会驱动 pane/srcId 一起换，详情由上面的
+   *  srcId effect 取，不用在这里手动 pickSource。 */
   const openSourceFromReport = useCallback((id: string) => {
-    setPane('source')
+    nav({ name: 'sources', srcId: id })
     setSrcQ('')
     void refreshLib('')
-    void pickSource(id)
-  }, [refreshLib, pickSource])
+  }, [refreshLib])
 
   async function start(question: string) {
     // ⚠️ 建会话失败**不能**让对话框自己关掉、更不能默默 reject。
@@ -137,7 +155,7 @@ export default function App() {
       return
     }
     setNewOpen(false)
-    setSid(id)
+    nav({ name: 'session', sid: id })
     await refresh()
     // 启动是**另一个**请求，它失败时会议话已经建好了——
     // 提示要说清「会话已建好，只是没启动」，否则用户会去重复建。
@@ -181,25 +199,24 @@ export default function App() {
         trash={trash}
         cur={sid}
         folders={folders}
-        onPick={setSid}
+        onPick={(id) => nav({ name: 'session', sid: id })}
         onChanged={refresh}
         onNew={() => setNewOpen(true)}
         pane={pane}
-        // 离开来源库时 `srcCur` 和 `srcDetail` 要**一起**清。
-        // 只清前者会让详情页残留上一条来源——列表里没有任何行是选中态，
-        // 右边却显示着一条「看起来选中了」的来源，两边对不上。
-        onPane={(p) => {
-          setPane(p)
-          if (p === 'session') { setSrcCur(null); setSrcDetail(null) }
-        }}
+        // 切换视图走 nav()：来源→会话回到正在看的会话（没有就回首页），
+        // 会话→来源进来源库首页。hash 是唯一真相源，详情清理由
+        // srcId effect 的「!srcId → 清空」分支兜住。
+        onPane={(p) => nav(
+          p === 'source' ? { name: 'sources' }
+          : sid ? { name: 'session', sid } : { name: 'home' })}
         lib={lib}
         libErr={libErr}
         onRetryLib={() => void refreshLib(srcQ)}
         onNotify={s.notify}
         srcQuery={srcQ}
         onSrcQuery={setSrcQ}
-        srcCur={srcCur}
-        onPickSource={(id) => void pickSource(id)}
+        srcCur={srcId}
+        onPickSource={(id) => nav({ name: 'sources', srcId: id })}
         onIgnoreSource={(id, ignore, reason) => void ignoreSource(id, ignore, reason)}
       />
 
@@ -209,7 +226,7 @@ export default function App() {
         <main className="flex min-w-0 flex-1 flex-col">
           <SourceDetail
             src={srcDetail}
-            onOpenSession={(id) => { setPane('session'); setSid(id) }}
+            onOpenSession={(id) => nav({ name: 'session', sid: id })}
             onToggleIgnore={(id, ignored) => void ignoreSource(id, !ignored, '')}
           />
         </main>
