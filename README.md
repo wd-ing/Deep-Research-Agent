@@ -94,19 +94,25 @@ SSE 事件：`connected` / `node` / `progress` / `thinking` / `done` / `error`�
 
 ### 改前端时用回放，别真跑
 
-25 分钟 + 几十万 token 的东西，用回放几秒跑完、零成本：
+25 分钟 + 几十万 token 的东西，用回放约 80 秒跑完、零成本：
 
 ```bash
-cp data/refs/ra_v11_full.db /tmp/ra_replay.db   # data/refs/ 里任何一份都行
-.venv/bin/python tests/replay_server.py --speed 1 --db /tmp/ra_replay.db
+# 本机开发是 launchd 常驻的（坑 69），平时不用手动起：
+#   前端 http://127.0.0.1:5180 · 回放 http://127.0.0.1:8000
+#   库 data/refs/ra_v13_gate.db · 日志 ~/Library/Logs/dra-*.log
+# 手动起的等价命令：
+.venv/bin/python tests/replay_server.py --speed 0 --db data/refs/ra_v13_gate.db --port 8000
 ```
+
+侧栏左下角「▶ 回放」按钮一键演示（0.6 倍速、全程约 80 秒）；
+它只在探到 `/api/replay/state` 时出现——连真后端自动消失。
 
 它**只把「跑图」换成回放录好的事件**，其余全走真代码
 （真 FastAPI / 真 SSE / 真 SQLite / 真 EvidenceTools）。
+fixture 用 v13 真跑录制，含 B1 全部细粒度事件（坑 68）。
 
-⚠️ 两个已知限制：
-- 回放会话**没有 chunk**，段号取不到东西 —— 报告页与引用抽屉要用左侧已有的**真实会话**测
-- **只测得到审批为止，写作阶段根本测不到**（坑 25）
+回放会话建的时候会把 donor 的 **report + source + chunk** 克隆进来
+（坑 73）——报告页、引用抽屉、段号 S1·5 全部可用，全程可测。
 
 ---
 
