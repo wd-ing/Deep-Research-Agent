@@ -117,14 +117,27 @@ def node_plan_spec(state: WriteState) -> dict:
     连续三次 Server disconnected，把 max_output_tokens 翻倍到 32768 也救不回来。
     拆开后两次都能完成：规约 4,234 out、任务列表 7,135 out，各自都在安全区。
     """
-    try:
-        data = LLM.complete_json("write_plan_spec",
-                                 _clip(_dumps(_brief(state)), 40000),
-                                 system=prompts.WRITE_PLAN_SPEC)
-    except Exception as e:
-        return {"plan_failed": str(e)[:200],
+    data = None
+    err: Exception | None = None
+    # 一次性重试（2026-10-18）：这步的输出是**手写 JSON**（complete_json
+    # 不是强制工具调用），而它的输出是全流程最大的 JSON——v13 全量实测
+    # 在 char 6962 处坏掉，一次失败整条写作线退化成「只有来源清单」。
+    # 坏 JSON 是非确定性抖动，重试一次大概率能过；两次都不成才降级。
+    for _ in range(2):
+        try:
+            data = LLM.complete_json("write_plan_spec",
+                                     _clip(_dumps(_brief(state)), 40000),
+                                     system=prompts.WRITE_PLAN_SPEC)
+            err = None
+            break
+        except Exception as e:
+            err = e
+            print(f"⚠️  写作规约 JSON 解析失败，重试一次: {str(e)[:120]}",
+                  flush=True)
+    if data is None:
+        return {"plan_failed": str(err)[:200],
                 "events": [{"kind": "write_plan_error", "stage": "spec",
-                            "error": str(e)[:200]}]}
+                            "error": str(err)[:200]}]}
     spec = {k: v for k, v in data.items()
             if k in ("thesis", "glossary", "units", "cautions", "sections",
                      "spec_uncertainty")}
@@ -189,14 +202,35 @@ def node_plan_tasks(state: WriteState) -> dict:
             print(f"⚠️  分派环节工具循环失败，退回单次调用: {e}", flush=True)
             text = ""
 
-    try:
-        data = (_parse_json(text) if text
-                else LLM.complete_json("write_plan_tasks", _clip(prompt, 60000),
-                                       system=prompts.WRITE_PLAN_TASKS))
-    except Exception as e:
-        return {"plan_failed": str(e)[:200],
+    data = None
+    err: Exception | None = None
+    if text:
+        try:
+            data = _parse_json(text)
+        except Exception as e:
+            # ⚠️ 同一段文本重解析是同一份确定性失败，重试没意义——
+            # 退回单次调用（下面的重试循环兜它）
+            print(f"⚠️  分派工具循环产出解析失败，退回单次调用: "
+                  f"{str(e)[:120]}", flush=True)
+    if data is None:
+        # 一次性重试（2026-10-18）：手写 JSON 路径的抖动型失败，
+        # 同 plan_spec——v13 实测 spec 步在 char 6962 坏掉一次，
+        # 没有重试的话整条写作线直接退化成「只有来源清单」。
+        for _ in range(2):
+            try:
+                data = LLM.complete_json("write_plan_tasks",
+                                         _clip(prompt, 60000),
+                                         system=prompts.WRITE_PLAN_TASKS)
+                err = None
+                break
+            except Exception as e:
+                err = e
+                print(f"⚠️  任务分派调用失败，重试一次: {str(e)[:120]}",
+                      flush=True)
+    if data is None:
+        return {"plan_failed": str(err)[:200],
                 "events": [{"kind": "write_plan_error", "stage": "tasks",
-                            "error": str(e)[:200]}]}
+                            "error": str(err)[:200]}]}
 
     raw_tasks = [t for t in (data.get("tasks") or []) if isinstance(t, dict)]
     tasks = _normalize_tasks(raw_tasks, outline, known)
