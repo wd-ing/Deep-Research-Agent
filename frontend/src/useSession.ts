@@ -80,14 +80,18 @@ export function useSession(sid: string | null) {
   // 标记排除没保存、连不上服务。共用一个字段的后果正是 v5 之前的 bug——
   // `openSeg` 失败只 `setError`，而错误区只在 `view === 'error'` 时渲染，
   // 那句「读取 S12·3 失败」**永远不会有人看见**。
-  const [notice, setNotice] = useState<string | null>(null)
+  /** 提示分两级（2026-10-18 视觉轮）：err=某次操作没成（红，7s）；
+   *  ok=操作成了（中性，2.5s 短一点——成功的确认不需要读那么久）。
+   *  原来只有 err 一档：成功和失败长成一个样，红色被用成了通用色，
+   *  真报错时反而失去警示力。 */
+  const [notice, setNotice] = useState<{ msg: string; kind: 'err' | 'ok' } | null>(null)
   const noticeTimer = useRef<number | null>(null)
 
   /** 弹一条会自己消失的提示。重复调用只延长显示时间，不叠加。 */
-  const notify = useCallback((msg: string) => {
-    setNotice(msg)
+  const notify = useCallback((msg: string, kind: 'err' | 'ok' = 'err') => {
+    setNotice({ msg, kind })
     if (noticeTimer.current) window.clearTimeout(noticeTimer.current)
-    noticeTimer.current = window.setTimeout(() => setNotice(null), 7000)
+    noticeTimer.current = window.setTimeout(() => setNotice(null), kind === 'ok' ? 2500 : 7000)
   }, [])
   useEffect(() => () => {
     if (noticeTimer.current) window.clearTimeout(noticeTimer.current)

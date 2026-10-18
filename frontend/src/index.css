@@ -65,6 +65,63 @@ body { @apply bg-gray-50 text-ink antialiased; }
 }
 
 /* ============================================================
+   按钮体系（2026-10-18 视觉轮定）
+   全项目原来十几处按钮各写各的 `rounded border px-3 py-1`——
+   同一个「次要按钮」至少有三种高度/两种字色。收成三档：
+   ============================================================ */
+
+/* 基底：所有按钮共用的尺寸与过渡。不用在 className 里再写高度。 */
+.btn {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5
+         text-xs font-medium transition-colors select-none
+         disabled:cursor-not-allowed disabled:opacity-40;
+}
+/* 主行动：一个屏最多一个（批准研究 / 保存 / 新建） */
+.btn-primary {
+  @apply btn bg-accent text-white hover:bg-blue-700 active:bg-blue-800;
+}
+/* 次要行动：导出、归档、还原——看得见但不抢眼 */
+.btn-ghost {
+  @apply btn border border-line bg-white text-muted
+         hover:border-gray-300 hover:bg-gray-50 hover:text-ink;
+}
+/* 危险：不可逆操作才用（彻底删除）。红色自带语义，不需要再解释 */
+.btn-danger {
+  @apply btn border border-red-200 bg-white text-red-600
+         hover:border-red-300 hover:bg-red-50;
+}
+/* 对话框里的确认按钮用实心——确认动作是那一屏的主行动 */
+.btn-danger-solid {
+  @apply btn bg-red-600 text-white hover:bg-red-700;
+}
+/* 键盘可达性的底线：Tab 过来要看得见焦点在哪 */
+.btn:focus-visible,
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+
+/* 骨架屏：加载中的占位轮廓。比「加载中…」三个字好在
+   ① 暗示了即将出现的布局（列表就是一条条横条）
+   ② shimmer 给「在动」一个持续的视觉证据 */
+@keyframes skel-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+.skel {
+  @apply rounded bg-gray-100;
+  background-image: linear-gradient(90deg, transparent, rgba(255,255,255,.7), transparent);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.6s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skel { animation: none !important; }
+}
+
+/* ============================================================
    工作流视图的视觉系统
    设计目标：**滚动时眼睛能落到某个点上**，而不是读一片文字。
    三条手段：① 左侧时间轴给出纵向节奏 ② 状态点用形状区分
@@ -107,10 +164,12 @@ body { @apply bg-gray-50 text-ink antialiased; }
   * { transition-duration: .01ms !important; }
 }
 
-/* 大环节标题吸顶，滚过长规划时仍知道自己在哪 */
+/* 大环节标题吸顶，滚过长规划时仍知道自己在哪。
+   top:41px 是进度轨（PhaseRail）的高度+边框——
+   轨在更上层（z-20），环节头要停在它下面，否则被盖住。 */
 .wf-phase-head {
   position: sticky;
-  top: 0;
+  top: 41px;
   z-index: 10;
   backdrop-filter: saturate(180%) blur(8px);
 }

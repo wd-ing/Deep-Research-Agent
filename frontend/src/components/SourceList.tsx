@@ -68,7 +68,18 @@ export function SourceList({
         </div>
       )
     }
-    return <div className="px-3 py-4 text-xs text-muted">来源库加载中…</div>
+    // 骨架条轮廓和真实条目同构：标题一行 + 域名片段一行。
+    // 比「加载中…」好——它预告了布局，shimmer 同时是「在动」的证据。
+    return (
+      <div className="space-y-2.5 px-3 py-4" aria-busy="true" aria-label="来源库加载中">
+        {Array.from({ length: 7 }).map((_, i) => (
+          <div key={i} className="space-y-1.5">
+            <div className="skel h-3.5 w-4/5" />
+            <div className="skel h-2.5 w-2/5" />
+          </div>
+        ))}
+      </div>
+    )
   }
 
   const shown = groups.filter((g) => g.items.length > 0)

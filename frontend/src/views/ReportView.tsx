@@ -635,6 +635,27 @@ export function ReportView({
           </section>
         )}
       </div>
+
+      {/* 回到顶部（E5）：报告常到 4 万字，读到底要回目录只能硬滚。
+          滚过 ~10% 才出现——刚打开时屏幕上没有它需要挡的东西。
+          滚的是外层容器（scrollRef），不是 window。 */}
+      <button
+        onClick={() => {
+          const el = scrollRef.current
+          if (!el) return
+          const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+          el.scrollTo({ top: 0, behavior: smooth ? 'smooth' : 'auto' })
+        }}
+        aria-hidden={pct < 10}
+        tabIndex={pct < 10 ? -1 : 0}
+        className={[
+          'fixed bottom-6 right-6 z-30 flex h-9 w-9 items-center justify-center',
+          'rounded-full border border-line bg-white text-muted shadow-md',
+          'transition-all duration-200 hover:text-ink print:hidden',
+          pct < 10 ? 'pointer-events-none translate-y-2 opacity-0' : 'opacity-100',
+        ].join(' ')}
+        title="回到顶部"
+      >↑</button>
     </>
   )
 }

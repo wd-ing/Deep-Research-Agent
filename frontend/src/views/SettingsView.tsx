@@ -15,7 +15,7 @@ interface ConfigResp {
  *  配置在启动时读一次。「保存即生效」是个谎言，这里明说：保存后重启生效。
  *  （用户定的 v1 范围：查看 + 编辑 + 保存后提示重启。）
  */
-export function SettingsView({ onNotify }: { onNotify: (m: string) => void }) {
+export function SettingsView({ onNotify }: { onNotify: (m: string, kind?: 'err' | 'ok') => void }) {
   const [cfg, setCfg] = useState<ConfigResp | null>(null)
   const [text, setText] = useState('')
   const [loadErr, setLoadErr] = useState<string | null>(null)
@@ -37,7 +37,7 @@ export function SettingsView({ onNotify }: { onNotify: (m: string) => void }) {
       .then(() => {
         setSavedAt(Date.now())
         setCfg((c) => (c ? { ...c, content: text } : c))
-        onNotify('已保存 models.yaml——重启后端服务后生效')
+        onNotify('已保存 models.yaml——重启后端服务后生效', 'ok')
       })
       .catch((e) => onNotify(`保存失败：${(e as Error).message}`))
       .finally(() => setSaving(false))
@@ -97,16 +97,12 @@ export function SettingsView({ onNotify }: { onNotify: (m: string) => void }) {
             {dirty && (
               <button
                 onClick={() => { setText(cfg.content); setSavedAt(null) }}
-                className="rounded border border-line px-3 py-1 text-xs text-muted hover:bg-gray-50"
+                className="btn-ghost"
               >
                 还原
               </button>
             )}
-            <button
-              onClick={save}
-              disabled={!dirty || saving}
-              className="rounded bg-accent px-4 py-1.5 text-xs text-white hover:bg-blue-700 disabled:opacity-40"
-            >
+            <button onClick={save} disabled={!dirty || saving} className="btn-primary">
               {saving ? '保存中…' : '保存'}
             </button>
           </div>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { api } from '../useSession'
 import type { Folder, SearchHit, SessionSummary, SourceLibrary } from '../types'
 import { FolderTree, buildTree, findNodeById, subtreeIds, folderChoices } from './FolderTree'
+import { ago, tokens } from '../lib/format'
 import { Menu, MenuItem } from './Menu'
 import { ConfirmDialog } from './ConfirmDialog'
 import { SourceList } from './SourceList'
@@ -26,22 +27,7 @@ function useTick(ms = 30_000) {
   }, [ms])
 }
 
-/** 相对时间。列表里比绝对时间好用（「2 小时前」比「2026-10-11T05:39」）。 */
-function ago(iso: string): string {
-  const t = new Date(iso).getTime()
-  if (!t) return ''
-  const s = (Date.now() - t) / 1000
-  if (s < 60) return '刚刚'
-  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`
-  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`
-  if (s < 86400 * 30) return `${Math.floor(s / 86400)} 天前`
-  return new Date(t).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
-}
-
-function tokens(n: number): string {
-  if (!n) return ''
-  return n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`
-}
+// ago/tokens 提到 lib/format——欢迎面板（E3）也要用同一套写法。
 
 /** 一条会话。**hover 才出操作按钮**，平时干净。 */
 function SessionRow({
@@ -213,7 +199,7 @@ function SessionRow({
 export function Sidebar({
   list, trash, cur, folders, onPick, onChanged, onNew, pane, onPane,
   lib, libErr, onRetryLib, srcQuery, onSrcQuery, srcCur, onPickSource, onIgnoreSource,
-  onNotify, onSettings,
+  onNotify, onSettings, collapsed, onToggleCollapse,
 }: {
   list: SessionSummary[]
   /** 回收站内容。来自 `/api/trash`——不在 `list` 里（那边硬过滤 deleted_at）。 */
@@ -243,6 +229,10 @@ export function Sidebar({
   /** 设置页入口（D1）。挂在侧栏底部——路由跳转的事不归侧栏管，
    *  这里只负责把「点了」报上去。 */
   onSettings: () => void
+  /** 折叠态（视觉轮 E2）：侧栏收成 44px 图标轨，读报告时让出宽度。
+   *  状态在 App 持有——不进 URL：折叠是临时偏好，不该污染可分享链接。 */
+  collapsed: boolean
+  onToggleCollapse: () => void
 }) {
   const [filter, setFilter] = useState<Filter>('all')
   const [q, setQ] = useState('')
@@ -311,6 +301,49 @@ export function Sidebar({
     } catch (e) {
       onNotify(`${what}失败，状态没变：${(e as Error).message}`)
     }
+  }
+
+  // 折叠轨：保留四个最常用的动作（视图切换 / 新建 / 设置 / 展开）。
+  // 视图图标点一下=展开并切到那个视图——图标本身不做完整导航，
+  // 没有列表的「会话视图」没有内容可看。
+  if (collapsed) {
+    return (
+      <nav className="flex w-11 shrink-0 flex-col items-center border-r border-line bg-gray-50 py-2 print:hidden">
+        <button
+          onClick={onToggleCollapse}
+          title="展开侧栏"
+          className="mb-2 flex h-8 w-8 items-center justify-center rounded text-muted transition-colors hover:bg-white hover:text-ink"
+        >»</button>
+        <button
+          onClick={() => { onPane('session'); onToggleCollapse() }}
+          title="会话"
+          aria-pressed={pane === 'session'}
+          className={[
+            'mb-1 flex h-8 w-8 items-center justify-center rounded text-sm transition-colors',
+            pane === 'session' ? 'sel text-ink' : 'text-muted hover:bg-white hover:text-ink',
+          ].join(' ')}
+        >💬</button>
+        <button
+          onClick={() => { onPane('source'); onToggleCollapse() }}
+          title="来源库"
+          aria-pressed={pane === 'source'}
+          className={[
+            'mb-1 flex h-8 w-8 items-center justify-center rounded text-sm transition-colors',
+            pane === 'source' ? 'sel text-ink' : 'text-muted hover:bg-white hover:text-ink',
+          ].join(' ')}
+        >📚</button>
+        <button
+          onClick={onNew}
+          title="新建研究"
+          className="mt-1 flex h-8 w-8 items-center justify-center rounded text-sm text-accent transition-colors hover:bg-white"
+        >＋</button>
+        <button
+          onClick={onSettings}
+          title="设置"
+          className="mt-auto flex h-8 w-8 items-center justify-center rounded text-sm text-muted transition-colors hover:bg-white hover:text-ink"
+        >⚙</button>
+      </nav>
+    )
   }
 
   return (
@@ -499,14 +532,19 @@ export function Sidebar({
         />
       )}
 
-      {/* 底部工具区：设置（D1）。不抢主列表的注意力，放最底下 */}
-      <div className="mt-auto border-t border-line p-2">
+      {/* 底部工具区：设置（D1）+ 折叠（E2）。不抢主列表的注意力，放最底下 */}
+      <div className="mt-auto flex items-center gap-1 border-t border-line p-2">
         <button
           onClick={onSettings}
-          className="w-full rounded px-2 py-1 text-left text-xs text-muted transition-colors hover:bg-white hover:text-ink"
+          className="flex-1 rounded px-2 py-1 text-left text-xs text-muted transition-colors hover:bg-white hover:text-ink"
         >
           ⚙ 设置
         </button>
+        <button
+          onClick={onToggleCollapse}
+          title="收起侧栏（专注阅读）"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted transition-colors hover:bg-white hover:text-ink"
+        >«</button>
       </div>
     </nav>
   )

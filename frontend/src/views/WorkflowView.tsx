@@ -125,22 +125,98 @@ function StepRow({
   )
 }
 
+/** 四阶段进度轨（E4）：长列表的「一眼定位」——
+ *  原来想知道走到哪一步得滚回顶部找吸顶标题。
+ *  固定四格（规划→审批→写作→收尾）：跑过的打勾、在跑的呼吸、
+ *  没跑的灰着。点击=展开该环节并滚过去。 */
+function PhaseRail({
+  phases, onJump,
+}: {
+  phases: Phase[]
+  onJump: (key: string) => void
+}) {
+  const ORDER = ['规划', '审批', '写作', '收尾']
+  // 当前环节：有 running 步骤的那个；没有就是最后一个非空环节
+  const activeKey =
+    phases.find((p) => p.steps.some((s) => s.state === 'running'))?.key
+    ?? phases[phases.length - 1]?.key
+  const activeIdx = ORDER.indexOf(activeKey ?? '')
+
+  return (
+    <div className="sticky top-0 z-20 border-b border-line bg-white/95 backdrop-blur">
+      <div className="mx-auto flex max-w-3xl items-center px-6 py-2">
+        {ORDER.map((k, i) => {
+          const p = phases.find((x) => x.key === k)
+          const done = !!p && i < activeIdx
+          const active = k === activeKey
+          const warns = p ? p.steps.filter((s) => s.warn).length : 0
+          return (
+            <div key={k} className="flex min-w-0 flex-1 items-center">
+              {i > 0 && (
+                <span className={[
+                  'mx-1 h-px flex-1 min-w-2',
+                  i <= activeIdx ? 'bg-live/50' : 'bg-line',
+                ].join(' ')} />
+              )}
+              <button
+                onClick={() => p && onJump(k)}
+                disabled={!p}
+                title={warns ? `${p!.steps.filter((s) => s.warn).length} 处需注意` : undefined}
+                className={[
+                  'flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-xs transition-colors',
+                  p ? 'hover:bg-gray-100' : 'cursor-default',
+                ].join(' ')}
+              >
+                <span className={[
+                  'flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold',
+                  done ? 'bg-live/15 text-live'
+                    : active ? 'wf-running-dot bg-live text-white'
+                    : 'bg-gray-200 text-gray-400',
+                ].join(' ')}>
+                  {done ? '✓' : i + 1}
+                </span>
+                <span className={[
+                  'truncate',
+                  active ? 'font-medium text-ink'
+                    : done ? 'text-muted' : 'text-muted/60',
+                ].join(' ')}>
+                  {k}
+                </span>
+                {warns > 0 && (
+                  <span className="rounded bg-amber-100 px-1 text-2xs text-amber-800">{warns}</span>
+                )}
+              </button>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 /** 一个大环节。**标题吸顶**——滚过长规划时仍知道自己在哪一段。 */
 function PhaseBlock({
-  phase, defaultOpen, isLast, runningSince,
+  phase, defaultOpen, isLast, runningSince, openSignal,
 }: {
   phase: Phase
   defaultOpen: boolean
   isLast: boolean
   runningSince: number | null
+  /** 进度轨点了「跳过来」：变化时强制展开（展开后再滚，顺序不能反） */
+  openSignal: number
 }) {
   const [open, setOpen] = useState(defaultOpen)
   const running = phase.steps.some((s) => s.state === 'running')
   const warns = phase.steps.filter((s) => s.warn && s.state !== 'running').length
   const labelW = labelColWidth(phase.steps)
 
+  useEffect(() => {
+    if (openSignal > 0) setOpen(true)
+  }, [openSignal])
+
   return (
-    <section className="border-b border-line last:border-b-0">
+    <section id={`wfphase-${phase.key}`}
+      className="border-b border-line last:border-b-0">
       <button
         onClick={() => setOpen((o) => !o)}
         className="wf-phase-head flex w-full items-center gap-2.5 bg-gray-50/90 px-5 py-2.5 text-left transition-colors hover:bg-gray-100/80"
@@ -215,6 +291,18 @@ export function WorkflowView({
 }) {
   const endRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
+  // 进度轨跳转信号：记录每个环节最近一次「被点名」的时刻，
+  // PhaseBlock 看到变化就展开——展开必须先于滚动，否则滚不到。
+  const [openSig, setOpenSig] = useState<Record<string, number>>({})
+  const jumpToPhase = (key: string) => {
+    setOpenSig((o) => ({ ...o, [key]: Date.now() }))
+    // 展开是重渲染，滚动要等 DOM 长出高度——一帧之后再滚
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`wfphase-${key}`)
+      const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      el?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' })
+    })
+  }
 
   // 自动滚到底——但**用户一上滑就停**（正在读时被人拽走最烦人）
   useEffect(() => {
@@ -256,6 +344,7 @@ export function WorkflowView({
 
   return (
     <div className="pb-4">
+      <PhaseRail phases={phases} onJump={jumpToPhase} />
       {phases.map((p, i) => (
         <PhaseBlock
           key={p.key}
@@ -264,6 +353,7 @@ export function WorkflowView({
           defaultOpen={running ? i === phases.length - 1 : true}
           isLast={i === phases.length - 1}
           runningSince={runningSince}
+          openSignal={openSig[p.key] ?? 0}
         />
       ))}
       {/* 活性信号：累计 token。SSE 不推这个（频率不值一条事件），

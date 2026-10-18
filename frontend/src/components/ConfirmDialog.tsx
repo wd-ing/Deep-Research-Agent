@@ -56,17 +56,11 @@ export function ConfirmDialog({
           />
         )}
         <div className="mt-5 flex justify-end gap-2">
-          <button
-            onClick={onCancel}
-            className="rounded border border-line px-3 py-1.5 text-xs text-muted hover:bg-gray-50"
-          >取消</button>
+          <button onClick={onCancel} className="btn-ghost">取消</button>
           <button
             autoFocus={!input}
             onClick={onConfirm}
-            className={[
-              'rounded px-3 py-1.5 text-xs text-white',
-              danger ? 'bg-red-600 hover:bg-red-700' : 'bg-accent hover:bg-blue-700',
-            ].join(' ')}
+            className={danger ? 'btn-danger-solid' : 'btn-primary'}
           >{confirmText}</button>
         </div>
       </div>

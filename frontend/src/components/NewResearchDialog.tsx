@@ -78,16 +78,10 @@ export function NewResearchDialog({
         <div className="mt-5 flex items-center justify-between">
           <span className="text-2xs text-muted">⌘ / Ctrl + Enter 开始</span>
           <div className="flex gap-2">
-            <button
-              onClick={onCancel}
-              className="rounded border border-line px-3 py-1.5 text-xs text-muted hover:bg-gray-50"
-            >取消</button>
-            <button
-              onClick={submit}
-              disabled={!ok}
-              className="rounded bg-accent px-3 py-1.5 text-xs text-white
-                         hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
-            >{busy ? '正在创建…' : '开始研究'}</button>
+            <button onClick={onCancel} className="btn-ghost">取消</button>
+            <button onClick={submit} disabled={!ok} className="btn-primary">
+              {busy ? '正在创建…' : '开始研究'}
+            </button>
           </div>
         </div>
       </div>

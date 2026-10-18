@@ -13,6 +13,7 @@ import { Sidebar, type Pane } from './components/Sidebar'
 import { SourceDetail } from './components/SourceDetail'
 import { SettingsView } from './views/SettingsView'
 import { NewResearchDialog } from './components/NewResearchDialog'
+import { ago, tokens } from './lib/format'
 
 export default function App() {
   // ⚠️ sid / pane / srcCur 不是 state——它们由 URL hash 派生（router.ts）。
@@ -42,6 +43,9 @@ export default function App() {
 
   // ---- 新建研究对话框（替掉原生 prompt）----
   const [newOpen, setNewOpen] = useState(false)
+  // 侧栏折叠（E2 专注阅读）：内存态即可——不进 URL，
+  // 「我暂时想宽点看报告」不该变成分享链接的一部分。
+  const [sideCollapsed, setSideCollapsed] = useState(false)
 
   // 报告正文的滚动容器。目录跳转、阅读进度、当前节高亮全靠它——
   // 滚动的是这个容器，不是报告自己（报告是里面一块静态内容）。
@@ -253,6 +257,8 @@ export default function App() {
         onPickSource={(id) => nav({ name: 'sources', srcId: id })}
         onIgnoreSource={(id, ignore, reason) => void ignoreSource(id, ignore, reason)}
         onSettings={() => nav({ name: 'settings' })}
+        collapsed={sideCollapsed}
+        onToggleCollapse={() => setSideCollapsed((v) => !v)}
       />
 
       {/* 来源视图占满整个主区域：报告有 2 万字，来源详情是主内容，
@@ -304,9 +310,9 @@ export default function App() {
                     file:// 直开才会落空，落空就明说。 */}
                 <button
                   onClick={() => void navigator.clipboard.writeText(report)
-                    .then(() => s.notify('已复制报告 Markdown'))
+                    .then(() => s.notify('已复制报告 Markdown', 'ok'))
                     .catch(() => s.notify('复制失败：浏览器没给剪贴板权限'))}
-                  className="rounded border border-line px-3 py-1 text-xs text-muted hover:bg-gray-50"
+                  className="btn-ghost"
                 >
                   复制 MD
                 </button>
@@ -319,13 +325,13 @@ export default function App() {
                     a.href = url; a.download = name; a.click()
                     URL.revokeObjectURL(url)
                   }}
-                  className="rounded border border-line px-3 py-1 text-xs text-muted hover:bg-gray-50"
+                  className="btn-ghost"
                 >
                   下载 .md
                 </button>
                 <button
                   onClick={() => window.print()}
-                  className="rounded border border-line px-3 py-1 text-xs text-muted hover:bg-gray-50"
+                  className="btn-ghost"
                 >
                   打印 / PDF
                 </button>
@@ -335,7 +341,7 @@ export default function App() {
               <button
                 onClick={() => void s.archive(d.id).then(refresh).catch(
                     (e: unknown) => s.notify(`归档失败：${(e as Error).message}`))}
-                className="rounded border border-line px-3 py-1 text-xs text-muted hover:bg-gray-50"
+                className="btn-ghost"
               >
                 归档（不出现在默认列表）
               </button>
@@ -350,9 +356,50 @@ export default function App() {
           <RoundChart sid={sid} refreshKey={s.progress.length} />
         )}
 
+        {/* 欢迎面板（E3）：首屏不该只有一行提示。
+            三条信息：这是什么、入口在哪、以前在做什么（最近会话卡片）。 */}
         {s.view === 'idle' && !sid && (
-          <div className="flex flex-1 flex-col items-center justify-center text-muted">
-            <p className="text-sm">左侧「新建研究」，或点一条历史会话</p>
+          <div className="flex flex-1 items-start justify-center overflow-auto px-6 py-14">
+            <div className="w-full max-w-xl">
+              <h1 className="text-xl font-medium text-ink">深度研究</h1>
+              <p className="mt-2 max-w-md text-sm leading-6 text-muted">
+                提出一个问题，agent 会做多轮检索和评估，产出带逐句引用的长报告。
+                一场研究约 20–30 分钟，过程中随时可以离开，完成后回来看结果。
+              </p>
+              <button
+                onClick={() => setNewOpen(true)}
+                className="btn-primary mt-6 px-4 py-2 text-sm"
+              >
+                ＋ 新建研究
+              </button>
+              {list.filter((x) => !x.archived_at).length > 0 && (
+                <>
+                  <div className="mt-10 text-xs font-medium text-muted">继续之前的</div>
+                  <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {list.filter((x) => !x.archived_at).slice(0, 6).map((x) => (
+                      <button
+                        key={x.id}
+                        onClick={() => nav({ name: 'session', sid: x.id })}
+                        className="rounded-md border border-line bg-white px-3 py-2.5 text-left transition-shadow hover:shadow-sm"
+                      >
+                        <div className="truncate text-sm text-ink">
+                          {x.title || x.question}
+                        </div>
+                        <div className="mt-1 flex items-center gap-1.5 text-2xs text-muted">
+                          <span className={[
+                            'inline-block h-1.5 w-1.5 rounded-full',
+                            x.status === 'running' ? 'wf-running-dot bg-live' : 'bg-gray-300',
+                          ].join(' ')} />
+                          <span>{x.status === 'running' ? '进行中' : x.status === 'done' ? '已完成' : x.status}</span>
+                          <span>· {ago(x.created_at)}</span>
+                          {x.cost_tokens > 0 && <span>· {tokens(x.cost_tokens)} token</span>}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         )}
 
@@ -469,12 +516,19 @@ export default function App() {
         <div
           role="status"
           aria-live="polite"
-          className="fixed bottom-5 left-1/2 z-50 flex max-w-[min(600px,calc(100vw-32px))]
-                     -translate-x-1/2 items-start gap-2 rounded-md border border-red-200
-                     bg-white px-3.5 py-2.5 shadow-lg print:hidden"
+          className={[
+            'fixed bottom-5 left-1/2 z-50 flex max-w-[min(600px,calc(100vw-32px))]',
+            '-translate-x-1/2 items-start gap-2 rounded-md border bg-white',
+            'px-3.5 py-2.5 shadow-lg print:hidden',
+            s.notice.kind === 'err' ? 'border-red-200' : 'border-line',
+          ].join(' ')}
         >
-          <span className="mt-px shrink-0 text-red-500" aria-hidden>⚠</span>
-          <span className="min-w-0 flex-1 text-xs leading-relaxed text-ink">{s.notice}</span>
+          <span
+            className={s.notice.kind === 'err'
+              ? 'mt-px shrink-0 text-red-500' : 'mt-px shrink-0 text-live'}
+            aria-hidden
+          >{s.notice.kind === 'err' ? '⚠' : '✓'}</span>
+          <span className="min-w-0 flex-1 text-xs leading-relaxed text-ink">{s.notice.msg}</span>
           <button
             onClick={() => s.setNotice(null)}
             aria-label="关闭提示"
