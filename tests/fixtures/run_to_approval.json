@@ -1,5 +1,4 @@
 {
- "note": "真实运行录下的 SSE（跑到审批点）。2026-10-18 MiniMax-M3，session s_90b3c5d17069（v13，闸门前移+批量化版本）。",
  "events": [
   {
    "at": 0.5,
@@ -207,7 +206,157 @@
    }
   },
   {
-   "at": 11.5,
+   "at": 10.14,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 1,
+     "of": 10,
+     "lang": "zh-CN",
+     "query": "固态电池 硫化物 氧化物 聚合物 卤化物 技术路线对比 优劣",
+     "hits": 5
+    }
+   }
+  },
+  {
+   "at": 10.28,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 2,
+     "of": 10,
+     "lang": "zh-CN",
+     "query": "全固态电池 固-固界面 良率 放大效应 工程化难题 100Ah软包",
+     "hits": 3
+    }
+   }
+  },
+  {
+   "at": 10.42,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 3,
+     "of": 10,
+     "lang": "zh-CN",
+     "query": "固态电池 产业化时间表 2027 2028 丰田 国轩高科 半固态过渡",
+     "hits": 8
+    }
+   }
+  },
+  {
+   "at": 10.56,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 4,
+     "of": 10,
+     "lang": "zh-CN",
+     "query": "固态电池 应用场景 两轮车 用户侧储能 人形机器人 低空经济 纯锂 鹏辉",
+     "hits": 6
+    }
+   }
+  },
+  {
+   "at": 10.7,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 5,
+     "of": 10,
+     "lang": "zh-CN",
+     "query": "中国 固态电池 国家标准 产学研协同创新平台 工信部 新型储能行动方案",
+     "hits": 4
+    }
+   }
+  },
+  {
+   "at": 10.84,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 6,
+     "of": 10,
+     "lang": "en",
+     "query": "solid-state battery sulfide oxide polymer halide electrolyte route comparison Toyota CATL",
+     "hits": 2
+    }
+   }
+  },
+  {
+   "at": 10.98,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 7,
+     "of": 10,
+     "lang": "en",
+     "query": "all-solid-state battery solid-solid interface scaling problem pouch cell yield ionic conductivity drop",
+     "hits": 7
+    }
+   }
+  },
+  {
+   "at": 11.12,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 8,
+     "of": 10,
+     "lang": "en",
+     "query": "solid-state battery commercialization timeline 2027 2028 Toyota GouV semi-solid transition",
+     "hits": 5
+    }
+   }
+  },
+  {
+   "at": 11.26,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 9,
+     "of": 10,
+     "lang": "en",
+     "query": "solid-state battery applications e-scooter BESS humanoid robot eVTOL GGII 100GWh",
+     "hits": 3
+    }
+   }
+  },
+  {
+   "at": 11.4,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 10,
+     "of": 10,
+     "lang": "en",
+     "query": "China solid-state battery national standard 8-point policy R&D consortium industry ecosystem",
+     "hits": 8
+    }
+   }
+  },
+  {
+   "at": 11.54,
    "event": {
     "kind": "progress",
     "node": "retrieve",
@@ -259,14 +408,479 @@
    }
   },
   {
-   "at": 12.0,
+   "at": 12.04,
    "event": {
     "kind": "node",
     "node": "extract"
    }
   },
   {
-   "at": 12.5,
+   "at": 12.12,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_ac9c1c789a49",
+     "title": "Multiple headline companies set the mass production timeline of sulfide all-solid-state batteries - EnergyTrend",
+     "nature": "media"
+    }
+   }
+  },
+  {
+   "at": 12.2,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_70c88b140132",
+     "title": "Solid-State Electrolyte Materials: Sulfide, Oxide, Halide, and Polymer Electrolyte Screening | Winigen Materials",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 12.28,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_65386cbe5f57",
+     "title": "Solid-State Electrolyte Materials Landscape 2026: Oxide, Sulfide, and Polymer Approaches Compared",
+     "nature": "aggregator"
+    }
+   }
+  },
+  {
+   "at": 12.36,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_afe7faa12c36",
+     "title": "Solid State Battery: Comprehensive and Detailed Introduction",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 12.44,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_cfb18b87404e",
+     "title": "Japan Solid Electrolyte Market to Attain Valuation of USD 1.31 Million by 2032 | Solid Polymer Electrolyte to Keep Dominating the Market Says Astute Analytica",
+     "nature": "media"
+    }
+   }
+  },
+  {
+   "at": 12.52,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_8492feac08b2",
+     "title": "Solid-State Batteries: Key Challenges To Commercialization",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 12.6,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_f16f85b38c3e",
+     "title": "Solid-State Battery Status in 2026: Chemistry, Challenges & Commercialization",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 12.68,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_5d00bf5f72c8",
+     "title": "Research Progress of Electrodes, Electrolytes and Interfaces in Solid-State Batteries",
+     "nature": "research"
+    }
+   }
+  },
+  {
+   "at": 12.76,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_d1df0eb18f65",
+     "title": "Recent Developments in Solid-State (and other) Battery Materials",
+     "nature": "media"
+    }
+   }
+  },
+  {
+   "at": 12.84,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_a23167d8db16",
+     "title": "Toyota plots solid-state battery timeline for future EVs",
+     "nature": "media"
+    }
+   }
+  },
+  {
+   "at": 12.92,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_6261880ec375",
+     "title": "Toyota's Solid-State Battery Roadmap: Reality vs. Rumor",
+     "nature": "community"
+    }
+   }
+  },
+  {
+   "at": 13.0,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_75b018a019a3",
+     "title": "Toyota (TM) Unites With Idemitsu to Make Solid-State Batteries",
+     "nature": "media"
+    }
+   }
+  },
+  {
+   "at": 13.08,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_a6f84ae4c287",
+     "title": "UPDATE 2-Toyota to roll out solid-state battery EVs globally in a couple of years",
+     "nature": "media"
+    }
+   }
+  },
+  {
+   "at": 13.16,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_a2909b1d1808",
+     "title": "Toyota’s Secret Weapon: The Solid-State Battery Shake-Up",
+     "nature": "aggregator"
+    }
+   }
+  },
+  {
+   "at": 13.24,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_501fdd0167fd",
+     "title": "Solid-State Battery News: Samsung & Toyota | Monolith",
+     "nature": "aggregator"
+    }
+   }
+  },
+  {
+   "at": 13.32,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_77d88e47aa60",
+     "title": "EHang Achieves Breakthrough: 48-Min Flight with First eVTOL Solid-State Battery",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 13.4,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_e1bc16ef8843",
+     "title": "Humanoid Robots Near Commercialization as Solid-State Batteries Advance",
+     "nature": "media"
+    }
+   }
+  },
+  {
+   "at": 13.48,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_36c511336150",
+     "title": "EHang and Inx Achieve Breakthrough in Solid-State Battery Technology: EH216-S Completes World’s First eVTOL Solid-State Battery Flight Test",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 13.56,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_abd85ad276aa",
+     "title": "Powering Humanoid Robots: How Solid-State Batteries Become the Core",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 13.64,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_acc7fef5ec73",
+     "title": "All-Solid-State Battery Commercialization for Humanoid Robots: How Far Have We Come? [Global Issue Report Season 2]",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 13.72,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_ed7c9c15755b",
+     "title": "Solid-State Batteries' First Test Bed Is Humanoid Robots, Not EVs — BigGo Finance",
+     "nature": "media"
+    }
+   }
+  },
+  {
+   "at": 13.8,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_2f761fd4de21",
+     "title": "Global and China Solid State Battery Industry Report 2023: Mass-Production Expected in 2024 with Nissan, Samsung, and Montavista Energy Technologies at the Forefront",
+     "nature": "aggregator"
+    }
+   }
+  },
+  {
+   "at": 13.88,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_d149a384a39c",
+     "title": "Solid-State Batteries: China's Next EV Race - CKGSB Knowledge",
+     "nature": "research"
+    }
+   }
+  },
+  {
+   "at": 13.96,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_7f7ea074d83b",
+     "title": "China solicits public opinion on first national standard for solid-state EV batteries",
+     "nature": "media"
+    }
+   }
+  },
+  {
+   "at": 14.04,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_c517ed649d2a",
+     "title": "china Solid-State Battery Market Size, Share,Trends, Growth Analysis Report, 2030",
+     "nature": "aggregator"
+    }
+   }
+  },
+  {
+   "at": 14.12,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 1,
+     "batches": 10,
+     "done": 6,
+     "of": 6
+    }
+   }
+  },
+  {
+   "at": 14.2,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 2,
+     "batches": 10,
+     "done": 6,
+     "of": 6
+    }
+   }
+  },
+  {
+   "at": 14.28,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 3,
+     "batches": 10,
+     "done": 6,
+     "of": 6
+    }
+   }
+  },
+  {
+   "at": 14.36,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 4,
+     "batches": 10,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 14.44,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 5,
+     "batches": 10,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 14.52,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 6,
+     "batches": 10,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 14.6,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 7,
+     "batches": 10,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 14.68,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 8,
+     "batches": 10,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 14.76,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 9,
+     "batches": 10,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 14.84,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 10,
+     "batches": 10,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 14.92,
    "event": {
     "kind": "progress",
     "node": "extract",
@@ -283,7 +897,7 @@
    }
   },
   {
-   "at": 14.0,
+   "at": 16.42,
    "event": {
     "kind": "progress",
     "node": "extract",
@@ -309,14 +923,78 @@
    }
   },
   {
-   "at": 14.5,
+   "at": 16.92,
    "event": {
     "kind": "node",
     "node": "gate"
    }
   },
   {
-   "at": 15.5,
+   "at": 17.07,
+   "event": {
+    "kind": "progress",
+    "node": "gate",
+    "event": {
+     "kind": "gate_batch",
+     "batch": 1,
+     "batches": 4,
+     "judged": 12,
+     "on_topic": 9,
+     "off_topic": 3,
+     "missing": 0
+    }
+   }
+  },
+  {
+   "at": 17.22,
+   "event": {
+    "kind": "progress",
+    "node": "gate",
+    "event": {
+     "kind": "gate_batch",
+     "batch": 2,
+     "batches": 4,
+     "judged": 12,
+     "on_topic": 12,
+     "off_topic": 0,
+     "missing": 0
+    }
+   }
+  },
+  {
+   "at": 17.37,
+   "event": {
+    "kind": "progress",
+    "node": "gate",
+    "event": {
+     "kind": "gate_batch",
+     "batch": 3,
+     "batches": 4,
+     "judged": 12,
+     "on_topic": 12,
+     "off_topic": 0,
+     "missing": 0
+    }
+   }
+  },
+  {
+   "at": 17.52,
+   "event": {
+    "kind": "progress",
+    "node": "gate",
+    "event": {
+     "kind": "gate_batch",
+     "batch": 4,
+     "batches": 4,
+     "judged": 1,
+     "on_topic": 1,
+     "off_topic": 0,
+     "missing": 0
+    }
+   }
+  },
+  {
+   "at": 17.92,
    "event": {
     "kind": "progress",
     "node": "gate",
@@ -338,7 +1016,7 @@
    }
   },
   {
-   "at": 16.0,
+   "at": 18.42,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -346,14 +1024,14 @@
    }
   },
   {
-   "at": 16.5,
+   "at": 18.92,
    "event": {
     "kind": "node",
     "node": "assess"
    }
   },
   {
-   "at": 17.5,
+   "at": 19.92,
    "event": {
     "kind": "progress",
     "node": "assess",
@@ -395,14 +1073,14 @@
    }
   },
   {
-   "at": 18.0,
+   "at": 20.42,
    "event": {
     "kind": "node",
     "node": "apply_revision"
    }
   },
   {
-   "at": 18.2,
+   "at": 20.62,
    "event": {
     "kind": "progress",
     "node": "apply_revision",
@@ -430,7 +1108,7 @@
    }
   },
   {
-   "at": 19.0,
+   "at": 21.42,
    "event": {
     "kind": "node",
     "node": "await_approval"

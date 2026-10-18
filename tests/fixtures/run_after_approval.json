@@ -1,5 +1,4 @@
 {
- "note": "真实运行录下的 SSE（审批后到写完）。2026-10-18 MiniMax-M3，session s_90b3c5d17069（v13）；draft 增量为终稿真实切片。",
  "events": [
   {
    "at": 0.5,
@@ -65,7 +64,157 @@
    }
   },
   {
-   "at": 4.5,
+   "at": 3.14,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 1,
+     "of": 10,
+     "lang": "zh-CN",
+     "query": "硫化物 氧化物 聚合物 卤化物 固态电解质 离子电导率 对比 量产成本",
+     "hits": 5
+    }
+   }
+  },
+  {
+   "at": 3.28,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 2,
+     "of": 10,
+     "lang": "zh-CN",
+     "query": "卤化物固态电解质 代表企业 产业化进度",
+     "hits": 3
+    }
+   }
+  },
+  {
+   "at": 3.42,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 3,
+     "of": 10,
+     "lang": "zh-CN",
+     "query": "硫化物 固固界面 失效 100Ah 软包 循环寿命 实验",
+     "hits": 8
+    }
+   }
+  },
+  {
+   "at": 3.56,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 4,
+     "of": 10,
+     "lang": "zh-CN",
+     "query": "Li6PS5Cl Li10GeP2S12 克级 公斤级 离子电导率 下降 原因",
+     "hits": 6
+    }
+   }
+  },
+  {
+   "at": 3.7,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 5,
+     "of": 10,
+     "lang": "zh-CN",
+     "query": "全固态电池 成本 400美元 800美元 kWh 拆分 硫化锂 Li2S",
+     "hits": 4
+    }
+   }
+  },
+  {
+   "at": 3.84,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 6,
+     "of": 10,
+     "lang": "en",
+     "query": "sulfide oxide polymer halide solid electrolyte ionic conductivity trade-off comparison",
+     "hits": 2
+    }
+   }
+  },
+  {
+   "at": 3.98,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 7,
+     "of": 10,
+     "lang": "en",
+     "query": "sulfide solid-state battery scale-up 0.1Ah to 100Ah pouch cell cycle life failure",
+     "hits": 7
+    }
+   }
+  },
+  {
+   "at": 4.12,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 8,
+     "of": 10,
+     "lang": "en",
+     "query": "Li6PS5Cl Li10GeP2S12 gram-scale kilogram-scale ionic conductivity drop cause",
+     "hits": 5
+    }
+   }
+  },
+  {
+   "at": 4.26,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 9,
+     "of": 10,
+     "lang": "en",
+     "query": "all-solid-state battery cost breakdown $400 $800 kWh Li2S share",
+     "hits": 3
+    }
+   }
+  },
+  {
+   "at": 4.4,
+   "event": {
+    "kind": "progress",
+    "node": "retrieve",
+    "event": {
+     "kind": "search_query",
+     "i": 10,
+     "of": 10,
+     "lang": "en",
+     "query": "dry electrode isostatic pressing solid-state battery manufacturing line compatibility",
+     "hits": 8
+    }
+   }
+  },
+  {
+   "at": 4.54,
    "event": {
     "kind": "progress",
     "node": "retrieve",
@@ -121,14 +270,418 @@
    }
   },
   {
-   "at": 5.0,
+   "at": 5.04,
    "event": {
     "kind": "node",
     "node": "extract"
    }
   },
   {
-   "at": 5.5,
+   "at": 5.12,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_cb664ad637a0",
+     "title": "Sulfide vs Halide vs Oxide Solid Electrolytes: A Practical Comparison for ASSB Research | Xnergy Materials",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 5.2,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_105e22552a7e",
+     "title": "Frontiers | Interface failure mechanisms and engineering strategies in sulfide and halide solid electrolytes for lithium metal solid-state batteries",
+     "nature": "research"
+    }
+   }
+  },
+  {
+   "at": 5.28,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_9bc584ebc592",
+     "title": "Frontiers | Ionic and Electronic Conductivities of Lithium Argyrodite Li6PS5Cl Electrolytes Prepared via Wet Milling and Post-Annealing",
+     "nature": "research"
+    }
+   }
+  },
+  {
+   "at": 5.36,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_50ce80fb8a3f",
+     "title": "Li6PS5Cl Solid Electrolyte Data Guide",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 5.44,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_b95c399402ee",
+     "title": "Argyrodite Li6PS5Cl Sulfide Solid Electrolyte Scale-Up Market, Outlook and Forecast 2026-2034",
+     "nature": "aggregator"
+    }
+   }
+  },
+  {
+   "at": 5.52,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_120d9536ad43",
+     "title": "ENSEMBLE3 » Chemically Understanding the Liquid-Phase Synthesis of Argyrodite Solid Electrolyte Li6PS5Cl with the Highest Ionic Conductivity for All-Solid-State Batteries",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 5.6,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_37b163d6af8c",
+     "title": "The high cost of all-solid-state batteries is not due to expensive materials｜ZERO ─ 科学と事業のあいだ で",
+     "nature": "community"
+    }
+   }
+  },
+  {
+   "at": 5.68,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_f61775521df7",
+     "title": "EV Solid-state Battery Market Statistics, Size & Share, 2031",
+     "nature": "aggregator"
+    }
+   }
+  },
+  {
+   "at": 5.76,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_886067bd6366",
+     "title": "Solid-State Battery Costs 2027: Price Projections & Analysis",
+     "nature": "aggregator"
+    }
+   }
+  },
+  {
+   "at": 5.84,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_68fb5340b492",
+     "title": "Solid State Battery Market Size & Share Report, 2026- 2033",
+     "nature": "research"
+    }
+   }
+  },
+  {
+   "at": 5.92,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_4af8b29330be",
+     "title": "Isostatic Pressing: The Core Process Essential for Solid-State Battery Mass Production",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 6.0,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_c1d2714830ee",
+     "title": "Solid-State Battery Manufacturing Equipment Guide 2026–2027",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 6.08,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_4374b5f76b5f",
+     "title": "Solvent-Free Breakthrough: LEAD Slashes Costs 15%+ and Paves the Way for Solid-State Battery Mass Production",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 6.16,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_5b71562710b1",
+     "title": "Dry Electrode Manufacturing for Solid-State Batteries: Process Challenges and Patent Landscape",
+     "nature": "aggregator"
+    }
+   }
+  },
+  {
+   "at": 6.24,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_f4b414832b24",
+     "title": "The process differences between solid-state batteries and traditional liquid batteries",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 6.32,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "extract_source",
+     "source_id": "src_0dd4d8e38665",
+     "title": "BWP, LiCAP, and Siemens Establish Strategic Partnership for Mass Production of Dry Electrode Manufacturing Equipment",
+     "nature": "first_party"
+    }
+   }
+  },
+  {
+   "at": 6.4,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 1,
+     "batches": 14,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 6.48,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 2,
+     "batches": 14,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 6.56,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 3,
+     "batches": 14,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 6.64,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 4,
+     "batches": 14,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 6.72,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 5,
+     "batches": 14,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 6.8,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 6,
+     "batches": 14,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 6.88,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 7,
+     "batches": 14,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 6.96,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 8,
+     "batches": 14,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 7.04,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 9,
+     "batches": 14,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 7.12,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 10,
+     "batches": 14,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 7.2,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 11,
+     "batches": 14,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 7.28,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 12,
+     "batches": 14,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 7.36,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 13,
+     "batches": 14,
+     "done": 5,
+     "of": 5
+    }
+   }
+  },
+  {
+   "at": 7.44,
+   "event": {
+    "kind": "progress",
+    "node": "extract",
+    "event": {
+     "kind": "summarize_batch",
+     "batch": 14,
+     "batches": 14,
+     "done": 4,
+     "of": 4
+    }
+   }
+  },
+  {
+   "at": 7.52,
    "event": {
     "kind": "progress",
     "node": "extract",
@@ -145,7 +698,7 @@
    }
   },
   {
-   "at": 7.0,
+   "at": 9.02,
    "event": {
     "kind": "progress",
     "node": "extract",
@@ -171,14 +724,94 @@
    }
   },
   {
-   "at": 7.5,
+   "at": 9.52,
    "event": {
     "kind": "node",
     "node": "gate"
    }
   },
   {
-   "at": 8.5,
+   "at": 9.67,
+   "event": {
+    "kind": "progress",
+    "node": "gate",
+    "event": {
+     "kind": "gate_batch",
+     "batch": 1,
+     "batches": 5,
+     "judged": 12,
+     "on_topic": 6,
+     "off_topic": 6,
+     "missing": 0
+    }
+   }
+  },
+  {
+   "at": 9.82,
+   "event": {
+    "kind": "progress",
+    "node": "gate",
+    "event": {
+     "kind": "gate_batch",
+     "batch": 2,
+     "batches": 5,
+     "judged": 12,
+     "on_topic": 12,
+     "off_topic": 0,
+     "missing": 0
+    }
+   }
+  },
+  {
+   "at": 9.97,
+   "event": {
+    "kind": "progress",
+    "node": "gate",
+    "event": {
+     "kind": "gate_batch",
+     "batch": 3,
+     "batches": 5,
+     "judged": 12,
+     "on_topic": 12,
+     "off_topic": 0,
+     "missing": 0
+    }
+   }
+  },
+  {
+   "at": 10.12,
+   "event": {
+    "kind": "progress",
+    "node": "gate",
+    "event": {
+     "kind": "gate_batch",
+     "batch": 4,
+     "batches": 5,
+     "judged": 12,
+     "on_topic": 12,
+     "off_topic": 0,
+     "missing": 0
+    }
+   }
+  },
+  {
+   "at": 10.27,
+   "event": {
+    "kind": "progress",
+    "node": "gate",
+    "event": {
+     "kind": "gate_batch",
+     "batch": 5,
+     "batches": 5,
+     "judged": 2,
+     "on_topic": 2,
+     "off_topic": 0,
+     "missing": 0
+    }
+   }
+  },
+  {
+   "at": 10.52,
    "event": {
     "kind": "progress",
     "node": "gate",
@@ -200,7 +833,7 @@
    }
   },
   {
-   "at": 9.0,
+   "at": 11.02,
    "event": {
     "kind": "thinking",
     "stage": "assess",
@@ -208,14 +841,14 @@
    }
   },
   {
-   "at": 9.5,
+   "at": 11.52,
    "event": {
     "kind": "node",
     "node": "assess"
    }
   },
   {
-   "at": 10.5,
+   "at": 12.52,
    "event": {
     "kind": "progress",
     "node": "assess",
@@ -247,14 +880,14 @@
    }
   },
   {
-   "at": 11.0,
+   "at": 13.02,
    "event": {
     "kind": "node",
     "node": "apply_revision"
    }
   },
   {
-   "at": 11.2,
+   "at": 13.22,
    "event": {
     "kind": "progress",
     "node": "apply_revision",
@@ -282,14 +915,14 @@
    }
   },
   {
-   "at": 12.0,
+   "at": 14.02,
    "event": {
     "kind": "node",
     "node": "assess"
    }
   },
   {
-   "at": 13.0,
+   "at": 15.02,
    "event": {
     "kind": "progress",
     "node": "assess",
@@ -327,14 +960,14 @@
    }
   },
   {
-   "at": 14.0,
+   "at": 16.02,
    "event": {
     "kind": "node",
     "node": "write"
    }
   },
   {
-   "at": 14.5,
+   "at": 16.52,
    "event": {
     "kind": "progress",
     "node": "write",
@@ -348,7 +981,7 @@
    }
   },
   {
-   "at": 15.5,
+   "at": 17.52,
    "event": {
     "kind": "progress",
     "node": "write",
@@ -362,7 +995,7 @@
    }
   },
   {
-   "at": 16.0,
+   "at": 18.02,
    "event": {
     "kind": "progress",
     "node": "write",
@@ -376,7 +1009,7 @@
    }
   },
   {
-   "at": 16.5,
+   "at": 18.52,
    "event": {
     "kind": "draft",
     "stage": "write_section",
@@ -384,7 +1017,7 @@
    }
   },
   {
-   "at": 17.3,
+   "at": 19.32,
    "event": {
     "kind": "draft",
     "stage": "write_section",
@@ -392,7 +1025,7 @@
    }
   },
   {
-   "at": 18.1,
+   "at": 20.12,
    "event": {
     "kind": "draft",
     "stage": "write_section",
@@ -400,7 +1033,7 @@
    }
   },
   {
-   "at": 18.9,
+   "at": 20.92,
    "event": {
     "kind": "draft",
     "stage": "write_section",
@@ -408,7 +1041,7 @@
    }
   },
   {
-   "at": 19.7,
+   "at": 21.72,
    "event": {
     "kind": "draft",
     "stage": "write_section",
@@ -416,7 +1049,7 @@
    }
   },
   {
-   "at": 20.5,
+   "at": 22.52,
    "event": {
     "kind": "draft",
     "stage": "write_section",
@@ -424,7 +1057,7 @@
    }
   },
   {
-   "at": 21.3,
+   "at": 23.32,
    "event": {
     "kind": "draft",
     "stage": "write_section",
@@ -432,7 +1065,7 @@
    }
   },
   {
-   "at": 22.1,
+   "at": 24.12,
    "event": {
     "kind": "draft",
     "stage": "write_section",
@@ -441,7 +1074,143 @@
    }
   },
   {
-   "at": 23.4,
+   "at": 24.97,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_task",
+     "task": "t1",
+     "covers": [
+      "sec1"
+     ],
+     "ok": true,
+     "chars": 5155,
+     "reason": ""
+    }
+   }
+  },
+  {
+   "at": 25.82,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_task",
+     "task": "t2",
+     "covers": [
+      "sec2"
+     ],
+     "ok": true,
+     "chars": 3466,
+     "reason": ""
+    }
+   }
+  },
+  {
+   "at": 26.67,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_task",
+     "task": "t3",
+     "covers": [
+      "sec3"
+     ],
+     "ok": true,
+     "chars": 5101,
+     "reason": ""
+    }
+   }
+  },
+  {
+   "at": 27.52,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_task",
+     "task": "t4",
+     "covers": [
+      "sec4"
+     ],
+     "ok": true,
+     "chars": 3201,
+     "reason": ""
+    }
+   }
+  },
+  {
+   "at": 28.37,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_task",
+     "task": "t5",
+     "covers": [
+      "sec5"
+     ],
+     "ok": true,
+     "chars": 1143,
+     "reason": ""
+    }
+   }
+  },
+  {
+   "at": 29.22,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_task",
+     "task": "t6",
+     "covers": [
+      "sec6"
+     ],
+     "ok": true,
+     "chars": 3485,
+     "reason": ""
+    }
+   }
+  },
+  {
+   "at": 30.07,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_task",
+     "task": "t7",
+     "covers": [
+      "sec7"
+     ],
+     "ok": true,
+     "chars": 7495,
+     "reason": ""
+    }
+   }
+  },
+  {
+   "at": 30.92,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_task",
+     "task": "t8",
+     "covers": [
+      "sec8"
+     ],
+     "ok": true,
+     "chars": 4237,
+     "reason": ""
+    }
+   }
+  },
+  {
+   "at": 31.77,
    "event": {
     "kind": "progress",
     "node": "write",
@@ -459,7 +1228,7 @@
    }
   },
   {
-   "at": 24.4,
+   "at": 32.77,
    "event": {
     "kind": "progress",
     "node": "write",
@@ -479,7 +1248,61 @@
    }
   },
   {
-   "at": 24.9,
+   "at": 33.07,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_task",
+     "task": "t2",
+     "covers": [
+      "sec2"
+     ],
+     "ok": true,
+     "chars": 3466,
+     "reason": "",
+     "revise": true
+    }
+   }
+  },
+  {
+   "at": 33.37,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_task",
+     "task": "t3",
+     "covers": [
+      "sec3"
+     ],
+     "ok": true,
+     "chars": 5101,
+     "reason": "",
+     "revise": true
+    }
+   }
+  },
+  {
+   "at": 33.67,
+   "event": {
+    "kind": "progress",
+    "node": "write",
+    "event": {
+     "kind": "write_task",
+     "task": "t5",
+     "covers": [
+      "sec5"
+     ],
+     "ok": true,
+     "chars": 1143,
+     "reason": "",
+     "revise": true
+    }
+   }
+  },
+  {
+   "at": 33.97,
    "event": {
     "kind": "progress",
     "node": "write",
@@ -501,7 +1324,7 @@
    }
   },
   {
-   "at": 25.9,
+   "at": 34.97,
    "event": {
     "kind": "progress",
     "node": "write",
@@ -519,7 +1342,7 @@
    }
   },
   {
-   "at": 26.9,
+   "at": 35.97,
    "event": {
     "kind": "progress",
     "node": "write",
@@ -543,7 +1366,7 @@
    }
   },
   {
-   "at": 27.4,
+   "at": 36.47,
    "event": {
     "kind": "progress",
     "node": "write",
@@ -563,7 +1386,7 @@
    }
   },
   {
-   "at": 27.7,
+   "at": 36.77,
    "event": {
     "kind": "progress",
     "node": "write",
@@ -579,14 +1402,14 @@
    }
   },
   {
-   "at": 28.4,
+   "at": 37.47,
    "event": {
     "kind": "node",
     "node": "finalize"
    }
   },
   {
-   "at": 28.9,
+   "at": 37.97,
    "event": {
     "kind": "node",
     "node": "summary"

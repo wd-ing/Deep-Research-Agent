@@ -1547,6 +1547,39 @@ cb09180 → 7fcbe97 → 22761c9 → 8b8c3e3 → da4cc29。
 - 排版复查结论：报告 mdComponents 的标题分级/表格/引用块已精细
   （坑 62 前就修过），本轮不动。
 
+### 68. 回放 fixture 补齐 B1 细粒度事件（2026-10-18）
+
+**问题**：B1 的六类细粒度事件（`search_query`/`extract_source`/
+`summarize_batch`/`gate_batch`/`write_task`/`gate_retry`）后端早已
+实现（10129e2），但 v13 fixture 是 fire_progress 落地**之前**录的——
+录制时通道不存在，不是回放丢的。回放里这些行一条没有，前端 B1
+渲染分支在回放里完全验证不到。
+
+**方案**：`tests/enrich_fixture.py` 从真实 DB 合成这批事件注进
+fixture（用户拍板的方案一，不是等下次真跑）。
+
+- 数据全部真值：查询串/轮次命中 ← `run_trace`；来源标题/性质 ←
+  `source`（按 fetched_at 分钟分轮 25+16）；段数/批次数 ← fixture
+  `segment_summary` 的 `batches` 真值（r1=10、r2=14，不是拍的
+  ceil(53/12)）；gate 批规模 = `by_method.llm`（规则放行段不进
+  LLM 判定），批大小 12（GATE_LLM_BATCH）；write_task.chars ←
+  报告各 `## ` 节真实长度（**注意跳过开头的 `# 标题` 块**，
+  否则下标错一位 t1 拿到 172 字报告头）。
+- 时序：细粒度事件排在「node 起、环节汇总事件到」之间；
+  窗口塞不下时锚点及之后事件整体后移，原相对间隔不变。
+- **合成诚实的边界**：per-query hits 是合成值（搜索命中在判重**前**，
+  总和 > 轮次 hits 正常）；`nature_batch`/`gate_retry` 只在真实发生
+  时才造（v13 零缺失零掉队 → 不造），不为了演示硬凹失败分支。
+
+**回放器顺手修**：`FakeGraph` 续跑结束后补 `finish_session(tid,
+"done")`——真图是 nodes.py 里落的，回放绕过真节点导致会话列表
+永远 running（状态只是 cosmetic，但「回放会话显示 running」会误导
+排查）。
+
+**验收**：注入后 to=77 条/after=94 条；回放全量走通——
+SSE 落库实测 20 query + 41 source + 24 summary + 9 gate + 11 task
+（含 3 条 revise），批准→done 一次到位无回环。
+
 ---
 
 ## 九、工作约定

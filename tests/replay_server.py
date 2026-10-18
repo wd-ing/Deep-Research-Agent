@@ -126,6 +126,10 @@ def install(srv, speed: float) -> dict:
                         await asyncio.sleep(gap)
                 last = item["at"]
                 srv._emit(tid, item["event"])
+            if resuming:
+                # 真图跑完由 nodes.finish_session 落 'done'——回放绕过真节点，
+                # 不补这一句会话在列表里永远是 running。
+                srv.get_repo().finish_session(tid, "done")
             if isinstance(input, dict):
                 # run 收尾：告诉前端图跑完了
                 srv._emit(tid, {"kind": "done", "state": {
@@ -147,6 +151,8 @@ def install(srv, speed: float) -> dict:
                         time.sleep(gap)
                 last = item["at"]
                 srv._emit(tid, item["event"])
+            if resuming:
+                srv.get_repo().finish_session(tid, "done")
             return {"report_markdown": "", "round": 1, "url_count": 29}
 
         def get_state(self, config=None, **kw):
