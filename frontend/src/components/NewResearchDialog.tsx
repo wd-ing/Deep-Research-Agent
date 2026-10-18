@@ -28,7 +28,7 @@ export function NewResearchDialog({
     // 遮罩点击关闭（和 SegDrawer / ConfirmDialog 统一）。
     // 面板 stopPropagation —— 它是遮罩的子节点，不拦住就等于点了遮罩。
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 p-4 pt-[10vh]"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-gray-900/40 p-4 pt-[10vh] backdrop-blur-[2px]"
       onClick={onCancel}
     >
       <div
@@ -36,7 +36,7 @@ export function NewResearchDialog({
         // tabIndex=-1：面板本身要能被聚焦——万一里面一个可聚焦元素都没有，
         // 焦点陷阱需要一个落点
         tabIndex={-1}
-        className="w-full max-w-lg rounded-lg bg-white p-5 shadow-xl outline-none"
+        className="w-full max-w-lg rounded-xl bg-white p-5 shadow-xl outline-none"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"

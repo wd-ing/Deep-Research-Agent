@@ -42,6 +42,14 @@ export default {
         serif: ['"Songti SC"', '"STSong"', '"Noto Serif SC"', 'Georgia',
                 '"Source Serif 4"', 'serif'],
       },
+      /** 阴影也带暖调——冷黑阴影落在暖纸上会有「浮起来的是另一套
+       *  材质」的违和感。重映射内置档，shadow-md/lg/xl 全局自动变暖。 */
+      boxShadow: {
+        sm: '0 1px 2px rgb(60 50 35 / .07)',
+        md: '0 2px 8px rgb(60 50 35 / .10), 0 1px 2px rgb(60 50 35 / .05)',
+        lg: '0 8px 28px rgb(60 50 35 / .14), 0 2px 6px rgb(60 50 35 / .08)',
+        xl: '0 16px 44px rgb(50 42 30 / .18), 0 4px 12px rgb(60 50 35 / .10)',
+      },
       // ⚠️ **只补档，不改默认档。** 改 `sm`/`base` 会让 31 处 `text-sm`
       //  集体变号，那不是「建立体系」而是「一次偷偷换字号」。
       //  现有 Tailwind 默认档 12/14/16/18/20 已经是一条像样的 scale，

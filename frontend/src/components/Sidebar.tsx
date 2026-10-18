@@ -6,6 +6,8 @@ import { ago, tokens } from '../lib/format'
 import { Menu, MenuItem } from './Menu'
 import { ConfirmDialog } from './ConfirmDialog'
 import { SourceList } from './SourceList'
+import { Icon } from './Icon'
+import { Empty } from './Empty'
 
 type Filter = 'all' | 'running' | 'archived' | 'trash'
 export type Pane = 'session' | 'source'
@@ -120,8 +122,9 @@ function SessionRow({
             className="block w-full text-left text-2xs leading-snug text-muted hover:text-ink"
             title={s.summary.summary}
           >
-            <span className="mr-1 inline-block w-2 align-middle text-gray-400">
-              {showSum ? '▾' : '▸'}
+            <span className="mr-1 inline-block w-2 align-middle text-gray-400" aria-hidden>
+              <Icon name="chevron-right" size={9}
+                className={`inline-block transition-transform duration-150 ${showSum ? 'rotate-90' : ''}`} />
             </span>
             {s.summary.summary}
           </button>
@@ -315,7 +318,7 @@ export function Sidebar({
           onClick={onToggleCollapse}
           title="展开侧栏"
           className="mb-2 flex h-8 w-8 items-center justify-center rounded text-muted transition-colors hover:bg-white hover:text-ink"
-        >»</button>
+        ><Icon name="chevrons-right" size={16} /></button>
         <button
           onClick={() => { onPane('session'); onToggleCollapse() }}
           title="会话"
@@ -324,7 +327,7 @@ export function Sidebar({
             'mb-1 flex h-8 w-8 items-center justify-center rounded text-sm transition-colors',
             pane === 'session' ? 'sel text-ink' : 'text-muted hover:bg-white hover:text-ink',
           ].join(' ')}
-        >💬</button>
+        ><Icon name="chat" size={16} /></button>
         <button
           onClick={() => { onPane('source'); onToggleCollapse() }}
           title="来源库"
@@ -333,25 +336,25 @@ export function Sidebar({
             'mb-1 flex h-8 w-8 items-center justify-center rounded text-sm transition-colors',
             pane === 'source' ? 'sel text-ink' : 'text-muted hover:bg-white hover:text-ink',
           ].join(' ')}
-        >📚</button>
+        ><Icon name="book" size={16} /></button>
         <button
           onClick={onNew}
           title="新建研究"
           className="mt-1 flex h-8 w-8 items-center justify-center rounded text-sm text-accent transition-colors hover:bg-white"
-        >＋</button>
+        ><Icon name="plus" size={16} /></button>
         <div className="mt-auto" />
         {onReplay && (
           <button
             onClick={onReplay}
             title="演示回放（约 80 秒）"
             className="flex h-8 w-8 items-center justify-center rounded text-sm text-muted transition-colors hover:bg-white hover:text-ink"
-          >▶</button>
+          ><Icon name="play" size={15} /></button>
         )}
         <button
           onClick={onSettings}
           title="设置"
           className="flex h-8 w-8 items-center justify-center rounded text-sm text-muted transition-colors hover:bg-white hover:text-ink"
-        >⚙</button>
+        ><Icon name="settings" size={16} /></button>
       </nav>
     )
   }
@@ -392,16 +395,20 @@ export function Sidebar({
           // ⚠️ 原来是**满屏最重的元素**（实心蓝 + 阴影 + 按下缩放），
           // 比报告里任何一个标题都重。这个按钮并不常按（一场研究十几分钟才开一次），
           // 而内容才是要看很久的东西——所以降成描边：还找得到，但不抢。
-          className="w-full rounded-md border border-accent/40 bg-white px-3 py-2 text-sm
+          className="flex w-full items-center justify-center rounded-md border border-accent/40 bg-white px-3 py-2 text-sm
                      font-medium text-accent transition-colors
                      hover:border-accent hover:bg-accent/5"
-        >新建研究</button>
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="搜索标题、问题、报告正文…"
-          className="w-full rounded-md border border-line bg-white px-2.5 py-1.5 text-sm outline-none focus:border-accent"
-        />
+        ><Icon name="plus" size={14} className="-ml-0.5 mr-0.5" />新建研究</button>
+        <div className="relative">
+          <Icon name="search" size={13}
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted/70" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="搜索标题、问题、报告正文…"
+            className="w-full rounded-md border border-line bg-white py-1.5 pl-8 pr-2.5 text-sm outline-none focus:border-accent"
+          />
+        </div>
         <div className="flex gap-1">
           {([['all', '全部'], ['running', '进行中'], ['archived', '已归档'], ['trash', '回收站']] as const)
             .map(([k, label]) => (
@@ -436,9 +443,13 @@ export function Sidebar({
           /* 搜索中：服务端命中结果顶替会话列表。
              正文命中带定位片段——「在哪句话里命中的」直接可见。 */
           <>
-            <div className="px-1 py-1.5 text-2xs text-muted">
-              {hits.length ? `命中 ${hits.length} 场研究` : '没有命中的会话'}
-            </div>
+            {hits.length ? (
+              <div className="px-1 py-1.5 text-2xs text-muted">
+                命中 {hits.length} 场研究
+              </div>
+            ) : (
+              <Empty icon="search" text="没有命中的会话" />
+            )}
             {hits.map((h) => (
               <button
                 key={h.id}
@@ -513,11 +524,11 @@ export function Sidebar({
                 onMove={(fid) => act('移动到文件夹', () => api.jpatch(`/api/sessions/${s.id}`, { folder_id: fid }))} />
             ))}
             {!shown.length && (
-              <div className="px-1 py-3 text-xs text-muted">
-                {selNode
+              <Empty icon="chat" text={
+                selNode
                   ? `「${selNode.name}」里还没有会话`
-                  : q ? `没有匹配「${q}」的会话` : '还没有会话'}
-              </div>
+                  : q ? `没有匹配「${q}」的会话` : '还没有会话'
+              } />
             )}
           </>
         )}
@@ -547,24 +558,24 @@ export function Sidebar({
       <div className="mt-auto flex items-center gap-1 border-t border-line p-2">
         <button
           onClick={onSettings}
-          className="flex-1 rounded px-2 py-1 text-left text-xs text-muted transition-colors hover:bg-white hover:text-ink"
+          className="flex flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-xs text-muted transition-colors hover:bg-white hover:text-ink"
         >
-          ⚙ 设置
+          <Icon name="settings" size={13} /> 设置
         </button>
         {onReplay && (
           <button
             onClick={onReplay}
             title="演示回放：放一遍 v13 真跑的事件流（零 token，约 80 秒）"
-            className="shrink-0 rounded px-2 py-1 text-xs text-muted transition-colors hover:bg-white hover:text-ink"
+            className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-muted transition-colors hover:bg-white hover:text-ink"
           >
-            ▶ 回放
+            <Icon name="play" size={12} /> 回放
           </button>
         )}
         <button
           onClick={onToggleCollapse}
           title="收起侧栏（专注阅读）"
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted transition-colors hover:bg-white hover:text-ink"
-        >«</button>
+        ><Icon name="chevrons-left" size={15} /></button>
       </div>
     </nav>
   )

@@ -3,6 +3,7 @@ import { api } from '../useSession'
 import type { Folder } from '../types'
 import { Menu, MenuItem, MenuSep } from './Menu'
 import { ConfirmDialog } from './ConfirmDialog'
+import { Icon } from './Icon'
 
 export interface FolderNode {
   /** null = 「未分类」。虚拟节点，数据库里没有这一行。 */
@@ -366,7 +367,7 @@ export function FolderTree({
                 title={isOpen ? '折叠' : '展开'}
                 style={{ paddingLeft: pad + 3 }}
                 className="shrink-0 py-1 pr-0.5 text-2xs leading-none text-muted hover:text-ink"
-              >{isOpen ? '▼' : '▶'}</button>
+              ><Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={10} /></button>
             ) : (
               <span style={{ width: pad + 13 }} className="shrink-0" />
             )}

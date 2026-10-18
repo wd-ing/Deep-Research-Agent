@@ -1,5 +1,6 @@
 import { useRef } from 'react'
 import { useDialog } from './useDialog'
+import { Icon } from './Icon'
 import type { SegmentRow, SourceMeta } from '../types'
 
 /** 引用详情用右侧抽屉而不是弹窗——弹窗会挡住读者正在看的位置。 */
@@ -25,7 +26,7 @@ export function SegDrawer({
     <>
       {/* 遮罩。z-30 压得住报告顶部的常驻条（那里面 `sticky top-0 z-20`），
           不然点它不会关抽屉、而且上半屏看着没被遮住。 */}
-      <div className="fixed inset-0 z-30 bg-black/20 print:hidden" onClick={onClose} aria-hidden />
+      <div className="fixed inset-0 z-30 bg-gray-900/25 backdrop-blur-[1px] print:hidden" onClick={onClose} aria-hidden />
       <aside
         ref={panel}
         tabIndex={-1}
@@ -53,7 +54,7 @@ export function SegDrawer({
                   用户点开这一段时，是最后一次提醒「这段材料你后来标为不可信」的时机 */}
               {src.ignored && (
                 <div className="rounded bg-amber-50 px-2 py-1.5 text-2xs leading-relaxed text-amber-800">
-                  ⚠ 你已把这个来源标记为无用
+                  <Icon name="alert" size={11} className="mb-px mr-0.5 inline-block" />你已把这个来源标记为无用
                   {src.ignore_reason && `：${src.ignore_reason}`}
                   <div className="mt-0.5 text-amber-700">
                     报告已写完，不会因此改写——用到这一段的结论请自行复核。

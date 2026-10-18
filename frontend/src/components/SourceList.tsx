@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react'
 import type { SourceLibrary as Lib, SourceLibItem } from '../types'
 import { natureMeta } from './SegDrawer'
 import { ConfirmDialog } from './ConfirmDialog'
+import { Icon } from './Icon'
+import { Empty } from './Empty'
 
 /** 来源库列表（侧栏）。
  *
@@ -116,8 +118,8 @@ export function SourceList({
                 })}
                 className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left transition-colors hover:bg-gray-50"
               >
-                <span className="w-2 shrink-0 text-2xs leading-none text-muted">
-                  {isClosed ? '▶' : '▼'}
+                <span className="w-2 shrink-0 text-muted">
+                  <Icon name={isClosed ? 'chevron-right' : 'chevron-down'} size={10} />
                 </span>
                 {/* 分组是**结构**，不该比内容更抢眼。原来这里放的是
                     `NatureBadge`——一个紫色圆角块，在一列 41 条的列表里
@@ -188,7 +190,7 @@ export function SourceList({
                         「为什么列表里有它却没被引用」这个疑问得有个答案 */}
                     {!s.on_topic && !s.ignored && (
                       <div className="mt-0.5 text-2xs text-amber-600">
-                        ⚠ 相关性判定为不在题，未参与报告
+                        <Icon name="alert" size={10} className="mb-px mr-0.5 inline-block" />相关性判定为不在题，未参与报告
                       </div>
                     )}
                   </button>
@@ -214,9 +216,8 @@ export function SourceList({
         })}
 
         {!lib.total && (
-          <div className="px-1 py-3 text-xs text-muted">
-            {q ? `没有匹配「${q}」的来源` : '还没有收集到来源'}
-          </div>
+          <Empty icon="book"
+            text={q ? `没有匹配「${q}」的来源` : '还没有收集到来源'} />
         )}
       </div>
 

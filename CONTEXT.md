@@ -1670,6 +1670,35 @@ utilities——`btn-primary px-5` 里的 px-5 是死代码（审批页
 
 打印强制回纯白 `body`（纸色不打印）。
 
+### 72. 视觉重构二轮：图标系统 + 交互细节（2026-10-18）
+
+承接坑 71 的方向继续产品化，这轮是「设计和细节」层面。
+
+**图标系统**（components/Icon.tsx）：手写内联 SVG，零依赖。
+16px 网格 / 1.5px 圆头描边（lucide 风格），`stroke=currentColor`
+自动跟字色。~16 个：chat/book/cog/play/plus/search/copy/download/
+printer/arrow-up/chevrons/alert/check/x/folder/trash/external。
+替掉了全部 emoji 与字符符号（💬📚⚙＋▶«»↑▴▾▸✗）——
+emoji 渲染随平台漂移、笔画粗细不一、不能控制颜色尺寸。
+
+**引用 chip 保留**（用户拍板：倾向工具产品风，不走上标细字
+的出版物风）。
+
+**交互细节**：
+- tailwind 加暖调阴影档 `soft/panel`（`rgba(60,50,35)`），
+  对话框/抽屉/浮层全走 panel + backdrop-blur。
+- 折叠组「N 条」按钮改 chip 质感（rounded-full 浅底）。
+- TOC 开合 ▴▾ → 旋转 chevron；blockquote 去掉 accent 蓝
+  （accent 语义=可点，引用块不可点）换暖灰线+paper2 底；
+  inline code 换 paper2 暖灰底。
+- 统一空态组件 `Empty.tsx`：图标 + 一句话，替掉三处裸文本行
+  （来源库空/搜索无命中/会话空）。
+- `document.title` 的 ⏳✋✓✗ 保留——那是 OS 标签页状态，
+  SVG 管不到，emoji 在那里是对的工具。
+
+**验证**：build + tsc 过；vite 进程走 launchd 自愈（kill -9 后
+~10s 端口恢复），tailwind.config 改动需要重启 vite 才生效。
+
 ---
 
 ## 九、工作约定

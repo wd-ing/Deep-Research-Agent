@@ -1,5 +1,6 @@
 import type { SourceDetailRow } from '../types'
 import { NatureBadge } from './SegDrawer'
+import { Icon } from './Icon'
 
 /** 来源详情（主区域）。点来源库里的某一条看它到底说了什么。
  *
@@ -34,7 +35,7 @@ export function SourceDetail({
           <span>{src.segments.length} 段</span>
           {!src.on_topic && (
             <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-800">
-              ⚠ 判定为不在题，未参与报告
+              <Icon name="alert" size={10} className="mb-px mr-0.5 inline-block" />判定为不在题，未参与报告
             </span>
           )}
           {src.ignored && (

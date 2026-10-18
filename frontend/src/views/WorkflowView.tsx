@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Phase, Step } from './workflow'
+import { Icon } from '../components/Icon'
 
 /** 状态点的形状：完成=实心圆，进行中=呼吸环，需注意=菱形。
  *  **形状**比颜色更能区分——色弱用户也能读出来。
@@ -133,10 +134,11 @@ function StepRow({
             <button
               onClick={() => setOpen((o) => !o)}
               className={[
-                'shrink-0 rounded px-1 text-2xs transition-colors',
-                step.warn || kidWarns > 0
-                  ? 'text-amber-600 hover:bg-amber-50'
-                  : 'text-muted hover:bg-gray-100 hover:text-ink',
+                'shrink-0 rounded-full px-1.5 py-px text-2xs transition-colors',
+                open ? 'text-muted hover:bg-gray-100 hover:text-ink'
+                : step.warn || kidWarns > 0
+                  ? 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                  : 'bg-gray-100/80 text-muted hover:bg-gray-200/80 hover:text-ink',
               ].join(' ')}
             >
               {open ? '收起' : hasKids ? `${kids.length} 条` : '展开'}
@@ -211,7 +213,7 @@ function PhaseRail({
                     : active ? 'wf-running-dot bg-live text-white'
                     : 'bg-gray-200 text-gray-400',
                 ].join(' ')}>
-                  {done ? '✓' : i + 1}
+                  {done ? <Icon name="check" size={10} strokeWidth={2.5} /> : i + 1}
                 </span>
                 <span className={[
                   'truncate',
@@ -276,11 +278,11 @@ function PhaseBlock({
         {/* 箭头用 CSS 过渡而不是换字符，展开时才有「转」的动画 */}
         <span
           className={[
-            'shrink-0 text-2xs text-muted transition-transform duration-200',
+            'shrink-0 text-muted transition-transform duration-200',
             open ? 'rotate-90' : '',
           ].join(' ')}
         >
-          ▶
+          <Icon name="chevron-right" size={11} />
         </span>
         <span
           className={[

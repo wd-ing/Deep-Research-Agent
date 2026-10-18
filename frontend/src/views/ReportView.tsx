@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import type { IgnoredCitation, SegPreview, SegPreviews } from '../types'
 import { NatureBadge } from '../components/SegDrawer'
 import { ProgressBar, TocBar, scanHeadings, type TocItem } from '../components/Toc'
+import { Icon } from '../components/Icon'
 
 const REF_RE = /\[(S\d+·\d+)\]/g
 
@@ -145,7 +146,7 @@ function RefChip({
           )}
           {seg.已排除 && (
             <div className="mt-1.5 rounded bg-amber-50 px-1.5 py-1 text-2xs leading-4 text-amber-800">
-              ⚠ 这个来源已被你标记为无用
+              <Icon name="alert" size={10} className="mb-px mr-0.5 inline-block" />这个来源已被你标记为无用
             </div>
           )}
           <div className="mt-1 flex items-center justify-between gap-2 text-2xs text-muted">
@@ -311,11 +312,13 @@ function mdComponents(
     // 底色用 `bg-accent/5` 而**不是** `bg-accent/[0.035]`——后者 Tailwind
     // 没生成（任意透明度解析不了带前导零的值），构建不报错、样式直接失效。
     blockquote: ({ children }: { children?: ReactNode }) => (
-      <blockquote className="my-4 border-l-2 border-accent/50 bg-accent/5
+      // 暖灰左规 + 纸色底，不用 accent——accent 的语义是「可点」，
+      // 引用块不是链接，蓝色会错误地暗示可点。
+      <blockquote className="my-4 rounded-r-md border-l-2 border-gray-300 bg-paper2/60
                           py-2.5 pl-4 pr-3 text-ink/90">{children}</blockquote>
     ),
     code: ({ children }: { children?: ReactNode }) => (
-      <code className="rounded bg-gray-100 px-1 py-0.5 text-[0.9em]">{children}</code>
+      <code className="rounded bg-paper2 px-1.5 py-0.5 text-[0.9em] text-ink/85">{children}</code>
     ),
     /** 外链一律新标签页打开并断 `opener`——报告是长文，来回切标签很容易，
      *  不带 `rel="noreferrer"` 还会把来源页面的 window 句柄交出去。 */
@@ -371,7 +374,7 @@ function IgnoredBanner({
   return (
     <div className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3.5 py-2.5">
       <div className="text-xs font-medium leading-relaxed text-amber-900">
-        ⚠ 本报告引用了 {items.length} 个已排除的来源
+        <Icon name="alert" size={12} className="mb-px mr-1 inline-block" />本报告引用了 {items.length} 个已排除的来源
         <span className="font-normal">（共 {total} 处引用）：</span>
         {items.map((it, i) => (
           <span key={it.id}>
@@ -596,17 +599,17 @@ export function ReportView({
               (cur - 1 + matches.length) % matches.length, matches)}
             className="rounded px-1 text-xs text-muted hover:bg-gray-100 hover:text-ink"
             title="上一个（⇧⏎）"
-          >↑</button>
+          ><Icon name="chevron-right" size={12} className="-rotate-90" /></button>
           <button
             onClick={() => matches.length && scrollToMatch(
               (cur + 1) % matches.length, matches)}
             className="rounded px-1 text-xs text-muted hover:bg-gray-100 hover:text-ink"
             title="下一个（⏎）"
-          >↓</button>
+          ><Icon name="chevron-down" size={12} /></button>
           <button
             onClick={() => setFindOpen(false)}
             className="rounded px-1 text-xs text-muted hover:bg-gray-100 hover:text-ink"
-          >×</button>
+          ><Icon name="x" size={12} /></button>
         </div>
       )}
 
@@ -656,7 +659,7 @@ export function ReportView({
           pct < 10 ? 'pointer-events-none translate-y-2 opacity-0' : 'opacity-100',
         ].join(' ')}
         title="回到顶部"
-      >↑</button>
+      ><Icon name="arrow-up" size={16} /></button>
     </>
   )
 }

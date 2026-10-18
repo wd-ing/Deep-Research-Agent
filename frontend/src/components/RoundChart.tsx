@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../useSession'
 import type { SessionTrace, TraceRound } from '../types'
+import { Icon } from './Icon'
 
 /* 检索轮次图表：每一轮检索拿到了多少东西、材料存量怎么长起来的。
  *
@@ -204,10 +205,10 @@ export function RoundChart({ sid, refreshKey }: { sid: string; refreshKey: numbe
       >
         <span
           className={[
-            'shrink-0 text-2xs text-muted transition-transform duration-200',
+            'shrink-0 text-muted transition-transform duration-200',
             open ? 'rotate-90' : '',
           ].join(' ')}
-        >▶</span>
+        ><Icon name="chevron-right" size={11} /></span>
         <span className="shrink-0 text-xs text-ink">检索轮次</span>
         <span className="min-w-0 flex-1 truncate text-xs text-muted">
           {rounds.length} 轮 · 命中 {sum('hits')} · 采用 {sum('accepted')} 来源 · 累计{' '}

@@ -13,6 +13,7 @@ import { Sidebar, type Pane } from './components/Sidebar'
 import { SourceDetail } from './components/SourceDetail'
 import { SettingsView } from './views/SettingsView'
 import { NewResearchDialog } from './components/NewResearchDialog'
+import { Icon } from './components/Icon'
 import { ago, tokens } from './lib/format'
 
 export default function App() {
@@ -339,7 +340,7 @@ export default function App() {
                     .catch(() => s.notify('复制失败：浏览器没给剪贴板权限'))}
                   className="btn-ghost"
                 >
-                  复制 MD
+                  <Icon name="copy" size={13} />复制 MD
                 </button>
                 <button
                   onClick={() => {
@@ -352,13 +353,13 @@ export default function App() {
                   }}
                   className="btn-ghost"
                 >
-                  下载 .md
+                  <Icon name="download" size={13} />下载 .md
                 </button>
                 <button
                   onClick={() => window.print()}
                   className="btn-ghost"
                 >
-                  打印 / PDF
+                  <Icon name="printer" size={13} />打印 / PDF
                 </button>
               </>
             )}
@@ -396,7 +397,7 @@ export default function App() {
                 onClick={() => setNewOpen(true)}
                 className="btn-primary mt-6 px-4 py-2 text-sm"
               >
-                ＋ 新建研究
+                <Icon name="plus" size={14} />新建研究
               </button>
               {list.filter((x) => !x.archived_at).length > 0 && (
                 <>
@@ -553,13 +554,15 @@ export default function App() {
             className={s.notice.kind === 'err'
               ? 'mt-px shrink-0 text-red-500' : 'mt-px shrink-0 text-live'}
             aria-hidden
-          >{s.notice.kind === 'err' ? '⚠' : '✓'}</span>
+          >
+            <Icon name={s.notice.kind === 'err' ? 'alert' : 'check'} size={14} strokeWidth={2} />
+          </span>
           <span className="min-w-0 flex-1 text-xs leading-relaxed text-ink">{s.notice.msg}</span>
           <button
             onClick={() => s.setNotice(null)}
             aria-label="关闭提示"
             className="shrink-0 text-muted hover:text-ink"
-          >×</button>
+          ><Icon name="x" size={13} /></button>
         </div>
       )}
     </div>

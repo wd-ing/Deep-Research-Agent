@@ -81,14 +81,16 @@ body { @apply bg-paper text-ink antialiased; }
 /* 基底：所有按钮共用的尺寸与过渡。不用在 className 里再写高度。 */
 .btn {
   @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5
-         text-xs font-medium transition-colors select-none
+         text-xs font-medium transition-all duration-150 select-none
+         active:scale-[0.98]
          disabled:cursor-not-allowed disabled:opacity-40;
 }
 /* 主行动：一个屏最多一个（批准研究 / 保存 / 新建）。
    Things/Craft 签名件：**墨色实心按钮**——纸面上的主行动用墨不用彩，
    彩留给「可点」语义（链接/焦点）。 */
 .btn-primary {
-  @apply btn bg-ink text-paper hover:bg-gray-700 active:bg-gray-800;
+  @apply btn bg-ink text-paper shadow-sm
+         hover:bg-gray-700 hover:shadow-md active:bg-gray-800;
 }
 /* 次要行动：导出、归档、还原——看得见但不抢眼 */
 .btn-ghost {

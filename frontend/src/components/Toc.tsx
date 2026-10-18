@@ -1,3 +1,5 @@
+import { Icon } from './Icon'
+
 export interface TocItem {
   id: string
   /** 2 = `##`，3 = `###` */
@@ -64,7 +66,10 @@ export function TocBar({
           {cur ? cur.text || '（无标题）' : ''}
         </span>
         <span className="shrink-0 tabular-nums text-muted">{toc.length} 节</span>
-        <span className="shrink-0 text-muted" aria-hidden>{open ? '▴' : '▾'}</span>
+        <span className="shrink-0 text-muted" aria-hidden>
+          <Icon name="chevron-down" size={12}
+            className={`transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
+        </span>
       </button>
 
       {open && (
@@ -76,7 +81,9 @@ export function TocBar({
                 className={[
                   'block w-full truncate rounded px-2 py-1 text-left text-xs',
                   t.level === 3 ? 'pl-5 text-muted' : 'font-medium text-ink',
-                  t.id === active ? 'bg-accent/10 text-accent' : 'hover:bg-gray-50',
+                  t.id === active
+                    ? 'bg-accent/10 text-accent shadow-[inset_2px_0_0_0_#2E50C8]'
+                    : 'hover:bg-gray-50',
                 ].join(' ')}
               >{t.text || '（无标题）'}</button>
             </li>

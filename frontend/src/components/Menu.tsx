@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { Icon } from './Icon'
 
 /** 菜单里的可聚焦项。`disabled` 的 button 本来就不可聚焦，不用另外过滤。 */
 function items(box: HTMLDivElement | null): HTMLButtonElement[] {
@@ -134,7 +135,7 @@ export function Menu({
         bottom: flip ? window.innerHeight - r.top + 4 : undefined,
         zIndex: 60,
       }}
-      className="max-h-72 min-w-[9rem] overflow-auto rounded-md border border-line bg-white py-1 shadow-lg"
+      className="max-h-72 min-w-[9rem] overflow-auto rounded-lg border border-line bg-white py-1 shadow-lg"
     >
       {children}
     </div>
@@ -167,7 +168,7 @@ export function MenuItem({
             : 'text-ink hover:bg-gray-100',
       ].join(' ')}
     >
-      <span className="w-3 shrink-0 text-2xs">{active ? '✓' : ''}</span>
+      <span className="w-3 shrink-0 text-2xs">{active ? <Icon name="check" size={11} strokeWidth={2.5} /> : ''}</span>
       <span className="min-w-0 flex-1 truncate">{children}</span>
     </button>
   )

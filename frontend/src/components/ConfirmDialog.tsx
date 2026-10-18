@@ -27,13 +27,13 @@ export function ConfirmDialog({
     // 遮罩点击关闭。SegDrawer / NewResearchDialog 现在都有，这里是唯一不一致的一处。
     // ⚠️ 面板必须 `stopPropagation`——它就在遮罩里面，不拦住的话点面板等于点遮罩。
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/40 p-4 backdrop-blur-[2px]"
       onClick={onCancel}
     >
       <div
         ref={panel}
         tabIndex={-1}
-        className="w-full max-w-sm rounded-lg bg-white p-5 shadow-xl outline-none"
+        className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl outline-none"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
