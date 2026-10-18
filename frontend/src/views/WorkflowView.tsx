@@ -63,21 +63,51 @@ function Elapsed({ since }: { since: number }) {
   )
 }
 
-/** 一个子环节。**运行中不折叠**（正在干，不能藏）；完成后明细可收。 */
+/** 环节组里的一条明细（三级）：比父行轻一档，⚠️ 用琥珀色透出来。 */
+function ChildRow({ c }: { c: Step }) {
+  return (
+    <li className="text-xs leading-5">
+      <div className="flex items-baseline gap-2">
+        <span className={[
+          'shrink-0', c.warn ? 'font-medium text-amber-700' : 'text-muted/80',
+        ].join(' ')}>{c.label}</span>
+        <span className={[
+          'min-w-0 flex-1 truncate',
+          c.warn ? 'text-amber-700' : 'text-muted',
+        ].join(' ')}>{c.summary}</span>
+      </div>
+      {c.detail?.map((d, i) => (
+        <div key={i} className="pl-4 text-2xs leading-5 text-muted/80">· {d}</div>
+      ))}
+    </li>
+  )
+}
+
+/** 一个子环节。**运行中不折叠**（正在干，不能藏）；完成后明细可收。
+ *  `live` = 本环节组的孩子还在往里流（它是当前阶段的最后一个
+ *  非 running 步骤）——此时保持展开看流；不再是最后一个时自动收拢。 */
 function StepRow({
-  step, labelW, runningSince,
+  step, labelW, runningSince, live,
 }: {
-  step: Step; labelW: string; runningSince: number | null
+  step: Step; labelW: string; runningSince: number | null; live: boolean
 }) {
-  const [open, setOpen] = useState(false)
+  const kids = step.children ?? []
+  const hasKids = kids.length > 0
   const running = step.state === 'running'
   const hasDetail = !!step.detail?.length
+  const auto = running || (live && hasKids)
+  const [open, setOpen] = useState(auto)
+  // 完成一刻自动收拢（live 变 false）；用户之后手动展开不再被顶回去，
+  // 因为 auto 不再变化、effect 不会再触发。
+  useEffect(() => { setOpen(auto) }, [auto])
   // ⚠️ 的明细默认展开——那是给用户判断的，不该藏
   const show = hasDetail && (open || step.warn)
+  const kidWarns = kids.filter((k) => k.warn).length
+  const collapsible = hasKids || hasDetail
 
   return (
     <li className="wf-step relative flex gap-3 py-[5px] pl-1">
-      <Dot state={step.state} warn={step.warn} />
+      <Dot state={step.state} warn={step.warn || kidWarns > 0} />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <span
@@ -99,20 +129,26 @@ function StepRow({
               进行中{runningSince ? <Elapsed since={runningSince} /> : null}
             </span>
           )}
-          {hasDetail && !running && (
+          {collapsible && !running && (
             <button
               onClick={() => setOpen((o) => !o)}
               className={[
                 'shrink-0 rounded px-1 text-2xs transition-colors',
-                step.warn
+                step.warn || kidWarns > 0
                   ? 'text-amber-600 hover:bg-amber-50'
                   : 'text-muted hover:bg-gray-100 hover:text-ink',
               ].join(' ')}
             >
-              {open ? '收起' : '展开'}
+              {open ? '收起' : hasKids ? `${kids.length} 条` : '展开'}
+              {!open && kidWarns > 0 ? ` · ⚠${kidWarns}` : ''}
             </button>
           )}
         </div>
+        {hasKids && open && (
+          <ul className="wf-detail mt-1 space-y-1 rounded-md bg-gray-50/80 px-2.5 py-1.5">
+            {kids.map((c) => <ChildRow key={c.id} c={c} />)}
+          </ul>
+        )}
         {show && (
           <ul className="wf-detail mt-1 space-y-1 rounded-md bg-gray-50/80 px-2.5 py-1.5">
             {step.detail!.map((d, i) => (
@@ -149,7 +185,9 @@ function PhaseRail({
           const p = phases.find((x) => x.key === k)
           const done = !!p && i < activeIdx
           const active = k === activeKey
-          const warns = p ? p.steps.filter((s) => s.warn).length : 0
+          const warns = p ? p.steps.reduce(
+            (a, s) => a + (s.warn ? 1 : 0)
+              + (s.children?.filter((c) => c.warn).length ?? 0), 0) : 0
           return (
             <div key={k} className="flex min-w-0 flex-1 items-center">
               {i > 0 && (
@@ -207,12 +245,26 @@ function PhaseBlock({
 }) {
   const [open, setOpen] = useState(defaultOpen)
   const running = phase.steps.some((s) => s.state === 'running')
-  const warns = phase.steps.filter((s) => s.warn && s.state !== 'running').length
+  // ⚠️ 计数要把收进组里的明细行也算上——它们折起来了不代表不存在
+  const warns = phase.steps.reduce(
+    (a, s) => a + (s.warn && s.state !== 'running' ? 1 : 0)
+      + (s.children?.filter((c) => c.warn).length ?? 0),
+    0,
+  )
   const labelW = labelColWidth(phase.steps)
+  // 「当前活跃组」= 本阶段最后一个非 running 步骤：write_dispatch 这类
+  // 组长落地后孩子还在流，保持展开看流；下一步落地就不再是最后一个，自动收拢。
+  const lastReal = [...phase.steps].reverse().find((s) => s.state !== 'running')
 
   useEffect(() => {
     if (openSignal > 0) setOpen(true)
   }, [openSignal])
+
+  // 本阶段跑完（不再是最后一个大环节）就收成一行概要；
+  // 用户手动展开后 defaultOpen 不再变，不会被顶回去。
+  useEffect(() => {
+    if (!defaultOpen) setOpen(false)
+  }, [defaultOpen])
 
   return (
     <section id={`wfphase-${phase.key}`}
@@ -262,7 +314,9 @@ function PhaseBlock({
           )}
           <ul className="space-y-0.5">
             {phase.steps.map((s) => (
-              <StepRow key={s.id} step={s} labelW={labelW} runningSince={runningSince} />
+              <StepRow key={s.id} step={s} labelW={labelW}
+                runningSince={runningSince}
+                live={running && s.id === lastReal?.id} />
             ))}
           </ul>
         </div>
@@ -349,8 +403,9 @@ export function WorkflowView({
         <PhaseBlock
           key={p.key}
           phase={p}
-          // 运行中：当前大环节展开；跑完后全部展开，往上翻即可
-          defaultOpen={running ? i === phases.length - 1 : true}
+          // 运行中：只展开当前大环节；跑完后**默认全收**——
+          // 完成的环节留一行概要，往上翻时点标题展开（2026-10-18 用户定）。
+          defaultOpen={running && i === phases.length - 1}
           isLast={i === phases.length - 1}
           runningSince={runningSince}
           openSignal={openSig[p.key] ?? 0}

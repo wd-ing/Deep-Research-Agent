@@ -22,6 +22,13 @@ export interface Step {
   state?: 'running' | 'done'
   /** 收起后才看的明细。**没有就不渲染这一块** */
   detail?: string[]
+  /** 事件 kind——内部用于把细粒度事件归组，不用于渲染语义 */
+  kind?: string
+  /** write_task 专用：true = 这是返修任务，组长是 write_revise 不是 write_dispatch */
+  revise?: boolean
+  /** 三级明细：这个环节内部跑出来的逐条产出（B1 细粒度事件）。
+   *  环节完成时自动收拢成本行，点开才看。 */
+  children?: Step[]
 }
 
 /**
@@ -176,6 +183,40 @@ function toStep(e: ProgressEntry, seq: number): Step | null {
         summary: `${s(e, 'task') ?? ''} → ${covers} · ${n(e, 'chars') ?? 0} 字${ok ? '' : ' · 失败'}`,
         warn: !ok,
         detail: s(e, 'reason') ? [s(e, 'reason') as string] : undefined,
+        revise: e.revise === true,
+      }
+    }
+    case 'write_audit': {
+      // 审查结论原来整段被吞（default → null）——自检→返修→复检是
+      // 写作叙事最关键的一环，界面看不到等于「写完就交稿」。
+      const rounds = n(e, 'rounds') ?? 0
+      const still = n(e, 'still_open') ?? 0
+      const needRework = e.need_rework === true
+      // check_detail 的 status 词是内部码，翻成人话
+      const STATUS_CN: Record<string, string> = {
+        changed_form: '换了措辞，问题还在',
+        still_there: '没改',
+        resolved: '已闭合',
+      }
+      const checks = (e.check_detail as string[] | undefined) ?? []
+      return {
+        id, label: rounds > 0 ? '复审' : '审查',
+        summary: rounds > 0
+          ? `复查 ${n(e, 'rework_checked') ?? '?'} 项 · ${still} 项未闭合`
+          : `${n(e, 'findings') ?? 0} 项发现 · 高严重 ${n(e, 'high') ?? 0}`
+            + (needRework ? ' · 需返修' : ''),
+        warn: needRework || still > 0,
+        detail: checks.map((c) => {
+          const [where, st] = c.split(':')
+          return `${where} — ${STATUS_CN[st] ?? st}`
+        }),
+      }
+    }
+    case 'write_revise': {
+      const tasks = (e.tasks as string[] | undefined) ?? []
+      return {
+        id, label: '返修',
+        summary: `${tasks.length} 节返修（${((e.targets as string[] | undefined) ?? []).join(' · ')}）`,
       }
     }
     case 'extract': {
@@ -317,7 +358,70 @@ function toStep(e: ProgressEntry, seq: number): Step | null {
 }
 
 function labelOfWrite(e: ProgressEntry): string {
-  return n(e, 'rework_rounds') ? '返修' : '报告完成'
+  // ⚠️ 不能叫「返修」：write_revise 事件已经占了这个名字。
+  // 这条是写作**子图**的收口（write.py:1250，带 rework_rounds），
+  // 后面 nodes.py 还会发一条真正的「报告完成」。
+  return n(e, 'rework_rounds') ? '写作汇总' : '报告完成'
+}
+
+/**
+ * 三级归组：细粒度事件（B1）收进它们所属环节的汇总行下面。
+ *
+ * 两种挂法，对应两种时序：
+ * - **forward**：组长最后落地（retrieve/extract/gate 都是「干完才发汇总」）。
+ *   之前的同类明细先攒着，组长一到就收为 children。
+ * - **backward**：组长先落地（write_dispatch 在任务流之前）。
+ *   后续 write_task 直接挂到最近一个 dispatch 身上。
+ *
+ * 组里成员在「等组长期间」先按平铺渲染（运行中本来就该逐条看见），
+ * 组长落地那一刻自然收拢——这正是「跑完收起来」的交互。
+ */
+const CHILD_TO_PARENT: Record<string, string> = {
+  search_query: 'retrieve',
+  extract_source: 'extract',
+  nature_batch: 'extract',
+  summarize_batch: 'extract',
+  gate_batch: 'gate',
+  gate_retry: 'gate',
+}
+
+function groupSteps(steps: Step[]): Step[] {
+  const out: Step[] = []
+  const pending = new Map<string, Step[]>()
+  let lastDispatch: Step | undefined
+  const flush = (pk: string, parent: Step) => {
+    const kids = pending.get(pk)
+    if (kids?.length) {
+      parent.children = kids
+      pending.delete(pk)
+    }
+  }
+  for (const st of steps) {
+    const k = st.kind ?? ''
+    if (k === 'write_task') {
+      if (st.revise) {
+        const b = pending.get('write_revise') ?? []
+        b.push(st); pending.set('write_revise', b)
+      } else if (lastDispatch) {
+        ;(lastDispatch.children ??= []).push(st)
+      } else {
+        out.push(st)
+      }
+      continue
+    }
+    const pk = CHILD_TO_PARENT[k]
+    if (pk) {
+      const b = pending.get(pk) ?? []
+      b.push(st); pending.set(pk, b)
+      continue
+    }
+    flush(k, st)
+    if (k === 'write_dispatch') lastDispatch = st
+    out.push(st)
+  }
+  // 组长没等到的孤儿明细照常平铺——中途断掉的 run 宁可显示也不藏
+  for (const kids of pending.values()) out.push(...kids)
+  return out
 }
 
 /** 把事件流整理成四个大环节。 */
@@ -340,8 +444,10 @@ export function buildPhases(
   progress.forEach((e, i) => {
     const st = toStep(e, i)
     if (!st) return
+    st.kind = e.kind
     phases[phaseOf(e.node, view)].steps.push(st)
   })
+  for (const p of PHASE_ORDER) phases[p].steps = groupSteps(phases[p].steps)
 
 
   // 当前正在跑的大环节：**只在确实有后续事件时才加**。
