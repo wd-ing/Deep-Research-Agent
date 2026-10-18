@@ -150,6 +150,53 @@ def list_sessions(
     return out
 
 
+@app.get("/api/sessions/search")
+def search_sessions(q: str = "", limit: int = 20) -> dict:
+    """跨会话搜索（D2）：命中 标题 / 问题 / 报告正文 三处。
+
+    正文命中时带定位片段，前端可以直接展示「在哪句话里命中的」。
+    和 `/api/sessions?q=`（只过滤标题+问题）不冲突：那是列表筛选用，
+    这个是有结果片段的全文搜索。软删除的会话一律不搜。
+
+    LIKE 对 CJK 是精确子串匹配、对 ASCII 不区分大小写——够用；
+    上 FTS5 的边际收益撑不起再养一份倒排索引。
+    """
+    repo = get_repo()
+    q = q.strip()
+    if not q:
+        return {"q": q, "hits": []}
+    like = f"%{q}%"
+    # 正文匹配先取回再裁片段，SQL 里 substr 定位对多字节字符不可靠
+    rows = repo.q(
+        "SELECT s.id, s.title, s.question, s.status, s.created_at,"
+        "       r.markdown AS body "
+        "FROM session s LEFT JOIN report r ON r.session_id = s.id "
+        "WHERE s.deleted_at IS NULL AND ("
+        "  s.title LIKE ? OR s.question LIKE ? OR r.markdown LIKE ?) "
+        "ORDER BY s.created_at DESC LIMIT ?", (like, like, like, limit * 2))
+    hits = []
+    qlen = len(q)
+    for r in rows:
+        d = dict(r)
+        body = d.pop("body") or ""
+        where_in = ("title" if q.lower() in d["title"].lower() else
+                    "question" if q.lower() in d["question"].lower() else "body")
+        snippet = ""
+        if where_in == "body":
+            # lower() 对中文无影响，定位 ASCII 大小写不敏感
+            pos = body.lower().find(q.lower())
+            if pos >= 0:
+                lo, hi = max(0, pos - 40), pos + qlen + 60
+                snippet = ("…" if lo else "") + body[lo:hi].replace("\n", " ") + \
+                          ("…" if hi < len(body) else "")
+        hits.append({"id": d["id"], "title": d["title"], "status": d["status"],
+                     "created_at": d["created_at"],
+                     "matched_in": where_in, "snippet": snippet})
+        if len(hits) >= limit:
+            break
+    return {"q": q, "hits": hits}
+
+
 @app.patch("/api/sessions/{sid}")
 def patch_session(sid: str, body: dict) -> dict:
     """改名 / 移文件夹 / 归档或取消归档。字段任选，都可省略。"""

@@ -51,6 +51,18 @@ export interface SessionSummary {
   degraded?: string | null
 }
 
+/** `GET /api/sessions/search` 的一条命中（D2 跨会话搜索）。 */
+export interface SearchHit {
+  id: string
+  title: string
+  status: string
+  created_at: string
+  /** 命中的字段：标题 / 问题 / 报告正文 */
+  matched_in: 'title' | 'question' | 'body'
+  /** 正文命中时的定位片段（前后若干字，换行已压平） */
+  snippet: string
+}
+
 export interface Folder {
   id: string | null          // null = 「未分类」
   name: string

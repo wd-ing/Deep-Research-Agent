@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { api } from '../useSession'
-import type { Folder, SessionSummary, SourceLibrary } from '../types'
+import type { Folder, SearchHit, SessionSummary, SourceLibrary } from '../types'
 import { FolderTree, buildTree, findNodeById, subtreeIds, folderChoices } from './FolderTree'
 import { Menu, MenuItem } from './Menu'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -252,6 +252,21 @@ export function Sidebar({
   const [confirm, setConfirm] = useState<
     { s: SessionSummary; purge: boolean } | null
  >(null)
+  // 跨会话全文搜索（D2）：本地 q 只做标题/问题的即时过滤，
+  // 输入停下来 300ms 后顺手查一次服务端（标题+问题+报告正文）。
+  // null = 没在搜索 / 请求失败（退回纯本地过滤，搜索坏了不挡路）。
+  const [hits, setHits] = useState<SearchHit[] | null>(null)
+  useEffect(() => {
+    const v = q.trim()
+    if (!v || filter === 'trash') { setHits(null); return }
+    const t = window.setTimeout(() => {
+      api.jget<{ hits: SearchHit[] }>(
+        `/api/sessions/search?q=${encodeURIComponent(v)}`)
+        .then((r) => setHits(r.hits))
+        .catch(() => setHits(null))
+    }, 300)
+    return () => window.clearTimeout(t)
+  }, [q, filter])
 
   const tree = useMemo(() => buildTree(folders), [folders])
   const choices = useMemo(() => folderChoices(tree), [tree])
@@ -341,7 +356,7 @@ export function Sidebar({
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="搜索标题或问题…"
+          placeholder="搜索标题、问题、报告正文…"
           className="w-full rounded-md border border-line bg-white px-2.5 py-1.5 text-sm outline-none focus:border-accent"
         />
         <div className="flex gap-1">
@@ -374,7 +389,40 @@ export function Sidebar({
 
       {pane === 'session' && (
       <div className="flex-1 overflow-auto px-2 pb-4">
-        {filter === 'trash' ? (
+        {hits !== null ? (
+          /* 搜索中：服务端命中结果顶替会话列表。
+             正文命中带定位片段——「在哪句话里命中的」直接可见。 */
+          <>
+            <div className="px-1 py-1.5 text-2xs text-muted">
+              {hits.length ? `命中 ${hits.length} 场研究` : '没有命中的会话'}
+            </div>
+            {hits.map((h) => (
+              <button
+                key={h.id}
+                onClick={() => onPick(h.id)}
+                className={[
+                  'mb-0.5 w-full rounded-md px-3 py-2 text-left hover:bg-white',
+                  h.id === cur ? 'sel' : '',
+                ].join(' ')}
+              >
+                <div className="flex items-center gap-1.5">
+                  <span className="min-w-0 flex-1 truncate text-sm text-ink">
+                    {h.title}
+                  </span>
+                  <span className="shrink-0 rounded bg-gray-100 px-1 py-0.5 text-2xs text-muted">
+                    {h.matched_in === 'title' ? '标题'
+                     : h.matched_in === 'question' ? '问题' : '正文'}
+                  </span>
+                </div>
+                {h.snippet && (
+                  <div className="mt-0.5 line-clamp-2 text-2xs leading-4 text-muted">
+                    {h.snippet}
+                  </div>
+                )}
+              </button>
+            ))}
+          </>
+        ) : filter === 'trash' ? (
           <>
             <div className="px-1 py-1.5 text-2xs text-muted">
               回收站里的会话数据完整保留，可随时恢复。
