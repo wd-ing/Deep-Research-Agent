@@ -42,6 +42,10 @@ export function useSession(sid: string | null) {
   const [detail, setDetail] = useState<SessionDetail | null>(null)
   const [progress, setProgress] = useState<ProgressEntry[]>([])
   const [node, setNode] = useState<string | null>(null)
+  // 当前节点开始时刻（B2 活性信号：环节秒表）
+  const [nodeAt, setNodeAt] = useState<number | null>(null)
+  // 累计 token（B2：10s 轮询便宜端点，数字在涨就是活着）
+  const [cost, setCost] = useState<number | null>(null)
   const [approval, setApproval] = useState<ApprovalPayload | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [thinking, setThinking] = useState<Record<string, string>>({})
@@ -71,6 +75,11 @@ export function useSession(sid: string | null) {
 
   const esRef = useRef<EventSource | null>(null)
   const timerRef = useRef<number | null>(null)
+  // 轮询回调里读 view 需要最新值：effect 不随 view 重跑，留个 ref
+  const viewRef = useRef(view)
+  useEffect(() => {
+    viewRef.current = view
+  }, [view])
 
   /** 返回后端看到的会话状态——SSE 断线时的兜底轮询靠它判断该不该停。
    *  拉 `/api/sessions/{id}` 是 110 KB，每 4 秒一次太重，所以走 approval 这个
@@ -119,11 +128,15 @@ export function useSession(sid: string | null) {
   useEffect(() => {
     if (!sid) {
       setView('idle'); setDetail(null); setProgress([])
-      setNode(null); setApproval(null); setError(null)
+      setNode(null); setNodeAt(null); setCost(null)
+      setApproval(null); setError(null)
       setThinking({}); setDraft('')
       return
     }
     let alive = true
+    // 活性信号轮询的定时器句柄：在 IIFE 里赋值，在 cleanup 里清，
+    // 所以必须声明在 effect 作用域（放 IIFE 里 cleanup 拿不到）。
+    let costTimer: number | null = null
 
     // ⚠️ 换会话时**先清掉 detail 和 view**。不清的话界面会一直挂着上一场的报告，
     // 直到新请求回来才替换——那几百毫秒里看着像已经切过去了，内容却是错的。
@@ -135,11 +148,14 @@ export function useSession(sid: string | null) {
     setProgress([])
     setApproval(null)
     setError(null)
+    setNodeAt(null)
+    setCost(null)
 
     void (async () => {
       try {
         const d = await track(loadDetail(sid))
         if (!alive) return
+        setCost(d.cost_tokens ?? null)
         // 已在跑的会话（刷新页面后重连）不该显示成 idle
         setView(d.status === 'done' ? 'done' : 'running')
         if (d.status === 'done') { void loadApproval(sid); return }
@@ -159,6 +175,7 @@ export function useSession(sid: string | null) {
         switch (ev.kind) {
           case 'node':
             setNode(ev.node)
+            setNodeAt(Date.now())
             break
           case 'progress':
             // ⚠️ **`node` 必须一起存**（`server.py:832` 发的是 `{kind,node,event}`，
@@ -182,7 +199,8 @@ export function useSession(sid: string | null) {
             break
           case 'done':
             void (async () => {
-              await track(loadDetail(sid)).catch(() => {})
+              const d = await track(loadDetail(sid)).catch(() => null)
+              if (d) setCost(d.cost_tokens ?? null)
               // done 之后可能还停在审批点（interrupt），所以要问一次
               await loadApproval(sid)
             })()
@@ -193,6 +211,22 @@ export function useSession(sid: string | null) {
             break
         }
       }
+
+      // 活性信号（B2）：SSE 正常时这部分一个事件都不来，
+      // 每 10s 问一次便宜端点拿累计 token——数字在涨就是活着。
+      // 终态（done/error）自停，别打到天荒地老。
+      costTimer = window.setInterval(() => {
+        const v = viewRef.current
+        if (v === 'done' || v === 'error') {
+          if (costTimer !== null) window.clearInterval(costTimer)
+          return
+        }
+        void jget<{ cost_tokens?: number | null }>(`/api/sessions/${sid}/approval`)
+          .then((r) => {
+            if (typeof r.cost_tokens === 'number') setCost(r.cost_tokens)
+          })
+          .catch(() => {})
+      }, 10_000)
 
       es.onerror = () => {
         // EventSource 自带重连，但断线期间的事件会丢。
@@ -229,12 +263,14 @@ export function useSession(sid: string | null) {
         window.clearInterval(timerRef.current)
         timerRef.current = null
       }
+      if (costTimer !== null) window.clearInterval(costTimer)
     }
   }, [sid, loadApproval, loadDetail, track])
 
   const start = useCallback(async (id: string) => {
     setView('running'); setProgress([]); setError(null)
     setApproval(null); setThinking({}); setDraft('')
+    setNodeAt(Date.now())
     await track(jpost(`/api/sessions/${id}/run`))
   }, [])
 
@@ -271,7 +307,8 @@ export function useSession(sid: string | null) {
   }, [notify])
 
   return {
-    view, detail, progress, node, approval, error, thinking, draft, seg, busy,
+    view, detail, progress, node, nodeAt, cost, approval, error,
+    thinking, draft, seg, busy,
     notice, notify, setNotice,
     start, approve, create, archive, openSeg,
     setSeg, setView, setProgress, setNode, setApproval, setError, loadDetail,

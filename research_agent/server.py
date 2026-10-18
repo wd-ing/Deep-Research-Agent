@@ -636,18 +636,22 @@ def approval(sid: str) -> dict:
     # （拉 `/api/sessions/{id}` 是 110 KB，每 4 秒一次太重）。
     # 不知道状态就没法判断「这场已经跑完了，可以停了」——
     # 于是那个轮询会一直转下去。跑完了前端会把这个字段读成终态然后自停。
-    row = get_repo().q1("SELECT status FROM session WHERE id=?", (sid,))
+    row = get_repo().q1("SELECT status, cost_tokens FROM session WHERE id=?", (sid,))
     status = row["status"] if row else None
+    # 累计 token 一并回：前端轮询这个端点当「活性信号」用，
+    # 同一行多读一列，零额外开销。
+    cost = row["cost_tokens"] if row else None
     st = graph().get_state({"configurable": {"thread_id": sid}})
     ints = getattr(st, "interrupts", None) or getattr(st, "__interrupt__", None) or []
     if not ints:
-        return {"waiting": False, "status": status,
+        return {"waiting": False, "status": status, "cost_tokens": cost,
                 "note": "当前没有待审批的节点（可能还没跑到审批点，或已经批过了）"}
     first = ints[0]
     payload = getattr(first, "value", None)
     if not isinstance(payload, dict):
         payload = {"raw": str(payload)}
-    return {"waiting": True, "status": status, "approval": payload}
+    return {"waiting": True, "status": status, "cost_tokens": cost,
+            "approval": payload}
 
 
 @app.get("/api/sessions/{sid}/seg_preview")

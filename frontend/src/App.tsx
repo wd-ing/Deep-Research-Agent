@@ -287,7 +287,12 @@ export default function App() {
         {(s.view === 'running'
           || (s.view === 'idle' && sid && !report)) && (
           <div className="flex-1 overflow-auto">
-            <WorkflowView phases={phases} running={s.view === 'running'} />
+            <WorkflowView
+              phases={phases}
+              running={s.view === 'running'}
+              runningSince={s.nodeAt}
+              cost={s.cost}
+            />
           </div>
         )}
 

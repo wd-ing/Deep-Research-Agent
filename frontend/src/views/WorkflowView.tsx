@@ -46,8 +46,29 @@ function labelColWidth(steps: Step[]): string {
   return `${(w + 0.5).toFixed(2)}em`   // 0.5em 余量，别让最长的标签贴着摘要
 }
 
+/** 环节秒表（B2 活性信号）：当前环节跑了几秒，一秒一跳。
+ *  长调用（audit 单次 ~77s）中间没有任何事件，这个跳动是
+ *  「没卡死」最直接的证据。 */
+function Elapsed({ since }: { since: number }) {
+  const [, tick] = useState(0)
+  useEffect(() => {
+    const t = window.setInterval(() => tick((x) => x + 1), 1000)
+    return () => window.clearInterval(t)
+  }, [])
+  const s = Math.max(0, Math.floor((Date.now() - since) / 1000))
+  return (
+    <span className="tabular-nums">
+      {' '}{Math.floor(s / 60)}:{String(s % 60).padStart(2, '0')}
+    </span>
+  )
+}
+
 /** 一个子环节。**运行中不折叠**（正在干，不能藏）；完成后明细可收。 */
-function StepRow({ step, labelW }: { step: Step; labelW: string }) {
+function StepRow({
+  step, labelW, runningSince,
+}: {
+  step: Step; labelW: string; runningSince: number | null
+}) {
   const [open, setOpen] = useState(false)
   const running = step.state === 'running'
   const hasDetail = !!step.detail?.length
@@ -74,7 +95,9 @@ function StepRow({ step, labelW }: { step: Step; labelW: string }) {
             {step.summary}
           </span>
           {running && (
-            <span className="shrink-0 text-2xs text-live">进行中</span>
+            <span className="shrink-0 text-2xs text-live">
+              进行中{runningSince ? <Elapsed since={runningSince} /> : null}
+            </span>
           )}
           {hasDetail && !running && (
             <button
@@ -104,11 +127,12 @@ function StepRow({ step, labelW }: { step: Step; labelW: string }) {
 
 /** 一个大环节。**标题吸顶**——滚过长规划时仍知道自己在哪一段。 */
 function PhaseBlock({
-  phase, defaultOpen, isLast,
+  phase, defaultOpen, isLast, runningSince,
 }: {
   phase: Phase
   defaultOpen: boolean
   isLast: boolean
+  runningSince: number | null
 }) {
   const [open, setOpen] = useState(defaultOpen)
   const running = phase.steps.some((s) => s.state === 'running')
@@ -162,7 +186,7 @@ function PhaseBlock({
           )}
           <ul className="space-y-0.5">
             {phase.steps.map((s) => (
-              <StepRow key={s.id} step={s} labelW={labelW} />
+              <StepRow key={s.id} step={s} labelW={labelW} runningSince={runningSince} />
             ))}
           </ul>
         </div>
@@ -180,10 +204,14 @@ function PhaseBlock({
  * 而「有东西在推进」这件事，一个呼吸点就够表达了。
  */
 export function WorkflowView({
-  phases, running,
+  phases, running, runningSince, cost,
 }: {
   phases: Phase[]
   running: boolean
+  /** 当前节点开始时刻（ms），驱动「进行中 1:23」秒表 */
+  runningSince: number | null
+  /** 累计 token（10s 轮询的活性信号） */
+  cost: number | null
 }) {
   const endRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
@@ -235,8 +263,16 @@ export function WorkflowView({
           // 运行中：当前大环节展开；跑完后全部展开，往上翻即可
           defaultOpen={running ? i === phases.length - 1 : true}
           isLast={i === phases.length - 1}
+          runningSince={runningSince}
         />
       ))}
+      {/* 活性信号：累计 token。SSE 不推这个（频率不值一条事件），
+          每 10s 轮询便宜端点——对「花着钱在跑」的心理感知特别好。 */}
+      {cost !== null && (
+        <div className="px-6 pt-3 text-2xs text-muted/70 tabular-nums">
+          已用约 {cost >= 1000 ? `${(cost / 1000).toFixed(1)}k` : cost} token
+        </div>
+      )}
       <div ref={endRef} />
     </div>
   )
