@@ -1468,6 +1468,60 @@ plan_spec/revise/新 audit），前端新渲染分支从没被真实数据验过
 **教训**：测前端用的 fixture 必须能**自动从真跑再生**——
 否则后端每改一次事件形状，前端测试就在测一个不存在的旧世界。
 
+### 66. 前端产品化 B/C/D 段收官（2026-10-18）
+
+阶段方案在开工前定稿（用户拍板）：**A1→A2→B→C→D**；
+审美基准 Notion/Linear 式，手写 Tailwind，不引 UI 组件库。
+
+**B 段 · 等待体验**（B1 后端 emit、B2–B4 纯前端，全部零 LLM 成本）
+
+- B1：`progress_scope`/`fire_progress` contextvar 通道，仿 `delta_scope`。
+  关键认知：节点 `events` 数组是 LangGraph `astream(updates)` **节点跑完
+  才吐**，环节内进度必须走另一条直通 `_emit` 的链路；worker 线程靠
+  `submit_run_in_context` 显式复制 contextvar。六类新事件：
+  retrieve 每查询 / extract 每来源 / summarize 每批 / gate 每批判定 /
+  write 每任务完成 / write_plan_spec 实时可见。
+- B2：当前环节秒表（`nodeAt` 时间戳驱动）+ 呼吸动画 + 累计 token
+  （10s 轮询 approval 端点的便宜字段）。**ETA 明确不做**——
+  算不准的数字比没有数字更烦。
+- B3：标签页标题实时状态 + Notification 完成/审批提醒 +
+  会话列表 running 徽标。
+- B4：`?debug=1` 才渲染 thinking/draft 原始流折叠面板。
+  **默认不渲染**是用户定的产品判断：模型思考流信息密度低
+  （audit 单次 thinking 25k 字符），直接渲染=噪音墙。
+  替代方案=「细粒度结构化事件」（B1），每条仍是真产出不是噪音。
+
+**C 段 · 报告产出物**
+
+- C1：复制 MD / 下载 .md / `@media print` 打印样式（打印=PDF，零依赖）。
+- C2：报告内查找条用 **CSS Custom Highlight API**——不往 React 渲染的
+  DOM 里插 `<mark>`（会和 React 重渲染打架）。带计数、作用于报告
+  滚动容器。
+- C3：`0010_degraded.sql` 给 session 加 `degraded` 字段；
+  `plan_failed` 的报告在头部 + 会话列表标「降级产出」。
+
+**D 段 · 管理与检索**
+
+- D1：`GET/PUT /api/config` 读写 models.yaml。PUT 校验 YAML 可解析 +
+  `stages` 非空映射，坏配置不写入。**不做运行时热切换**——
+  ModelRegistry 是启动时读一次的进程级单例，「保存即生效」是谎言，
+  界面明说「重启后端服务后生效」。侧栏底部 ⚙ 入口 → `#/settings`。
+- D2：`GET /api/sessions/search?q=` 命中标题/问题/报告正文，
+  正文命中带定位片段（matched_in + snippet，Python 侧定位，
+  SQL substr 对多字节不可靠）。声明在 `{sid}` 路由之前。
+  侧栏搜索框 300ms 防抖；本地标题/问题即时过滤保留，
+  搜索失败静默退回本地过滤。LIKE 够用，不上 FTS5 倒排索引。
+  （另一个验证插曲：Python urllib 走系统代理对 localhost 返回 502，
+  curl 直连正常——测本地服务别用 urllib。）
+
+**验收**：全部经 tsc + vite build；D1/D2 端点在回放服务（v13 真实
+数据副本）上冒烟通过；B 段行为级测试全绿（contextvar 跨线程传播、
+批量进度计数、失败重试路径）。提交链：10129e2 → 64a243a →
+cb09180 → 7fcbe97 → 22761c9 → 8b8c3e3 → da4cc29。
+
+**遗留**：回放仍是「先连接再放事件」，不落库回放到新连入的订阅者
+——持久化是为 fixture 导出建的，不是 live backfill（文档已注明）。
+
 ---
 
 ## 九、工作约定
@@ -1496,7 +1550,7 @@ plan_spec/revise/新 audit），前端新渲染分支从没被真实数据验过
 | `run_tool_loop` 的 MiniMax guard | 比真实危险条件**更宽**（把 3/3 正常的那种也挡住了）。保留：多挡只多花 token，漏挡是假证据进报告 |
 | MiniMax 限流的 **token 维度** | 未测。40/min 只保证请求速率；真实调用 token 量差几个量级（本轮全量也没撞）|
 | high vs low 的产物质量差异 | 未评估 |
-| 前端写作阶段 | **回放服务只测得到审批为止**（坑 25），写作阶段从没被前端测过 |
+| 前端写作阶段 | **已解**（A2 起）：fixture 用 v13 真跑重录含 write 全程；回放服务可随时从 `sse_event` 表再导出 |
 | `bad_assignment` / `spec_conflict` 两类审查 | 仍无真实数据 |
 | 写作段 ~90s 非 LLM 静默 | **未定位**——候选是 checkpointer 序列化大 state，与 TECH_DEBT #1 同根 |
 | assemble 清标题不干净 | **已修**（坑 64：剥整包围栏 + `#` 级标题进重编 + `secN：` 全角冒号），待下次真跑观察 `fences_unwrapped` |
