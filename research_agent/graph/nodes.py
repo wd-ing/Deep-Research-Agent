@@ -522,6 +522,17 @@ def node_retrieve(state: ResearchState) -> dict:
             out.append(h)
         return out
 
+    # 第 1 轮把探针深读过的页面当种子放最前面（2026-10-20）：原来
+    # `node_probe_deep` 抓完喂给轮廓模型就丢，页面里的事实进了轮廓/
+    # 规划却被下游当成「无出处的知识」。先过 `_collect` 占进
+    # `seen_norms`——搜索命中里的重复 URL 会自然去重，种子也因此
+    # 记入 visited_urls，后续轮次不会再抓。之后走同一套抓取/哈希
+    # 去重/guess_source_type/分段/extract/gate，不绕过任何环节。
+    seeded: list[SearchHit] = []
+    if rnd == 1:
+        deep = ((state.get("probe") or {}).get("deep_urls_read")) or []
+        seeded = _collect([SearchHit(url=u, engine="probe") for u in deep])
+
     all_q = [(q, "zh-CN", 8, SX) for q in queries["zh"]] + \
             [(q, "en", 6, TV) for q in queries["en"]]
 
@@ -549,7 +560,7 @@ def node_retrieve(state: ResearchState) -> dict:
                 flat.extend(r)
         return _collect(flat)
 
-    hits = asyncio.run(run())
+    hits = seeded + asyncio.run(run())
     budget_left = max(0, HARD["max_urls"] - _fetched_count(state))
     if budget_left <= 0:
         # 额度用完就别再抓了——原来这里抓完再截，白白花掉一次网络往返
@@ -557,7 +568,8 @@ def node_retrieve(state: ResearchState) -> dict:
                        "hits": 0, "accepted": 0,
                        "note": f"URL 预算已用尽（{_fetched_count(state)}/"
                                f"{HARD['max_urls']}），本轮不再抓取",
-                       "repeat_queries": 0, "skipped": []})
+                       "repeat_queries": 0, "skipped": [],
+                       "seeded_from_probe": len(seeded)})
         return {"round": rnd, "events": events}
     hits = hits[:budget_left]
 
@@ -628,7 +640,8 @@ def node_retrieve(state: ResearchState) -> dict:
     events.append({"kind": "retrieve", "round": rnd,
                    "queries": queries, "hits": len(hits),
                    "repeat_queries": 0 if rnd <= 1 else len(repeat),
-                   "accepted": len(new_sources), "skipped": skipped[:20]})
+                   "accepted": len(new_sources), "skipped": skipped[:20],
+                   "seeded_from_probe": len(seeded)})
     used = list(state.get("used_queries") or [])
     for lang in ("zh", "en"):
         used += [str(x).strip() for x in (queries.get(lang) or [])]
@@ -637,6 +650,7 @@ def node_retrieve(state: ResearchState) -> dict:
         "repeat_queries": repeat if rnd > 1 else [],
         "fetched_total": len(state.get("sources") or []) + len(new_sources),
         "new_sources": len(new_sources), "skipped": skipped[:10],
+        "seeded_from_probe": len(seeded),
     })
     return {"round": rnd, "visited_urls": list(seen_norms),
             "url_count": len(state.get("sources") or []) + len(new_sources),
