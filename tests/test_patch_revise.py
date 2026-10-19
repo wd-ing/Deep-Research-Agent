@@ -319,7 +319,8 @@ def t_unresolved():
                         "src_lines": [], "audit": {"remaining_issues": []}})
     md = fin.get("report_markdown") or ""
     check("⑧ node_final 渲染返修未能解决行",
-          "返修未能解决:t1/sec1:这条改不动（材料里没有支撑）" in md,
+          "返修未能解决（「第一节」）:这条改不动——材料里没有支撑" in md
+          and "t1/sec1" not in md,
           [x for x in md.split("\n") if "返修未能解决" in x])
 
 

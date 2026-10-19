@@ -252,9 +252,9 @@ def node_plan_spec(state: WriteState) -> dict:
             print(f"⚠️  写作规约 JSON 解析失败，重试一次: {str(e)[:120]}",
                   flush=True)
     if data is None:
-        return {"plan_failed": str(err)[:200],
+        return {"plan_failed": _clip_sentence(str(err), 200),
                 "events": [{"kind": "write_plan_error", "stage": "spec",
-                            "error": str(err)[:200]}]}
+                            "error": _clip_sentence(str(err), 200)}]}
     spec = {k: v for k, v in data.items()
             if k in ("thesis", "glossary", "units", "cautions", "sections",
                      "spec_uncertainty")}
@@ -345,9 +345,9 @@ def node_plan_tasks(state: WriteState) -> dict:
                 print(f"⚠️  任务分派调用失败，重试一次: {str(e)[:120]}",
                       flush=True)
     if data is None:
-        return {"plan_failed": str(err)[:200],
+        return {"plan_failed": _clip_sentence(str(err), 200),
                 "events": [{"kind": "write_plan_error", "stage": "tasks",
-                            "error": str(err)[:200]}]}
+                            "error": _clip_sentence(str(err), 200)}]}
 
     raw_tasks = [t for t in (data.get("tasks") or []) if isinstance(t, dict)]
     tasks = _normalize_tasks(raw_tasks, outline, known)
@@ -1691,6 +1691,23 @@ def _last_high_findings(session_id: str | None) -> list[dict]:
     return out
 
 
+def _prev_high(session_id: str | None, rounds: int) -> int | None:
+    """上一轮审查的 high 条数（audit_history 里 `high` = 当时 targets 数，
+    含程序违规目标——它是历史里唯一可查的口径）。取不到返回 None。"""
+    if not session_id or rounds <= 0:
+        return None
+    try:
+        from ...db.repo import get_repo
+        hist = get_repo().write_trace(session_id).get("audit_history") or []
+    except Exception:
+        return None
+    for rec in reversed(hist):
+        if (isinstance(rec, dict) and isinstance(rec.get("high"), int)
+                and (rec.get("round") or 0) < rounds):
+            return rec["high"]
+    return None
+
+
 _AUDIT_KEYS = {"need_rework", "findings", "blocked", "reason"}
 
 
@@ -1934,8 +1951,8 @@ def node_audit(state: WriteState) -> dict:
             action = f.get("action")
             targets.append({
                 "task": tid,
-                "problem": str(f.get("problem") or "")[:400],
-                "fix": str(f.get("fix") or "")[:800],
+                "problem": _clip_sentence(str(f.get("problem") or ""), 400),
+                "fix": _clip_sentence(str(f.get("fix") or ""), 800),
                 "section": f.get("section"),
                 # quote 是补丁定位用的逐字原文，截 300 防模型贴一大段；
                 # action 缺省/非法一律 rewrite_section（退回整节重写，
@@ -1945,6 +1962,8 @@ def node_audit(state: WriteState) -> dict:
                                                 "rewrite_section")
                            else "rewrite_section"),
             })
+    model_high = len(targets)          # 模型 high——在追加程序违规目标之前取，
+                                       # 免得程序目标扰动 rework_effective 判定
     # ---- 程序检出的残留违规 → 直接变返修目标（坑 79）----
     # 这类缺陷机械可查，不该消耗模型的判断力：违规列表是给模型看的
     # 背景（提示词已叫它别重复提 finding），这里程序自己转成目标。
@@ -1989,21 +2008,40 @@ def node_audit(state: WriteState) -> dict:
                 "task": str(b.get("task") or ""),
                 "section": b.get("section"),
                 "kind": str(b.get("kind") or "no_material"),
-                "issue": str(b.get("issue") or "")[:400],
+                "issue": _clip_sentence(str(b.get("issue") or ""), 400),
             })
         elif b:
             blocked.append({"task": "", "section": None,
-                            "kind": "no_material", "issue": str(b)[:400]})
+                            "kind": "no_material",
+                            "issue": _clip_sentence(str(b), 400)})
 
     # ---- rework_effective：程序从逐条核对推出，不再采信模型自评 ----
-    # 判据只看 `rework_check`：上轮的问题还有几条 `still_there`/`changed_form`。
-    # `changed_form`（表面改了实质没改）按「仍在」算。
+    # 判据只看 `rework_check`：上轮的问题还有几条 `still_there`/`changed_form`
+    # 没改掉。`changed_form`（表面改了实质没改）按「仍在」算。
+    # `revise_unresolved` 里的项**不算**没改掉——补丁员已明确说改不了
+    # （多半是没材料），拿它判无效会提前收工、把还能修的问题丢下
+    # （真实跑里 2 条 unresolved 的 still_there 让 4 fixed/8 的轮次
+    # 被判无效收工，坑 80）。
     check = [c for c in (d.get("rework_check") or []) if isinstance(c, dict)]
-    still = [c for c in check
-             if str(c.get("status")) in ("still_there", "changed_form")]
     checked = len(check)
+    unres_keys = {(r.get("task"), r.get("section"))
+                  for r in (state.get("revise_unresolved") or [])
+                  if isinstance(r, dict)}
+    still_all = [c for c in check
+                 if str(c.get("status")) in ("still_there", "changed_form")]
+    still_real = [c for c in still_all
+                  if (c.get("task"), c.get("section")) not in unres_keys]
+    still_unres_n = len(still_all) - len(still_real)
+    fixed_n = sum(1 for c in check if str(c.get("status")) == "fixed")
+    prev_high = _prev_high(state.get("session_id"), rounds)
+    cur_high = model_high
     if rounds > 0 and checked:
-        rework_effective = not still          # 还有条目没改掉 → 判定为无效
+        # 没有真没改掉的 → 有效；仍有真没改掉的 → 只在「修过至少一条
+        # 且本轮模型 high 比上轮少」时算收敛中（有效），否则无效。
+        # prev_high 取不到（离线/历史缺失）退回纯 still 判据。
+        rework_effective = (not still_real) or (
+            fixed_n >= 1 and prev_high is not None and cur_high < prev_high)
+        still = still_real
     elif rounds > 0:
         # 有上轮 high、但模型没给核对结果：**不能当成有效**。
         # 旧实现在这里采信了一个瞎猜的 false；新实现宁可判「无效」，
@@ -2013,11 +2051,13 @@ def node_audit(state: WriteState) -> dict:
                   "status": "no_check", "note": "模型未给逐条核对结果"}]
     else:
         rework_effective = True               # 首轮没有「上一轮」可言
+        still = still_real
 
     # remaining_issues 保留（node_final 读它写存疑节），
     # 现在 = blocked 的内容 + 模型若仍返回旧字段也一并收进来。
     remaining = ([f"[{b['kind']}] {b['issue']}" for b in blocked]
-                 + [str(x)[:300] for x in (d.get("remaining_issues") or [])])
+                 + [_clip_sentence(str(x), 300)
+                    for x in (d.get("remaining_issues") or [])])
 
     audit = {
         # 残留违规是程序判据：模型说「不用返修」不算数（坑 79）
@@ -2032,6 +2072,8 @@ def node_audit(state: WriteState) -> dict:
         "rework_effective": rework_effective,
         "rework_check": check,
         "still_open": len(still),
+        "still_unresolved": still_unres_n,
+        "prev_high": prev_high, "cur_high": cur_high,
         "checked": checked,
         "violation_targets": violation_targets,
     }
@@ -2058,6 +2100,8 @@ def node_audit(state: WriteState) -> dict:
         "rework_effective": (rework_effective if rounds > 0 else None),
         "rework_checked": checked,
         "still_open": len(still),
+        "still_unresolved": still_unres_n,
+        "prev_high": prev_high, "cur_high": cur_high,
         "check_detail": [f"{c.get('task')}/{c.get('section')}:{c.get('status')}"
                          for c in check][:20],
         "reason": audit["reason"][:200],
@@ -2073,6 +2117,8 @@ def node_audit(state: WriteState) -> dict:
                     "need_rework": audit["need_rework"],
                     "rework_effective": rework_effective,
                     "rework_checked": checked, "still_open": len(still),
+                    "still_unresolved": still_unres_n,
+                    "prev_high": prev_high, "cur_high": cur_high,
                     "check_detail": [f"{c.get('task')}/{c.get('section')}"
                                      f":{c.get('status')}" for c in check][:20],
                     "spec_issue": str(d.get("spec_issue") or "")[:200]}],
@@ -2267,8 +2313,8 @@ def _apply_patches(state: WriteState, tid: str, items: list[dict],
         if i in unres:
             unresolved_out.append({
                 "task": tid, "section": sec,
-                "problem": str(it.get("problem") or "")[:200],
-                "reason": str(unres[i].get("reason") or "")[:200]})
+                "problem": _clip_sentence(str(it.get("problem") or ""), 200),
+                "reason": _clip_sentence(str(unres[i].get("reason") or ""), 200)})
             continue
         p = patches.get(i)
         if p is None:
@@ -2655,6 +2701,51 @@ def route_after_audit(state: WriteState) -> str:
 
 # ================================================================ 收口
 
+def _translate_ids_for_doubt(text: str, outline, tasks) -> str:
+    """把存疑节文本里的内部编号换成人读的节名/任务名（坑 80）。
+
+    存疑节是 node_final 程序拼出来的文本，不进 drafts 层，护栏的
+    R3a/R3b 碰不到它；审查/规约存疑/unresolved 行里却大量引用
+    secN/tN——在报告里漏内部编号。规则与 R3a 同源：
+    - `secN` → `「{title}」一节`（outline 里有标题才换，没有不动，
+      也没有 cur_sec/自指换「本节」的概念）；
+    - `tN`/`tNa` → `「{首 cover 节标题}」的写作任务`（任务有 covers
+      且首个 cover 有标题才换）；
+    - `t1.5` 版本号放行、HTML 注释掩码照 R3a；已在「」里包过的编号
+      不二次替换；输出不再含可译编号 → 幂等。
+    """
+    titles = {o["id"]: o["title"] for o in outline or []
+              if isinstance(o, dict) and o.get("id") and o.get("title")}
+    covers_of = {t["id"]: t.get("covers") or []
+                 for t in tasks or []
+                 if isinstance(t, dict) and t.get("id")}
+    masked = _mask_comments(text)
+    spans = []
+    for m in _SEC_ID_RE.finditer(masked):
+        title = titles.get(f"sec{m.group(1)}")
+        if not title:
+            continue
+        # 「」内已经包过的编号不动（防二次替换；幂等）
+        if m.start() > 0 and masked[m.start() - 1] == "「":
+            continue
+        spans.append((m.start(), m.end(), f"「{title}」一节"))
+    for m in _TASK_ID_RE.finditer(masked):
+        if re.match(r"\.\d", masked[m.end():m.end() + 2]):
+            continue                    # t1.5 版本号放行
+        covers = covers_of.get(m.group(0))
+        if not covers:
+            continue
+        title = titles.get(covers[0])
+        if not title:
+            continue
+        if m.start() > 0 and masked[m.start() - 1] == "「":
+            continue
+        spans.append((m.start(), m.end(), f"「{title}」的写作任务"))
+    for s, e, rep in sorted(spans, key=lambda x: -x[0]):
+        text = text[:s] + rep + text[e:]
+    return text
+
+
 def node_final(state: WriteState) -> dict:
     """拼最终报告。降级、缺口、未完成必须显式可见。"""
     spec = state.get("spec") or {}
@@ -2675,7 +2766,8 @@ def node_final(state: WriteState) -> dict:
         parts.append(
             "\n> # ⚠️ 本次研究没有产出正文\n"
             f">\n"
-            f"> **主 agent 没能制定写作规约**，原因：{str(plan_failed)[:300]}\n"
+            f"> **主 agent 没能制定写作规约**，原因："
+            f"{_clip_sentence(str(plan_failed), 300)}\n"
             f">\n"
             f"> 下面只有来源清单。重新运行，或换个问法、换个模型再试。\n")
     if spec.get("thesis"):
@@ -2684,15 +2776,19 @@ def node_final(state: WriteState) -> dict:
 
     # 存疑与未完成：静默降级会让人误以为报告是完整的
     doubt = list(audit.get("remaining_issues") or [])
+    sec_titles = {o["id"]: o["title"] for o in state.get("outline") or []
+                  if isinstance(o, dict) and o.get("id") and o.get("title")}
     if plan_failed:
-        doubt.append(f"写作规约环节失败：{str(plan_failed)[:300]}")
+        doubt.append(f"写作规约环节失败："
+                     f"{_clip_sentence(str(plan_failed), 300)}")
     if spec.get("spec_uncertainty"):
         # 主 agent 自己声明的规约存疑必须让读者看见，
         # 不能只躺在事件日志和 DB 里——这一条存在的意义就是被看见。
         doubt.append(f"规约自检（主 agent 自己标出的不确定处）："
-                     f"{str(spec['spec_uncertainty'])[:400]}")
+                     f"{_clip_sentence(str(spec['spec_uncertainty']), 400)}")
     if audit.get("spec_issue"):
-        doubt.append(f"规约本身的存疑：{str(audit['spec_issue'])[:300]}")
+        doubt.append(f"规约本身的存疑："
+                     f"{_clip_sentence(str(audit['spec_issue']), 300)}")
     if violations:
         for tid, items in violations.items():
             kinds = "、".join(sorted({i["kind"] for i in items}))
@@ -2712,16 +2808,23 @@ def node_final(state: WriteState) -> dict:
     for u in state.get("revise_unresolved") or []:
         # 补丁模型明确说「这条改不了」的修订项——不回退整节重写
         # （白烧一次调用多半还是改不了），但要让读者看见（坑 80）。
+        # 用节标题而不是 t6/sec6 这类内部编号——它们对读者没有意义。
+        utitle = sec_titles.get(u.get("section")) \
+            or str(u.get("section") or "?")
         doubt.append(
-            f"返修未能解决:{u.get('task')}/{u.get('section')}:"
-            f"{str(u.get('problem') or '')[:80]}"
-            f"（{str(u.get('reason') or '')[:120]}）")
+            f"返修未能解决（「{utitle}」）:"
+            f"{_clip_sentence(str(u.get('problem') or ''), 160)}"
+            f"——{_clip_sentence(str(u.get('reason') or ''), 200)}")
     for w in asm_warn:
         # 装配自检命中：这份稿子可能有结构性错误，读者必须看得见
         doubt.append(f"装配自检：{w}")
     if doubt:
-        parts.append("\n## 存疑与未完成\n\n"
-                     + "\n".join(f"- {d}" for d in doubt) + "\n")
+        # 存疑节整节再过一次内部编号翻译——它是程序拼的文本，
+        # 不走 drafts 层，护栏的 R3a 碰不到它（坑 80 的卫生问题）。
+        doubt_text = "\n".join(f"- {d}" for d in doubt)
+        doubt_text = _translate_ids_for_doubt(
+            doubt_text, state.get("outline"), state.get("tasks"))
+        parts.append("\n## 存疑与未完成\n\n" + doubt_text + "\n")
 
     # 原来这里还有一节「## 认知演进」，内容是此前研究留下的结论。
     # 它的数据来自 `earlier` ← `recalled_approved` ← `recalled_chunks`，
@@ -2865,6 +2968,19 @@ def _dumps(obj: Any) -> str:
 
 def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit]
+
+
+def _clip_sentence(s: str, n: int) -> str:
+    """截断但**不留残句**：超限时在 s[:n] 内找最后一个句末
+    （。！？；或换行），位置超过 n*0.5 就在那里截（保留标点）；
+    否则硬截到 n 并追加 …——永远不在句中硬截而不留痕迹（坑 80）。"""
+    s = s or ""
+    if len(s) <= n:
+        return s
+    cut = max(s.rfind(c, 0, n) for c in "。！？；\n")
+    if cut > n * 0.5:
+        return s[:cut + 1]
+    return s[:n] + "…"
 
 
 def _now() -> float:
