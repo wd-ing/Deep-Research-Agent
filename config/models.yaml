@@ -528,6 +528,15 @@ stages:
     # 一次（开思考重试会吃光预算，已弃用）。重试仍可能失败：
     # 失败走 fallback 并被判失败进降级，不会带脏文本入稿。
     forced_thinking: disabled
+    # 非强制轮（读证据/决定交卷）实测会把思考烧到上限一字未写，
+    # 然后在强制轮里「觉得没读完」去调读工具而不交卷。
+    # P2 实测（tests/exp_submit_prod.py，n=8，v13 真实任务）：
+    #   P0 现状        → t7 7/8，10.2k token / 123s
+    #   P1 仅压本上限  → t7 6/8，4.0k / 51s
+    #   P2 本上限+钉交卷 → t7 8/8，5.1k / 58s；t5r 8/8；长度中位数不降
+    # 取舍：被截断的长读证据轮直接进强制交卷轮，等于少读一点证据
+    # （用精度换成本，属预期）。强制交卷轮不受此上限。
+    round_max_tokens: 2048
     temperature: 0.2
     max_output_tokens: 8192
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 16384 }
@@ -542,6 +551,9 @@ stages:
     # 单独再注一遍是因为 v13 的丢稿事故就出在**返修**——
     # 返修输出只有英文推理却覆盖了旧稿（merge 保护就是为它加的）。
     forced_thinking: disabled
+    # 同 write_section：非强制轮压上限防思考烧光（P2，t5r 8/8）。
+    # 返修输入更短，浪费轮更狠——烧 4096 上限纯亏。
+    round_max_tokens: 2048
     temperature: 0.1
     max_output_tokens: 4096
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 8192 }

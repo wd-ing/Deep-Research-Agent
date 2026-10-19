@@ -153,6 +153,14 @@ SUBMIT_SECTION: dict = {
     },
 }
 
+# 强制交卷轮钉在末条 user 消息后的提示（2026-10-19，P2 固化）：
+# 关思考的强制轮里模型仍会觉得「证据没读完」去调读工具而不交卷
+# （验收实测 ~2/8）；这句把它拉回任务。措辞与
+# tests/exp_submit_prod.py 的 EXP_P 变体逐字一致——
+# 那是 t7 8/8、t5r 8/8 的实测版本，别顺手改写。
+SUBMIT_NUDGE = ("证据读取额度已用完。不要再调用任何读取工具；"
+                "请基于你已经读到的内容，立即调用 submit_section 交卷。")
+
 
 # ================================================================ 规划
 
@@ -758,7 +766,8 @@ def _run_task(state: WriteState, task: dict, revise: dict | None) -> tuple[dict,
             # （v13 实测四类污染，见 SUBMIT_SECTION 的注释与坑 75）。
             text, _, log = run_tool_loop(
                 LLM, stage, prompts.WRITE_RULES, messages, tools,
-                max_rounds=2, final_tool=SUBMIT_SECTION, meta=meta)
+                max_rounds=2, final_tool=SUBMIT_SECTION, meta=meta,
+                final_nudge=SUBMIT_NUDGE)
             _record_tool_use(state, task["id"], log)
             via = meta.get("via") or "fallback"
             if via != "fallback":

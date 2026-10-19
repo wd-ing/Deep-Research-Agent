@@ -1,9 +1,10 @@
 """submit_section 结构化交卷的守门测试（离线，不需要网络）。
 
 2026-10-19 加。验的是「写作正文走 submit_section 工具参数」这条链路的
-**行为**：交卷解析、meta["via"] 记账、Phase B 开思考重试、fallback
-污染检测、merge 保护——不是「干净率会涨多少」，后者必须打真平台
-（tests/exp_submit_section.py 那批对照实验已经做过）。
+**行为**：交卷解析、meta["via"] 记账、Phase B 同档位重试、fallback
+污染检测、merge 保护、P2 的非强制轮上限与交卷 nudge——不是
+「干净率会涨多少」，后者必须打真平台
+（tests/exp_submit_section.py / exp_submit_prod.py 那批对照实验已经做过）。
 
 ⚠️ 桩一律挂在生产同一层：
   · `W.LLM.complete_with_tools` —— run_tool_loop 调的就是它
@@ -151,7 +152,10 @@ class StubLLM:
         self.seen: list[dict] = []
 
     def complete_with_tools(self, stage, system, messages, tools, **kw):
-        self.seen.append({"stage": stage, "kw": dict(kw)})
+        # messages 深拷贝存档：nudge 只该出现在 Phase B 的**副本**里，
+        # 浅拷贝会和调用方共享 content 列表，原地改动就看不出来了。
+        self.seen.append({"stage": stage, "kw": dict(kw),
+                          "messages": copy.deepcopy(messages)})
         r = self.script[min(len(self.seen) - 1, len(self.script) - 1)]
         if isinstance(r, Exception):
             raise r
@@ -257,7 +261,7 @@ def t_fallback():
           and kws[2].get("thinking") is False, str(kws))
 
 
-# --------------------------------------------------------------- ④ Phase B 重试
+# --------------------------------------------------------------- ④ Phase B 同档位重试
 
 class FakeTools:
     def specs(self):
@@ -302,7 +306,7 @@ def t_retry():
     final = W.SUBMIT_SECTION
     msgs = [{"role": "user", "content": "p"}]
 
-    # 关思考第一次返回「编造的 read_context」→ 开思考重试救回。
+    # 关思考第一次返回「编造的 read_context」→ 同档位（关思考）重试救回。
     llm = FakeLoopLLM([
         blocks(txt("先写了点文本")),
         blocks(use("read_context", {"segment": "S1·1"})),
@@ -483,6 +487,223 @@ def t_merge():
     check("⑥ 未被点名的小节不动", m["sec2"] == "乙旧" * 25, str(m))
 
 
+# --------------------------------------------------------------- ⑦ P2：round_max_tokens / final_nudge / Phase A 异常
+
+def _flat(content) -> str:
+    if isinstance(content, str):
+        return content
+    return "\n".join(b.get("text") or "" for b in content
+                     if isinstance(b, dict))
+
+
+def t_round_cap():
+    """P2 机制一：非强制轮输出上限。钉 `_minimax_once` 看 payload 定型。"""
+    llm = P.LLMClient()
+    sent: list[dict] = []
+
+    def fake_once(cfg, url, headers, payload):
+        sent.append(payload)
+        return 200, "", {"content": [use("submit_section",
+                                        {"sections": [{"id": "s",
+                                                       "body": "b"}]})],
+                         "usage": {}}
+    llm._minimax_once = fake_once
+
+    base = llm.registry.stage("write_section")
+    cfg = copy.copy(base)
+    cfg.stage = "_t7"
+    cfg.provider = "minimax"
+    cfg.base_url = "https://api.minimaxi.com/anthropic"
+    cfg.api_key_env = "MINIMAX_API_KEY"
+    cfg.stream = False
+    cfg.round_max_tokens = 2048
+    llm.registry._cache["_t7"] = cfg
+    msgs = [{"role": "user", "content": "p"}]
+    try:
+        llm.complete_with_tools("_t7", "sys", list(msgs), [W.SUBMIT_SECTION])
+        check("⑦ 非强制轮压到 round_max_tokens",
+              sent[0].get("max_tokens") == 2048,
+              str(sent[0].get("max_tokens")))
+
+        sent.clear()
+        llm.complete_with_tools("_t7", "sys", list(msgs), [W.SUBMIT_SECTION],
+                                tool_choice="submit_section")
+        check("⑦ 强制交卷轮不受 round_max_tokens",
+              sent[0].get("max_tokens") == cfg.max_output_tokens,
+              str(sent[0].get("max_tokens")))
+
+        cfg2 = copy.copy(cfg)
+        cfg2.stage = "_t7b"
+        cfg2.round_max_tokens = None
+        llm.registry._cache["_t7b"] = cfg2
+        sent.clear()
+        llm.complete_with_tools("_t7b", "sys", list(msgs), [W.SUBMIT_SECTION])
+        check("⑦ 未配置 round_max_tokens 时上限不变",
+              sent[0].get("max_tokens") == cfg.max_output_tokens,
+              str(sent[0].get("max_tokens")))
+
+        cfg3 = copy.copy(cfg)
+        cfg3.stage = "_t7c"
+        cfg3.max_output_tokens = 1024
+        llm.registry._cache["_t7c"] = cfg3
+        sent.clear()
+        llm.complete_with_tools("_t7c", "sys", list(msgs), [W.SUBMIT_SECTION])
+        check("⑦ 环节上限比 round 还小时取 min",
+              sent[0].get("max_tokens") == 1024,
+              str(sent[0].get("max_tokens")))
+    finally:
+        llm.close()
+
+    # validate()：0/负数/非 int/布尔（bool 是 int 子类）/非 minimax 都拦。
+    for v in (0, -1, "2048", False):
+        bad = copy.copy(cfg)
+        bad.stage = "_t7d"
+        bad.round_max_tokens = v
+        try:
+            bad.validate()
+            ok = False
+        except P.ConfigError:
+            ok = True
+        check(f"⑦ round_max_tokens={v!r} 被拦", ok)
+    badp = copy.copy(cfg)
+    badp.stage = "_t7e"
+    badp.provider = "internai"
+    badp.forced_thinking = None      # 只留 round_max_tokens 一项违规
+    try:
+        badp.validate()
+        check("⑦ 非 minimax 配 round_max_tokens 被拦", False, "没抛")
+    except P.ConfigError:
+        check("⑦ 非 minimax 配 round_max_tokens 被拦", True)
+
+
+def t_nudge():
+    """P2 机制二：Phase B 在末条 user 消息后钉「立即交卷」。"""
+    final = W.SUBMIT_SECTION
+    msgs = [{"role": "user", "content": "p"}]
+
+    # 末条 content 是 str → 拼接 "\n\n"+nudge；传入对象不许被原地改。
+    llm = FakeLoopLLM([blocks(txt("文本")),
+                       blocks(use("submit_section",
+                                  {"sections": [{"id": "s", "body": "b"}]}))],
+                      cfg=CFG_NONE)
+    meta: dict = {}
+    run_tool_loop(llm, "write_section", "sys", msgs, FakeTools(),
+                  final_tool=final, meta=meta, final_nudge=W.SUBMIT_NUDGE)
+    got = llm.seen[1]["messages"][-1]
+    check("⑦ Phase B 带 nudge（str 末条拼接）",
+          isinstance(got["content"], str)
+          and got["content"].endswith("\n\n" + W.SUBMIT_NUDGE),
+          got["content"][-40:])
+    check("⑦ 传入的 messages 未被原地修改",
+          msgs == [{"role": "user", "content": "p"}], str(msgs))
+
+    # 末条 content 是 list（读了一轮证据后的 tool_result）→ 追加 text 块。
+    llm = FakeLoopLLM([
+        blocks(use("read_segments", {"segments": ["S1·1"]})),
+        blocks(txt("想再读一轮")),
+        blocks(use("submit_section",
+                   {"sections": [{"id": "s", "body": "b"}]})),
+    ], cfg=CFG_NONE)
+    meta = {}
+    run_tool_loop(llm, "write_section", "sys", list(msgs), FakeTools(),
+                  final_tool=final, meta=meta, final_nudge=W.SUBMIT_NUDGE)
+    got = llm.seen[2]["messages"][-1]
+    check("⑦ Phase B 带 nudge（list 末条追加 text 块）",
+          isinstance(got["content"], list)
+          and got["content"][-1] == {"type": "text",
+                                     "text": W.SUBMIT_NUDGE},
+          str(got["content"][-1]))
+
+    # 关思考重试那一次同样带 nudge。
+    llm = FakeLoopLLM([
+        blocks(txt("文本")),
+        blocks(txt("还是文本")),
+        blocks(use("submit_section",
+                   {"sections": [{"id": "s", "body": "b"}]})),
+    ], cfg=CFG_DISABLED)
+    meta = {}
+    run_tool_loop(llm, "write_section", "sys", list(msgs), FakeTools(),
+                  final_tool=final, meta=meta, final_nudge=W.SUBMIT_NUDGE)
+    check("⑦ 重试调用同样带 nudge",
+          meta.get("via") == "forced_retry"
+          and W.SUBMIT_NUDGE in _flat(llm.seen[2]["messages"][-1]["content"]),
+          str(meta))
+
+    # 不传 final_nudge 的调用方（write_plan_tasks 等）：Phase B messages
+    # 与改动前逐字一致——nudge 是一处新开关，不许变成默认行为。
+    llm = FakeLoopLLM([blocks(txt("a")), blocks(txt("b"))], cfg=CFG_NONE)
+    meta = {}
+    run_tool_loop(llm, "write_section", "sys", list(msgs), FakeTools(),
+                  final_tool=final, meta=meta)
+    check("⑦ 不传 final_nudge 时 Phase B messages 不变",
+          llm.seen[1]["messages"][-1] == {"role": "user", "content": "p"},
+          str(llm.seen[1]["messages"][-1]))
+
+
+def t_phase_a_exception():
+    """Phase A 抛异常（自愿交卷参数被 max_tokens 截断等）→ 直接进 Phase B。"""
+    final = W.SUBMIT_SECTION
+    msgs = [{"role": "user", "content": "p"}]
+
+    llm = FakeLoopLLM([RuntimeError("args truncated"),
+                       blocks(use("submit_section",
+                                  {"sections": [{"id": "s", "body": "b"}]}))],
+                      cfg=CFG_NONE)
+    meta: dict = {}
+    text, _, _ = run_tool_loop(llm, "write_section", "sys", list(msgs),
+                               FakeTools(), final_tool=final, meta=meta)
+    check("⑦ Phase A 首轮异常→Phase B 拿到交卷",
+          meta.get("via") == "forced"
+          and json.loads(text)["sections"][0]["id"] == "s", str(meta))
+
+    # 读了一轮证据后第二轮抛：此时 messages 末条已是 tool_result，
+    # Phase B 的前提（末条是 user）仍成立。
+    llm = FakeLoopLLM([
+        blocks(use("read_segments", {"segments": ["S1·1"]})),
+        RuntimeError("boom"),
+        blocks(use("submit_section",
+                   {"sections": [{"id": "s", "body": "b"}]})),
+    ], cfg=CFG_NONE)
+    meta = {}
+    text, _, _ = run_tool_loop(llm, "write_section", "sys", list(msgs),
+                               FakeTools(), final_tool=final, meta=meta)
+    check("⑦ 第二轮异常同样进 Phase B",
+          meta.get("via") == "forced" and len(llm.seen) == 3,
+          f"{meta} {len(llm.seen)}")
+
+    # final_tool=None 的老路径：异常照常传播，不兜底。
+    llm = FakeLoopLLM([RuntimeError("boom")])
+    try:
+        run_tool_loop(llm, "write_section", "sys", list(msgs), FakeTools())
+        check("⑦ final_tool=None 时异常照常传播", False, "没抛")
+    except RuntimeError:
+        check("⑦ final_tool=None 时异常照常传播", True)
+
+
+def t_run_task_nudge():
+    """生产入口接线：_run_task 发给 Phase B 的末条 user 消息带 SUBMIT_NUDGE。"""
+    stub = StubLLM([blocks(txt("正文 [S1·1]。"))])   # 一直回文本 → 进 Phase B
+    orig = W.LLM.complete_with_tools
+    W.LLM.complete_with_tools = stub.complete_with_tools
+    try:
+        W._run_task(_state(), T1, None)
+    finally:
+        W.LLM.complete_with_tools = orig
+    check("⑦ _run_task 的 Phase A 首轮不带 nudge",
+          len(stub.seen) >= 1
+          and W.SUBMIT_NUDGE not in _flat(
+              stub.seen[0]["messages"][-1].get("content")),
+          _flat(stub.seen[0]["messages"][-1].get("content"))[-40:])
+    # write_section 配了 forced_thinking=disabled：强制轮失败会再试一次，
+    # Phase B 的两次调用（seen[1:]）的末条消息都该带 nudge。
+    check("⑦ _run_task 的 Phase B 调用带 SUBMIT_NUDGE",
+          len(stub.seen) >= 2
+          and all(W.SUBMIT_NUDGE in _flat(c["messages"][-1].get("content"))
+                  for c in stub.seen[1:]),
+          str([_flat(c["messages"][-1].get("content"))[-30:]
+               for c in stub.seen[1:]]))
+
+
 def main() -> int:
     print("=== ① _parse_submission ===")
     t_parse_submission()
@@ -490,12 +711,17 @@ def main() -> int:
     t_run_task()
     print("\n=== ③ fallback 清洗与污染检测 ===")
     t_fallback()
-    print("\n=== ④ Phase B 开思考重试 ===")
+    print("\n=== ④ Phase B 同档位重试 ===")
     t_retry()
     print("\n=== ⑤ provider payload / validate ===")
     t_provider_payload()
     print("\n=== ⑥ _merge_sections 返修保护 ===")
     t_merge()
+    print("\n=== ⑦ P2：round_max_tokens / final_nudge / Phase A 异常 ===")
+    t_round_cap()
+    t_nudge()
+    t_phase_a_exception()
+    t_run_task_nudge()
     print()
     if FAILED:
         print(f"❌ {len(FAILED)} 项失败：")

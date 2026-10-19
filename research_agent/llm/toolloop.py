@@ -78,6 +78,7 @@ def run_tool_loop(
     max_rounds: int = 3,
     final_tool: dict | None = None,
     meta: dict | None = None,
+    final_nudge: str | None = None,
 ) -> tuple[str, list[dict], list[list[dict]]]:
     """跑到模型不再调工具为止。
 
@@ -117,6 +118,14 @@ def run_tool_loop(
     `forced_retry`（Phase B 同档位重试）/ `fallback`（没拿到交卷，
     返回的是自由文本）。下游靠它决定要不要走文本清洗——
     交卷产物可信，自由文本要按污染通道处理。
+
+    ## `final_nudge`（2026-10-19，P2 固化）
+
+    关思考的强制轮里，模型仍会觉得「证据没读完」而去调 read_segments
+    而不是交卷——在末条 user 消息后追加一句「立即交卷」把它钉回任务
+    （真实验收实测：nudge 让 t7 从 ~一半不交卷 → 8/8）。
+    只作用于发给 Phase B 的**副本**，返回的 messages 保持原样。
+    不传的调用方（如 write_plan_tasks）行为完全不变。
     """
     messages = list(messages)
     log: list[list[dict]] = []
@@ -162,7 +171,22 @@ def run_tool_loop(
             #   · 之前几轮给「证据工具 + submit_tasks」，让模型自己判断够了没。
             tools = ([final_tool] if last_round
                      else list(provider.specs()) + [final_tool])
-        resp = llm.complete_with_tools(stage, system, messages, tools)
+        try:
+            resp = llm.complete_with_tools(stage, system, messages, tools)
+        except Exception as e:
+            if final_tool is None:
+                # 老路径没有结构化交卷兜底，异常照常向上传播。
+                raise
+            # 自愿交卷的参数也可能被 max_tokens 截断、在 provider 层抛
+            # （EmptyOutput / _args_broken）——那不是「环节不可用」，
+            # 只是「这一轮没写成」。置空 text 后跳出循环进 Phase B：
+            # 比向上抛、让调用方退回单次调用多留一次结构化机会。
+            # ⚠️ 前提：异常前没动 messages，末条仍是 user，Phase B 可用。
+            print(f"⚠️  [{stage}] 第 {round_no + 1} 轮调用失败"
+                  f"（{type(e).__name__}: {str(e)[:80]}），进强制交卷",
+                  flush=True)
+            text = ""
+            break
         blocks = resp.get("blocks") or []
         text = "".join(b.get("text", "") for b in blocks
                        if b.get("type") == "text")
@@ -200,12 +224,27 @@ def run_tool_loop(
         return text, messages, log
 
     # ---- Phase B：强制交卷 ----
+    # `final_nudge`（P2，2026-10-19）：关思考的强制轮里模型仍会觉得
+    # 「证据没读完」而去调 read_segments 不交卷（验收实测 ~2/8）。
+    # 末条 user 消息后钉一句「立即交卷」把它拉回任务（P2 实测 t7 8/8）。
+    # 只改发给 Phase B 的**副本**：传入的 messages 及其内部对象
+    # 不原地改，返回给调用方的 messages 也不带这段 nudge。
+    b_msgs = messages
+    if final_nudge and messages and messages[-1].get("role") == "user":
+        _last = messages[-1]
+        _content = _last.get("content")
+        if isinstance(_content, list):
+            _content = list(_content) + [{"type": "text",
+                                          "text": final_nudge}]
+        else:
+            _content = f"{_content or ''}\n\n{final_nudge}"
+        b_msgs = list(messages[:-1]) + [{**_last, "content": _content}]
     err: Exception | None = None
     try:
         # ⚠️ 第一次刻意**不传 `thinking`**：交给 provider 按环节配置决定
         # （`forced_thinking: disabled` 的环节这一轮会关思考）。
         # 也让不认 `thinking` 形参的老测试桩不受影响。
-        resp = llm.complete_with_tools(stage, system, messages, [final_tool],
+        resp = llm.complete_with_tools(stage, system, b_msgs, [final_tool],
                                        tool_choice=final_name)
         blocks = resp.get("blocks") or []
         for b in blocks:
@@ -239,7 +278,7 @@ def run_tool_loop(
         retry = False
     if retry:
         try:
-            resp = llm.complete_with_tools(stage, system, messages,
+            resp = llm.complete_with_tools(stage, system, b_msgs,
                                            [final_tool],
                                            tool_choice=final_name,
                                            thinking=False)

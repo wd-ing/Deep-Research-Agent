@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -33,6 +34,33 @@ def _wrap(llm, stage, system, messages, provider, **kw):
 
 
 W.run_tool_loop = _wrap
+
+# 实验变体（payload 层改写，线程安全）：
+#   EXP_P=P0 现状；P1 非强制轮 max_tokens 压到 EXP_CAP；
+#   P2 = P1 + 强制交卷轮在末条 user 消息后追加「额度用完、立即交卷」。
+P = os.environ.get("EXP_P", "P0")
+CAP = int(os.environ.get("EXP_CAP", "2048"))
+NUDGE = ("证据读取额度已用完。不要再调用任何读取工具；"
+         "请基于你已经读到的内容，立即调用 submit_section 交卷。")
+_orig_once = W.LLM._minimax_once
+
+
+def _patched_once(cfg, url, headers, payload):
+    if cfg.stage in ("write_section", "write_revise"):
+        if P in ("P1", "P2") and not payload.get("tool_choice"):
+            payload["max_tokens"] = min(payload["max_tokens"], CAP)
+        if P == "P2" and payload.get("tool_choice"):
+            msgs = [dict(m) for m in payload["messages"]]
+            last = msgs[-1]
+            if isinstance(last["content"], str):
+                last["content"] = last["content"] + "\n\n" + NUDGE
+            else:
+                last["content"] = list(last["content"]) + [{"type": "text", "text": NUDGE}]
+            payload["messages"] = msgs
+    return _orig_once(cfg, url, headers, payload)
+
+
+W.LLM._minimax_once = _patched_once
 
 
 def one(case: str, i: int) -> dict:

@@ -476,6 +476,13 @@ class StageConfig:
     # 唯一合法值 "disabled"。⚠️ 不能叫 `off`：YAML 1.1 把裸 off 解析成
     # 布尔 false，判等不成立、配置静默不生效（reasoning_effort 同款坑）。
     forced_thinking: str | None = None
+    # 非强制工具轮的输出上限（P2，2026-10-19）：读证据/决定交卷的轮次
+    # 只产短决策，实测却会把思考烧到 8192 上限一字未写，接着强制轮
+    # 里模型「觉得没读完」去调读工具而不交卷。压小上限省钱也省时间；
+    # 正文由强制交卷轮产出，那轮不受此上限（见 `_minimax_tools`）。
+    # 取舍：长读证据轮会被截断，等于少读一点证据——用精度换成本，
+    # P2 实测 t7 8/8、t5r 8/8、长度中位数不降，属预期。
+    round_max_tokens: int | None = None
     guard: GuardPolicy = field(default_factory=GuardPolicy)
 
     def validate(self) -> None:
@@ -508,6 +515,22 @@ class StageConfig:
                 raise ConfigError(
                     f"环节 {self.stage} 配了 forced_thinking，但 provider 是 "
                     f"{self.provider}。`thinking` 字段是 MiniMax 的参数，"
+                    "换 provider 时必须一并删掉，否则会被静默忽略。"
+                )
+        if self.round_max_tokens is not None:
+            if (not isinstance(self.round_max_tokens, int)
+                    or isinstance(self.round_max_tokens, bool)
+                    or self.round_max_tokens < 256):
+                raise ConfigError(
+                    f"环节 {self.stage} 的 round_max_tokens="
+                    f"{self.round_max_tokens!r} 非法，只接受 ≥256 的整数。"
+                    "（⚠️ YAML 把 `yes`/`off` 解析成布尔——"
+                    "bool 是 int 的子类，必须显式拦，否则静默放行。）"
+                )
+            if self.provider != "minimax":
+                raise ConfigError(
+                    f"环节 {self.stage} 配了 round_max_tokens，但 provider 是 "
+                    f"{self.provider}。这是 MiniMax 工具路径的 payload 参数，"
                     "换 provider 时必须一并删掉，否则会被静默忽略。"
                 )
         # ⚠️ 2026-10-17 **撤销了原来这条拦截**。
@@ -618,6 +641,7 @@ class ModelRegistry:
             reasoning_effort=s.get("reasoning_effort"),
             thinking_effort=s.get("thinking_effort"),
             forced_thinking=s.get("forced_thinking"),
+            round_max_tokens=s.get("round_max_tokens"),
             timeout_s=float(s.get("timeout_s", d.get("timeout_s", 180))),
             base_url=s.get("base_url", d.get("base_url", "")).rstrip("/"),
             api_key_env=s.get("api_key_env") or d.get("api_key_env"),
@@ -1987,6 +2011,14 @@ class LLMClient:
             "temperature": cfg.temperature,
             "messages": messages,
         }
+        if tool_choice is None and cfg.round_max_tokens is not None:
+            # 非强制轮（读证据/决定交卷）实测会把思考烧到上限、一字未写
+            # （坑 75 / P2 实验）。这类轮只产短决策，压小上限；
+            # 强制交卷轮产正文，不受此上限。被截断的长读证据轮会直接
+            # 进强制交卷轮——少读一点证据，用精度换成本（P2 实测
+            # t7 8/8、t5r 8/8，正文长度中位数不降）。
+            payload["max_tokens"] = min(payload["max_tokens"],
+                                        cfg.round_max_tokens)
         if tool_choice:
             # Anthropic 形状的强制：**只发那一个工具** + 指名。
             #
