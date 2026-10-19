@@ -183,8 +183,12 @@ AUDIT_SCHEMA: dict = {
                 "task": {"type": "string"}, "section": {"type": "string"},
                 "severity": {"type": "string",
                              "enum": ["high", "mid", "low"]},
+                "quote": {"type": "string"},
+                "action": {"type": "string",
+                           "enum": ["edit", "delete", "rewrite_section"]},
                 "problem": {"type": "string"}, "fix": {"type": "string"}},
-            "required": ["task", "section", "severity", "problem", "fix"]}},
+            "required": ["task", "section", "severity", "problem", "fix",
+                         "quote", "action"]}},
         "blocked": {"type": "array", "items": {
             "type": "object", "properties": {
                 "task": {"type": "string"}, "section": {"type": "string"},
@@ -194,6 +198,29 @@ AUDIT_SCHEMA: dict = {
                 "issue": {"type": "string"}}}},
     },
     "required": ["need_rework", "reason", "findings", "blocked"],
+}
+
+
+# 定点补丁返修的强制交卷 schema（2026-10-19，坑 80）。
+# `item` 指向「修订项」数组的下标；`old`/`new` 是老→新替换；
+# `unresolved` 是模型明确说改不了的项（回退旧路径会白重写一次，
+# 它们直接进 `revise_unresolved` 留给报告存疑节）。
+PATCH_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "patches": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "item": {"type": "integer"},
+                "old": {"type": "string"},
+                "new": {"type": "string"}},
+            "required": ["item", "old", "new"]}},
+        "unresolved": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "item": {"type": "integer"},
+                "reason": {"type": "string"}},
+            "required": ["item", "reason"]}},
+    },
+    "required": ["patches", "unresolved"],
 }
 
 
@@ -1743,6 +1770,59 @@ def _normalize_audit_input(raw) -> dict | None:
     return out
 
 
+def _normalize_patch_input(raw) -> dict | None:
+    """把 `submit_patches` 的工具入参归一成 {patches, unresolved}；归一不了
+    返回 None（让上层重试/回退，不用半残结构往下改稿）。
+
+    容忍形状与 `_normalize_audit_input` 同款漂移：外层单键 dict 包装、
+    列表包成 `{"item": [...]}`、`item` 回成字符串数字。
+    **严格**：`patches` / `unresolved` 两个键必须都在——缺了就判无效。
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if not isinstance(raw, dict):
+        return None
+    d = raw
+    for _ in range(2):
+        if "patches" in d and "unresolved" in d:
+            break
+        dict_vals = [v for v in d.values() if isinstance(v, dict)]
+        if len(dict_vals) == 1:
+            d = dict_vals[0]
+        else:
+            break
+    if "patches" not in d or "unresolved" not in d:
+        return None
+
+    def _items(v, keys):
+        out = []
+        for e in _norm_audit_list(v):
+            if not isinstance(e, dict):
+                continue
+            item = e.get("item")
+            if isinstance(item, str) and item.strip().isdigit():
+                item = int(item.strip())
+            if not isinstance(item, int):
+                continue
+            rec = {"item": item}
+            ok = True
+            for k in keys:
+                val = e.get(k)
+                if not isinstance(val, str):
+                    ok = False
+                    break
+                rec[k] = val
+            if ok:
+                out.append(rec)
+        return out
+
+    return {"patches": _items(d.get("patches"), ("old", "new")),
+            "unresolved": _items(d.get("unresolved"), ("reason",))}
+
+
 def _audit_retryable(e: Exception) -> bool:
     """哪些异常值得再打一次。
 
@@ -1851,11 +1931,19 @@ def node_audit(state: WriteState) -> dict:
     for f in findings:
         tid = str(f.get("task") or "")
         if f.get("severity") == "high" and tid in by_task:
+            action = f.get("action")
             targets.append({
                 "task": tid,
                 "problem": str(f.get("problem") or "")[:400],
                 "fix": str(f.get("fix") or "")[:800],
                 "section": f.get("section"),
+                # quote 是补丁定位用的逐字原文，截 300 防模型贴一大段；
+                # action 缺省/非法一律 rewrite_section（退回整节重写，
+                # 老 fixture 与模型漂移都走安全路径，坑 80）。
+                "quote": str(f.get("quote") or "")[:300],
+                "action": (action if action in ("edit", "delete",
+                                                "rewrite_section")
+                           else "rewrite_section"),
             })
     # ---- 程序检出的残留违规 → 直接变返修目标（坑 79）----
     # 这类缺陷机械可查，不该消耗模型的判断力：违规列表是给模型看的
@@ -1884,6 +1972,10 @@ def node_audit(state: WriteState) -> dict:
             continue
         targets.append({
             "task": tid, "problem": problem, "fix": fix, "section": None,
+            # `_violation` 标记给 node_revise：遇到它就用
+            # `_violation_items` 把整句定位成补丁项，而不是退成
+            # 「任务原始 covers 整节重写」（坑 80）。
+            "_violation": True, "quote": "", "action": "edit",
         })
         violation_targets += 1
     # ---- blocked：返修解决不了的，独立成一栏 ----
@@ -1987,15 +2079,250 @@ def node_audit(state: WriteState) -> dict:
     }
 
 
+# ================================================================ 定点补丁（坑 80）
+# 返修不再一律整节重写：审查给出逐字 quote + action，每个任务一次强制
+# `submit_patches` 调用产 old→new 替换，程序精确匹配并校验后替换；
+# 定位不到/校验不过/整节层面的问题才退回旧的整节重写路径。
+# 为什么：整节重写本身会带出新问题（真实运行里 4 个 high 修完变 7 个），
+# 且每次都重读证据、重写全文，token/时间重。
+
+_VIOLATION_FIX = ("逐处处理:越界引用——改成你被分配的段号中真正支撑该句的一条,"
+                  "找不到支撑就删去该句断言,不要保留无出处的数字;"
+                  "自创写法——改成规范的 [S3·5] 形式;"
+                  "正文里出现的 t1/sec3 之类内部编号——删掉整句元说明。"
+                  "只改这些处,不要动其他文字。")
+
+
+def _sentence_span(text: str, start: int, end: int) -> tuple[int, int]:
+    """命中点所在的整句范围（句界 。！？； 或换行，连同句末标点）。"""
+    s = start
+    while s > 0 and text[s - 1] not in _SENT_END + "\n":
+        s -= 1
+    e = end
+    while e < len(text) and text[e] not in _SENT_END + "\n":
+        e += 1
+    if e < len(text) and text[e] in _SENT_END:
+        e += 1
+    return s, e
+
+
+def _violation_spans(body: str, allowed: set[str]) -> list[tuple[int, int, str, str]]:
+    """每条残留违规的 (start, end, kind, found)——定位用，判定口径与
+    `_check_citations` / `_check_internal_ids` 一致。"""
+    out: list[tuple[int, int, str, str]] = []
+    for m in SEG_REF_LOOSE_RE.finditer(body or ""):
+        raw = m.group(0)
+        if not re.fullmatch(r"\[S\d+·\d+\]|\[S\d+\]", raw):
+            out.append((m.start(), m.end(), "自创写法", raw[:40]))
+            continue
+        seg = SEG_REF_RE.fullmatch(raw)
+        if seg:
+            key = f"S{seg.group(1)}·{seg.group(2)}"
+            if key not in allowed:
+                out.append((m.start(), m.end(), "越界引用", key))
+        else:
+            src = SRC_REF_RE.fullmatch(raw)
+            if src:
+                s = f"S{src.group(1)}"
+                if s not in allowed and not any(
+                        k.startswith(s + "·") for k in allowed):
+                    out.append((m.start(), m.end(), "越界引用", s))
+    masked = _mask_comments(body or "")
+    for m in _INTERNAL_ID_RE.finditer(masked):
+        if re.match(r"\.\d", masked[m.end():m.end() + 2]):
+            continue                    # t1.5 版本号豁免（与检查同款）
+        out.append((m.start(), m.end(), "内部编号",
+                    (body or "")[max(0, m.start() - 15):m.end() + 15]))
+    return out
+
+
+def _violation_items(state: WriteState, tid: str) -> list[dict]:
+    """`section=None` 的程序违规目标 → 逐条定位成补丁项。
+
+    quote = 违规所在**整句**（逐字取自正文，≤200 字；同句多条违规并一项）。
+    句长超限 → quote 留空 → 该节回退整节重写。模型 finding 的 quote
+    已覆盖的句不再重复展开。"""
+    task = next((t for t in state.get("tasks") or [] if t.get("id") == tid), {})
+    allowed = set(task.get("segments") or [])
+    covered = [str(x.get("quote") or "")
+               for x in (state.get("audit") or {}).get("targets") or []
+               if isinstance(x, dict) and x.get("task") == tid
+               and x.get("quote")]
+    items: list[dict] = []
+    for sec, body in _section_map((state.get("drafts") or {}).get(tid)).items():
+        if not isinstance(body, str) or not body:
+            continue
+        groups: dict[tuple[int, int], list[tuple[str, str]]] = {}
+        for s, e, kind, found in _violation_spans(body, allowed):
+            groups.setdefault(_sentence_span(body, s, e), []).append((kind, found))
+        for (s, e), bads in groups.items():
+            sent = body[s:e]
+            if any(q and (q in sent or sent.strip() in q) for q in covered):
+                continue
+            sample = ";".join(f"{k}:{f}" for k, f in bads[:5])
+            items.append({
+                "task": tid, "section": sec,
+                "quote": sent if len(sent) <= 200 else "",
+                "action": "edit",
+                "problem": f"程序检出 {len(bads)} 处引用/编号问题:{sample}",
+                "fix": _VIOLATION_FIX,
+            })
+    return items
+
+
+def _patchable(target: dict, body: str) -> bool:
+    """单条 target 能不能走补丁：edit/delete + 非空 quote + 正文里唯一定位。"""
+    if str(target.get("action") or "rewrite_section") not in ("edit", "delete"):
+        return False
+    q = str(target.get("quote") or "")
+    if not q:
+        return False
+    return body.count(q) == 1 or body.count(q.strip()) == 1
+
+
+def _para_of(body: str, needle: str) -> str:
+    """needle 所在的整个段落（以空行分段）。定位不到退回正文开头。"""
+    i = body.find(needle)
+    if i < 0:
+        i = body.find((needle or "").strip())
+    if i < 0:
+        return body[:4000]
+    s = body.rfind("\n\n", 0, i) + 2
+    e = body.find("\n\n", i)
+    return body[s:e if e >= 0 else len(body)]
+
+
+def _patch_prompt(state: WriteState, tid: str, items: list[dict],
+                  bodies: dict) -> str:
+    """组 write_patch 的 user prompt：修订项（含整段上下文）+ 允许引用的
+    段清单 + 修订项文字里点过名的段全文（≤6 段，截 1500）。"""
+    segs = _task_segments(state, {"id": tid,
+                                  "segments": _task_segments_refs(state, tid)})
+    entries = []
+    for i, it in enumerate(items):
+        body = bodies.get(it["section"]) or ""
+        entries.append({"item": i, "小节": it["section"],
+                        "原句": it.get("quote") or "",
+                        "问题": it.get("problem") or "",
+                        "改法": it.get("fix") or "",
+                        "整段上下文": _para_of(body, it.get("quote") or "")})
+    payload = {
+        "修订项": entries,
+        "可引用的证据段": [{"段号": g.get("ref"), "这段在讲": g.get("summary")}
+                           for g in segs],
+    }
+    allowed = set(_task_segments_refs(state, tid))
+    cited: list[str] = []
+    for e in entries:
+        for m in re.finditer(r"S\d+·\d+",
+                             f"{e['原句']}{e['问题']}{e['改法']}{e['整段上下文']}"):
+            if m.group(0) in allowed and m.group(0) not in cited:
+                cited.append(m.group(0))
+    cited = cited[:6]
+    sid = state.get("session_id")
+    if sid and cited:
+        try:
+            from ...db.repo import get_repo
+            from ...tools.evidence import EvidenceTools
+            res = EvidenceTools(get_repo(), sid).dispatch(
+                [{"name": "read_segments", "input": {"segments": cited}}])
+            seg_full = (json.loads(res[0]["content"]).get("段落") or []) \
+                if res else []
+            payload["证据全文"] = [
+                {"段号": g.get("段号"),
+                 "全文": str(g.get("全文") or "")[:1500]}
+                for g in seg_full]
+        except Exception:
+            pass                       # 离线/读库失败：概括清单仍够模型干活
+    return (_dumps(payload)
+            + "\n\n改完后**调用 `submit_patches` 工具**提交替换列表，"
+              "结果只放在工具参数里，不要在对话文本里写 JSON。")
+
+
+def _apply_patches(state: WriteState, tid: str, items: list[dict],
+                   result: dict, drafts: dict,
+                   rejected: list, unresolved_out: list,
+                   fallback_secs: set) -> int:
+    """逐条校验并应用补丁到 drafts[tid]。返回应用成功的条数。
+
+    应用顺序 = 修订项顺序，作用在各小节**应用前序补丁后的最新文本**上。
+    校验不过的 item 其所在小节整体回退整节重写；`unresolved` 里的 item
+    不进回退，留给 `revise_unresolved` → 报告存疑节。"""
+    task = next((t for t in state.get("tasks") or [] if t.get("id") == tid), {})
+    allowed = set(task.get("segments") or [])
+    sec_titles = {o["id"]: o["title"] for o in state.get("outline") or []
+                  if isinstance(o, dict) and o.get("id") and o.get("title")}
+    bodies = _section_map(drafts.get(tid))
+    patches = {p["item"]: p for p in result.get("patches") or []}
+    unres = {u["item"]: u for u in result.get("unresolved") or []}
+    applied = 0
+
+    def _reject(it: dict, reason: str) -> None:
+        rejected.append({"task": tid, "section": it["section"],
+                         "reason": reason})
+        fallback_secs.add(it["section"])
+
+    for i, it in enumerate(items):
+        sec = it["section"]
+        if i in unres:
+            unresolved_out.append({
+                "task": tid, "section": sec,
+                "problem": str(it.get("problem") or "")[:200],
+                "reason": str(unres[i].get("reason") or "")[:200]})
+            continue
+        p = patches.get(i)
+        if p is None:
+            _reject(it, "模型未给出该项的替换")
+            continue
+        old, new = str(p.get("old") or ""), str(p.get("new") or "")
+        body = bodies.get(sec) or ""
+        if not old:
+            _reject(it, "old 为空")
+            continue
+        if body.count(old) == 1:
+            use = old
+        elif body.count(old.strip()) == 1:
+            use = old.strip()
+        else:
+            _reject(it, "old 未找到" if old.strip() not in body else "old 不唯一")
+            continue
+        if new == old:
+            _reject(it, "new 与 old 相同")
+            continue
+        if len(new) > max(3 * len(old), 300):
+            _reject(it, "扩写过度")
+            continue
+        fixed, _ = _auto_fix_text(new, allowed, sec_titles, sec or None)
+        if _check_citations(fixed, allowed):
+            _reject(it, "越界引用")
+            continue
+        if _check_internal_ids(fixed):
+            _reject(it, "内部编号")
+            continue
+        if set(_contamination(fixed)) & STRONG:
+            _reject(it, "污染输出")
+            continue
+        bodies[sec] = body.replace(use, fixed, 1)
+        applied += 1
+    if applied:
+        drafts[tid] = bodies
+    return applied
+
+
 def node_revise(state: WriteState) -> dict:
-    """定点返修：只把「规约 + 本任务证据 + 草稿 + 具体问题」喂回子 agent。
+    """定点返修：补丁优先，整节重写兜底（坑 80）。
+
+    审查目标先按 (task, section) 分流：能逐字定位的 edit/delete 走
+    `write_patch` 强制调用产 old→new 替换，程序精确匹配并校验；
+    rewrite_section / 无 quote / 定位失败 / 校验不过的节退回
+    `_run_task` 整节重写——旧路径保留，且用的是补丁应用后的最新草稿。
 
     **按任务合并，而不是按目标逐条跑。** 同一任务被点名多节时必须一次问完：
     旧写法把每个 high 发现单独跑一次，全写进 drafts[task]，
     于是 t8/sec7 修好，下一秒被 t8/sec8 那版整个覆盖掉——
     返修目标在数据结构上不可满足，怎么跑都不收敛。
 
-    第一个任务串行跑（返修轮同样要重建缓存，TTL 只有 5 分钟），其余并发。
+    第一个调用串行跑（返修轮同样要重建缓存，TTL 只有 5 分钟），其余并发。
     """
     audit = state.get("audit") or {}
     targets = audit.get("targets") or []
@@ -2003,13 +2330,118 @@ def node_revise(state: WriteState) -> dict:
     if not targets:
         return {}
 
+    # 按任务分组；`_violation` 目标（section=None 的程序检出）展开成
+    # 带整句 quote 的补丁项，替代「退回任务原始 covers」的粗放回退。
     by_task: dict[str, list[dict]] = {}
     for t in targets:
         by_task.setdefault(t["task"], []).append(t)
-    order = list(by_task)
+    for tid, ts in list(by_task.items()):
+        if any(t.get("_violation") for t in ts):
+            kept = [t for t in ts if not t.get("_violation")]
+            by_task[tid] = kept + _violation_items(state, tid)
+
+    # ---- 分流：补丁项 vs 旧路径小节 ----
+    # 同一 (task, section) 里只要有一条走旧路径，该节整体走旧路径
+    # （补丁只覆盖局部，剩下的问题整节重写时一并解决）。
+    patch_items: dict[str, list[dict]] = {}
+    fallback_targets: dict[str, list[dict]] = {}
+    for tid, ts in by_task.items():
+        bodies = _section_map(drafts.get(tid))
+        per_sec: dict[Any, list[dict]] = {}
+        for t in ts:
+            per_sec.setdefault(t.get("section"), []).append(t)
+        for sec, items in per_sec.items():
+            body = bodies.get(sec) if isinstance(sec, str) else None
+            if (sec and isinstance(body, str) and body
+                    and all(_patchable(t, body) for t in items)):
+                patch_items.setdefault(tid, []).extend(items)
+            else:
+                fallback_targets.setdefault(tid, []).extend(items)
+
+    # ---- 补丁阶段：每个任务一次强制调用，任务间并发 ----
+    patch_results: dict[str, dict | None] = {}
+    patch_errs: dict[str, str] = {}
+    patch_calls = 0
+    porder = list(patch_items)
+
+    def _patch_one(tid: str) -> tuple[str, dict | None]:
+        nonlocal patch_calls
+        prompt = _patch_prompt(state, tid, patch_items[tid],
+                               _section_map(drafts.get(tid)))
+        last: dict | None = None
+        for _attempt in (1, 2):
+            try:
+                patch_calls += 1
+                raw = LLM.complete_json_forced(
+                    "write_patch", prompt, "submit_patches", PATCH_SCHEMA,
+                    system=prompts.WRITE_PATCH)
+            except Exception as e:
+                if _attempt == 1 and _audit_retryable(e):
+                    print(f"⚠️  [write_patch] {tid} 调用失败"
+                          f"（{type(e).__name__}: {str(e)[:80]}），重试一次",
+                          flush=True)
+                    continue
+                patch_errs[tid] = f"{type(e).__name__}: {str(e)[:80]}"
+                return tid, None
+            last = _normalize_patch_input(raw)
+            if last is None:
+                if _attempt == 1:
+                    print(f"⚠️  [write_patch] {tid} 返回结构无法归一化，"
+                          "重试一次", flush=True)
+                    continue
+                patch_errs[tid] = "submit_patches 入参偏离 schema"
+                return tid, None
+            return tid, last
+        return tid, last
+
+    if porder:
+        t0 = _now()
+        _, res = _patch_one(porder[0])
+        patch_results[porder[0]] = res
+        first_cost = round(_now() - t0, 1)
+        rest = porder[1:]
+        if rest:
+            for r in parallel_labelled(rest, _patch_one, workers=CONCURRENCY,
+                                       label="revise", first_serial=True):
+                if not r:
+                    continue
+                tid, res = r
+                patch_results[tid] = res
+    else:
+        first_cost = 0.0
+
+    # ---- 应用补丁（串行，按任务顺序）----
+    applied = 0
+    patch_rejected: list[dict] = []
+    revise_unresolved: list[dict] = []
+    for tid in porder:
+        res = patch_results.get(tid)
+        secs = fallback_targets.get(tid)
+        if secs is None:
+            secs = fallback_targets[tid] = []
+        fb_secs = {t.get("section") for t in secs}
+        if res is None:
+            # 调用本身没拿到可用结构：该任务全部补丁项回退旧路径
+            reason = patch_errs.get(tid) or "调用失败"
+            for it in patch_items[tid]:
+                if it["section"] not in fb_secs:
+                    secs.append(it)
+                    fb_secs.add(it["section"])
+                    patch_rejected.append({"task": tid, "section": it["section"],
+                                           "reason": f"补丁调用失败：{reason}"})
+            continue
+        applied += _apply_patches(state, tid, patch_items[tid], res, drafts,
+                                  patch_rejected, revise_unresolved, fb_secs)
+        for it in patch_items[tid]:
+            if it["section"] in fb_secs and it not in secs:
+                secs.append(it)
+
+    # ---- 旧路径：整节重写兜底（补丁应用之后，用最新草稿）----
+    # 空列表任务（补丁全成）不能进 forder——否则会对它空跑一次 _run_task。
+    forder = [tid for tid, ts in fallback_targets.items() if ts]
 
     def _one(tid: str) -> tuple[str, dict, str | None]:
-        secs = by_task[tid]
+        secs = fallback_targets[tid]
         # 意见按小节归并，提示词里才看得出「这几节各要改什么」
         asks = [{"小节": s.get("section"), "问题": s.get("problem"),
                  "改法": s.get("fix")} for s in secs]
@@ -2029,27 +2461,51 @@ def node_revise(state: WriteState) -> dict:
             "reason": (err or "")[:80]})
         return tid, new, err
 
-    t0 = _now()
     # 被 merge 保护拦下的节：新稿可疑而保留了旧稿，必须进事件可查——
     # 不然「返修跑了但正文没动」看起来会像静默 bug（坑 75）。
     rejected: list[dict] = []
-    tid, new, _err = _one(order[0])
-    drafts[tid] = _merge_sections(drafts.get(tid), new, by_task[tid],
-                                  rejected=rejected)
-    first_cost = round(_now() - t0, 1)
+    if forder:
+        # 补丁打上的节不在 fallback targets 里，merge 不会碰它们；
+        # 但 section=None 的旧路径会按新稿键合并，打完补丁的节单独存一份
+        # 事后显式写回，保证「没被点名的文字逐字节不变」。
+        # 只存**补丁生效且没回退**的节——回退节要靠整节重写的新稿覆盖，
+        # 存了会把重写成果顶掉。
+        patched_secs: dict[str, dict] = {}
+        for tid in porder:
+            fb = {t.get("section") for t in fallback_targets.get(tid) or []}
+            cur = _section_map(drafts.get(tid))
+            for it in patch_items[tid]:
+                if it["section"] not in fb and it["section"] in cur:
+                    patched_secs.setdefault(tid, {})[it["section"]] = \
+                        cur[it["section"]]
 
-    rest = order[1:]
-    if rest:
-        # 同 node_dispatch（C1-f2）：返修的并发任务共享同一段前缀，
-        # 预热同样要**每批一个**，不能只有第一个任务。
-        # parallel_labelled 保证按原顺序返回，所以逐个合并不影响装配顺序。
-        for r in parallel_labelled(rest, _one, workers=CONCURRENCY,
-                                   label="revise", first_serial=True):
-            if not r:
-                continue
-            tid, new, _err = r
-            drafts[tid] = _merge_sections(drafts.get(tid), new, by_task[tid],
-                                          rejected=rejected)
+        if not porder:
+            t0 = _now()
+        tid, new, _err = _one(forder[0])
+        drafts[tid] = _merge_sections(drafts.get(tid), new,
+                                      fallback_targets[tid],
+                                      rejected=rejected)
+        if not porder:
+            first_cost = round(_now() - t0, 1)
+
+        rest = forder[1:]
+        if rest:
+            # 同 node_dispatch（C1-f2）：返修的并发任务共享同一段前缀，
+            # 预热同样要**每批一个**，不能只有第一个任务。
+            # parallel_labelled 保证按原顺序返回，逐个合并不影响装配顺序。
+            for r in parallel_labelled(rest, _one, workers=CONCURRENCY,
+                                       label="revise", first_serial=True):
+                if not r:
+                    continue
+                tid, new, _err = r
+                drafts[tid] = _merge_sections(drafts.get(tid), new,
+                                              fallback_targets[tid],
+                                              rejected=rejected)
+        # 补丁小节显式写回（merge 的 wanted 覆盖不到它们时保险）
+        for tid, secs in patched_secs.items():
+            merged = _section_map(drafts.get(tid))
+            merged.update(secs)
+            drafts[tid] = merged
 
     # 返修救回的任务不能还挂在 failed 里（坑 78）：终稿「存疑与未完成」
     # 会照着它写「以下任务未能完成」，而正文其实已经在了——报告说假话。
@@ -2062,18 +2518,30 @@ def node_revise(state: WriteState) -> dict:
     # 程序护栏在审查之前（坑 79）：返修稿同样先机械修再查残留。
     drafts, auto_fixes = _auto_fix_drafts(state, drafts)
 
+    fallback_secs = sorted(
+        {(t.get("task") or tid, t.get("section")) for tid in forder
+         for t in fallback_targets[tid]}, key=lambda x: (x[0], str(x[1])))
     return {
         "drafts": drafts,
         "failed": still_failed,
+        "revise_unresolved": (state.get("revise_unresolved") or [])
+                             + revise_unresolved,
         "rework_rounds": state.get("rework_rounds", 0) + 1,
         "violations": _check_all_citations(state, drafts),
         "events": [{"kind": "write_revise",
-                    "tasks": order,
+                    "tasks": list(by_task),
                     "targets": [f"{t['task']}→{t.get('section')}" for t in targets],
                     "kept_old": rejected,
                     "cleared_failed": cleared_failed,
                     "auto_fixes": len(auto_fixes),
                     "auto_fix_sample": auto_fixes[:8],
+                    "patch": {"items": sum(len(v) for v in patch_items.values()),
+                              "patch_calls": patch_calls,
+                              "applied": applied,
+                              "rejected": patch_rejected[:10],
+                              "unresolved": len(revise_unresolved),
+                              "fallback_sections":
+                                  [[t, s] for t, s in fallback_secs]},
                     "first_serial_s": first_cost,
                     "round": state.get("rework_rounds", 0) + 1}],
     }
@@ -2241,6 +2709,13 @@ def node_final(state: WriteState) -> dict:
             f"但子 agent 只能看到标题与正文开头，看不到这些段的要点概括。")
     if uncovered:
         doubt.append("以下任务的产出未被任何小节采用：" + "、".join(uncovered))
+    for u in state.get("revise_unresolved") or []:
+        # 补丁模型明确说「这条改不了」的修订项——不回退整节重写
+        # （白烧一次调用多半还是改不了），但要让读者看见（坑 80）。
+        doubt.append(
+            f"返修未能解决:{u.get('task')}/{u.get('section')}:"
+            f"{str(u.get('problem') or '')[:80]}"
+            f"（{str(u.get('reason') or '')[:120]}）")
     for w in asm_warn:
         # 装配自检命中：这份稿子可能有结构性错误，读者必须看得见
         doubt.append(f"装配自检：{w}")
@@ -2323,6 +2798,7 @@ def run_write(session_id: str, question: str, outline: list, signals: dict,
         "n_no_summary": n_no_summary,
         "drafts": {}, "violations": {}, "failed": [],
         "rework_rounds": 0, "rework_effective": True,
+        "revise_unresolved": [],
     }
     g = build_write_graph().compile()
     return g.invoke(st)

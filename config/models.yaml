@@ -595,6 +595,29 @@ stages:
     max_output_tokens: 4096
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 8192 }
 
+  # 定点补丁返修（2026-10-19，坑 80）：审查给出 quote+action 后，
+  # 每个任务一次 `submit_patches` 强制调用产 old→new 替换，
+  # 程序做精确匹配与校验；校验不过/定位失败回退 write_revise 整节重写。
+  #
+  # 为什么关思考：这是**纯编辑任务**——改哪里（quote）、怎么改（fix）
+  # 都由审查给定，补丁模型只是照单执行，开思考只会把它推去顺手润色
+  # 没被点名的文字。形状抄 tests/exp_audit_nothink.py 的 V1
+  # （关思考 + 强制工具，真实验证 5/5）。
+  # ⚠️ 风险与 write_section 相同：MiniMax 关思考 + 点名工具偶发编造
+  # 调用（~1/8），由「重试一次 + 校验不过回退整节重写」兜底。
+  # `reasoning_effort: low` 是给「发工具必须开思考」的配置护栏看的，
+  # 强制轮真正关思考靠 forced_thinking（与 write_section 同一机制）。
+  # ⚠️ 不许迁 M3.1：forced_thinking: disabled 在 M3.1 上被 validate()
+  # 拦死（它关不掉思考），这是有意的——M3.1 没有「关思考」可给。
+  write_patch:
+    stream: true
+    reasoning_effort: low
+    forced_thinking: disabled
+    temperature: 0.1
+    max_output_tokens: 8192
+    guard: { retry_on_empty: 1, max_output_tokens: 8192 }
+    timeout_s: 180
+
   # ---- 会话摘要（报告写完后，产品化阶段 3）----
   #
   # 给资产列表用的：让用户在列表里就知道这场研究讲了什么，

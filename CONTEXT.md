@@ -1,7 +1,7 @@
 # CONTEXT · 交接文档
 
 > 这份文档的定位：**接手这个项目前必须先读的东西**。
-> 架构、仍然有效的决策、踩过的坑（79 条）、工作约定、已知缺口。
+> 架构、仍然有效的决策、踩过的坑（80 条）、工作约定、已知缺口。
 >
 > 工程层面**已经知道、但有意押后**的欠账另记在 [`TECH_DEBT.md`](TECH_DEBT.md)
 > （`checkpoints.db` 无清理机制、守门测试污染默认库等）。本文第十节记的是
@@ -283,7 +283,7 @@ server 不是**。要么 `set -a; . ./.env; set +a`，要么给 uvicorn 装
 
 ---
 
-## 八、踩过的坑（79 条 · 只留会再踩的）
+## 八、踩过的坑（80 条 · 只留会再踩的）
 
 
 ### 1. 避坑注释写在别处 ≠ 那个坑被填上了
@@ -1999,7 +1999,64 @@ v14 真实 drafts 上重做后共修 15 处——13 处 R3a 换名（零删除�
 
 ---
 
-## 九、工作约定
+### 80. 整节重写式返修会带出新问题：改成定点补丁（2026-10-19）
+
+**症状**：`node_revise` 对被审查点名的任务整节重写
+（`_run_task` revise 路径，工具循环读证据后重写全文）。
+重写本身是生成任务，会顺带写出新缺陷——真实运行里审查提的
+**4 个 high 修完变成了 7 个**（重写稿里的新问题又被下一轮
+审查逮住）；而且每次都重读证据、重写整节，token/时间重。
+
+**设计**：把「改」从生成降成机械替换，分三层——
+1. **审查产出可定位指令**（`AUDIT_SCHEMA` findings 加
+   `quote` + `action`）：`quote` 是草稿里逐字摘出的那句，
+   `action` ∈ `edit` / `delete` / `rewrite_section`。
+   `WRITE_AUDIT` 提示词新增「修改指令要能被机械执行」一节，
+   明说 quote 复制错了会退化成代价大的整节重写。
+2. **每任务一次强制调用产 old→new**（新环节 `write_patch`，
+   `submit_patches` 工具）：`patches:[{item,old,new}]` +
+   `unresolved:[{item,reason}]`。程序只组装输入——修订项
+   （小节/原句/问题/改法/**整段上下文**）、允许引用的段清单、
+   修订项文字点过名的段全文（≤6 段×1500 字）。
+3. **程序精确匹配 + 校验后才替换**，没被点名的文字逐字节不变；
+   任何一步不过都**回退旧的整节重写路径**（`_run_task` revise
+   保留，不删）——补丁是优化，旧路径是兜底，不是替代。
+
+**校验规则**（按序拒收，理由进 `write_revise` 事件 `patch.rejected`）：
+`old` 空/未找到/不唯一（strip 后可再试一次）→ `new==old` →
+扩写过度（`len(new) > max(3·len(old), 300)`）→ `new` 先过
+`_auto_fix_text` 再查 `_check_citations` / `_check_internal_ids`
+/ `_contamination & STRONG`，命中即拒。被拒 item 所在**整节**
+回退旧路径（该节全部 asks 一起喂）；模型明确放进 `unresolved`
+的项**不**回退（白烧一次也改不了），进 `state["revise_unresolved"]`
+→ `node_final` 存疑节写「返修未能解决」一行。
+程序违规目标（坑 79 的 `section=None` target）也走补丁：
+`_violation_items` 把每条残留违规按句定位成 quote=整句 的补丁项。
+
+**`write_patch` 配置**（models.yaml）：M3 + `forced_thinking: disabled`
++ `reasoning_effort: low`——**关思考是取舍**：这是纯编辑任务，
+改哪里（quote）、怎么改（fix）审查已给定，开思考只会推它顺手润色
+没点名的文字。形状抄 `tests/exp_audit_nothink.py` 的 V1（关思考+
+强制工具，实测 5/5）。风险与 write_section 同款：MiniMax 关思考+
+点名工具偶发编造调用（~1/8）——靠「重试一次（`_audit_retryable`
+同款判据：429/5xx/ConfigError 不重试）+ 校验不过回退整节重写」兜底。
+`reasoning_effort: low` 是给 `_check_minimax_thinking_tools`
+（发工具必须开思考的配置护栏）看的，真正关思考靠 `forced_thinking`
+——同一机制在 write_section/write_revise 已验证。
+⚠️ 不许迁 M3.1：`forced_thinking: disabled` 在 M3.1 上被
+`validate()` 拦死（那个模型关不掉思考），这是有意的护栏。
+
+**向后兼容**：缺 `quote`/`action` 的 finding（老 fixture、模型漂移）
+`action` 落 `rewrite_section` → 直接旧路径，不发补丁调用；
+`_normalize_patch_input` 缺 `patches`/`unresolved` 键判无效 →
+重试一次 → 仍不行该任务全回退。
+
+**局限（如实）**：真实数据上的收敛性（补丁命中率、回退率、
+unresolved 占比）**还没有验证过**；省多少 token/时间也**没有实测**，
+离线测试只证明了机制正确。补丁粒度是「句级替换」，跨段的大改、
+结构调整仍会落到整节重写——那是设计内的分工，不是缺陷。
+
+---
 
 1. **测试范围**：改了哪块只测哪块，**用现有 session 续跑**而不是重跑全流程
    （省时间也省搜索额度）
@@ -2010,7 +2067,7 @@ v14 真实 drafts 上重做后共修 15 处——13 处 R3a 换名（零删除�
    引导性规则优于硬约束，硬约束只用于合规性与底层限制
 5. **结构性修改一律先说方案再改**
 6. **每个决定记进 `CONTEXT.md`**（原 `DECISIONS.md` 已删）
-7. **自己判断错了要当场纠正并说明** —— 下面 79 条里至少有 6 条是我猜错之后
+7. **自己判断错了要当场纠正并说明** —— 下面 80 条里至少有 6 条是我猜错之后
    被自己的实验推翻才写进去的
 
 ---
@@ -2035,7 +2092,7 @@ v14 真实 drafts 上重做后共修 15 处——13 处 R3a 换名（零删除�
 ## 十一、要改代码前先确认的清单
 
 - 加 state 字段 → **必须在 `ResearchState` / `WriteState` 里声明**，否则 LangGraph 静默丢弃
-- 改 provider → 读第六节（79 条坑）+ 「切换时必须一起改的东西」
+- 改 provider → 读第六节（80 条坑）+ 「切换时必须一起改的东西」
 - 写/改守门测试 → provider **钉死**，不许跟着 `defaults` 漂；桩要接在**正确的层**上
 - 加一条新的发请求路径 → **数一遍同类路径有几条**（这轮栽了三次：空 tools 400、流式分支、截断检测）
 - 断 provider 协议形状 → **逐个字段核对** usage / stop_reason / tools / tool_choice，

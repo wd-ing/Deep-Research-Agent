@@ -178,6 +178,9 @@ class WriteState(TypedDict, total=False):
     audit: dict                  # 审查结论
     rework_rounds: int
     rework_effective: bool
+    revise_unresolved: list      # 补丁模型明确说改不了的修订项（坑 80）
+                                 # [{task, section, problem, reason}]，
+                                 # 进终稿「存疑与未完成」
 
     report_markdown: str         # 最终报告，只由 final 节点写
 
