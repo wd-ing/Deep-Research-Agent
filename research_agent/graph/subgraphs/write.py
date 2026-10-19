@@ -302,49 +302,58 @@ def node_plan_tasks(state: WriteState) -> dict:
                      "框架与轮廓": _brief(state)})
     sid = state.get("session_id") or ""
 
-    text = ""
-    log: list[list[dict]] = []
-    if sid:
-        from ...db.repo import get_repo
-        from ...tools.evidence import EvidenceTools
-        tools = EvidenceTools(get_repo(), sid)
-        try:
-            text, _, log = run_tool_loop(
-                LLM, "write_plan_tasks", prompts.WRITE_PLAN_TASKS,
-                [{"role": "user", "content": _clip(prompt, 60000)}],
-                tools, max_rounds=MAX_TOOL_ROUNDS, final_tool=SUBMIT_TASKS)
-            _record_tool_use(state, "plan_tasks", log)
-        except Exception as e:
-            # 工具循环挂了退回单次调用——**不能因此整步失败**：
-            # 分派本来就只是"照着概括分"，有工具是加分项不是必需项。
-            print(f"⚠️  分派环节工具循环失败，退回单次调用: {e}", flush=True)
-            text = ""
-
-    data = None
-    err: Exception | None = None
-    if text:
-        try:
-            data = _parse_json(text)
-        except Exception as e:
-            # ⚠️ 同一段文本重解析是同一份确定性失败，重试没意义——
-            # 退回单次调用（下面的重试循环兜它）
-            print(f"⚠️  分派工具循环产出解析失败，退回单次调用: "
-                  f"{str(e)[:120]}", flush=True)
-    if data is None:
-        # 一次性重试（2026-10-18）：手写 JSON 路径的抖动型失败，
-        # 同 plan_spec——v13 实测 spec 步在 char 6962 坏掉一次，
-        # 没有重试的话整条写作线直接退化成「只有来源清单」。
-        for _ in range(2):
+    def _obtain(extra: str) -> tuple[dict | None, list[list[dict]],
+                                   Exception | None]:
+        """一次完整获取：工具循环（有 sid）→ 解析失败退回 complete_json 两次。"""
+        text = ""
+        log: list[list[dict]] = []
+        if sid:
+            from ...db.repo import get_repo
+            from ...tools.evidence import EvidenceTools
+            tools = EvidenceTools(get_repo(), sid)
             try:
-                data = LLM.complete_json("write_plan_tasks",
-                                         _clip(prompt, 60000),
-                                         system=prompts.WRITE_PLAN_TASKS)
-                err = None
-                break
+                text, _, log = run_tool_loop(
+                    LLM, "write_plan_tasks", prompts.WRITE_PLAN_TASKS,
+                    [{"role": "user",
+                      "content": _clip(prompt + extra, 60000)}],
+                    tools, max_rounds=MAX_TOOL_ROUNDS,
+                    final_tool=SUBMIT_TASKS)
+                _record_tool_use(state, "plan_tasks", log)
             except Exception as e:
-                err = e
-                print(f"⚠️  任务分派调用失败，重试一次: {str(e)[:120]}",
+                # 工具循环挂了退回单次调用——**不能因此整步失败**：
+                # 分派本来就只是"照着概括分"，有工具是加分项不是必需项。
+                print(f"⚠️  分派环节工具循环失败，退回单次调用: {e}",
                       flush=True)
+                text = ""
+
+        data = None
+        err: Exception | None = None
+        if text:
+            try:
+                data = _parse_json(text)
+            except Exception as e:
+                # ⚠️ 同一段文本重解析是同一份确定性失败，重试没意义——
+                # 退回单次调用（下面的重试循环兜它）
+                print(f"⚠️  分派工具循环产出解析失败，退回单次调用: "
+                      f"{str(e)[:120]}", flush=True)
+        if data is None:
+            # 一次性重试（2026-10-18）：手写 JSON 路径的抖动型失败，
+            # 同 plan_spec——v13 实测 spec 步在 char 6962 坏掉一次，
+            # 没有重试的话整条写作线直接退化成「只有来源清单」。
+            for _ in range(2):
+                try:
+                    data = LLM.complete_json(
+                        "write_plan_tasks", _clip(prompt + extra, 60000),
+                        system=prompts.WRITE_PLAN_TASKS)
+                    err = None
+                    break
+                except Exception as e:
+                    err = e
+                    print(f"⚠️  任务分派调用失败，重试一次: "
+                          f"{str(e)[:120]}", flush=True)
+        return data, log, err
+
+    data, log, err = _obtain("")
     if data is None:
         return {"plan_failed": _clip_sentence(str(err), 200),
                 "events": [{"kind": "write_plan_error", "stage": "tasks",
@@ -352,18 +361,57 @@ def node_plan_tasks(state: WriteState) -> dict:
 
     raw_tasks = [t for t in (data.get("tasks") or []) if isinstance(t, dict)]
     tasks = _normalize_tasks(raw_tasks, outline, known)
+
+    # 覆盖校验（2026-10-20，E1 实验实测触发）：模型交过「1 个任务只盖
+    # sec1、其余 8 节没人写」的合法但无用的计划，当时零告警。交卷后核对
+    # outline 小节是否都被某个任务的 covers 覆盖；有漏就带清单重试一次，
+    # 两次取覆盖更多的那次。
+    outline_ids = [o.get("id") for o in outline if o.get("id")]
+
+    def _uncovered(ts: list[dict]) -> list[str]:
+        covered = {s for t in ts for s in _as_str_list(t.get("covers"))}
+        return [s for s in outline_ids if s not in covered]
+
+    uncovered = _uncovered(tasks)
+    plan_retried = False
+    if uncovered:
+        plan_retried = True
+        covered_now = [s for s in outline_ids if s not in uncovered]
+        extra = ("\n\n【上一次交卷有问题】你上次交的任务只覆盖了 "
+                 f"{'、'.join(covered_now) or '（无）'}，"
+                 f"下面这些小节没有任何任务：{'、'.join(uncovered)}。\n"
+                 "**每个小节至少要被一个任务的 `covers` 覆盖**"
+                 "（可以合并、可以拆分，但不能漏）。证据极少的小节照样建任务，"
+                 "在 `mandate` 里写明「材料只够讲 X，其余如实标注缺口」。"
+                 "请重新交卷，覆盖全部小节。")
+        print(f"⚠️  任务分派漏了 {len(uncovered)} 节"
+              f"（{'、'.join(uncovered)}），带清单重试一次", flush=True)
+        data2, log2, _ = _obtain(extra)
+        log += log2
+        if data2 is not None:
+            raw2 = [t for t in (data2.get("tasks") or [])
+                    if isinstance(t, dict)]
+            tasks2 = _normalize_tasks(raw2, outline, known)
+            un2 = _uncovered(tasks2)
+            if len(un2) <= len(uncovered):
+                # 并列也取第二次：后一次是看到漏节清单之后交的。
+                tasks, raw_tasks, uncovered = tasks2, raw2, un2
     _trace(state.get("session_id"), spec=spec, tasks=tasks,
            stats={"raw_tasks": len(raw_tasks), "kept": len(tasks),
                   "capped": len(tasks) < len(raw_tasks),
                   "segments_available": len(known),
-                  "plan_tool_reads": sum(len(r) for r in log)})
+                  "plan_tool_reads": sum(len(r) for r in log),
+                  "plan_retried": plan_retried,
+                  "uncovered_sections": uncovered})
     return {
         "spec": spec, "tasks": tasks,
         "spec_capped": len(tasks) < len(raw_tasks),
         "events": [{"kind": "write_plan_tasks", "tasks": len(tasks),
                     "raw_tasks": len(raw_tasks),
                     "segments_available": len(known),
-                    "tool_reads": sum(len(r) for r in log)}],
+                    "tool_reads": sum(len(r) for r in log),
+                    "plan_retried": plan_retried,
+                    "uncovered_sections": uncovered}],
     }
 
 
