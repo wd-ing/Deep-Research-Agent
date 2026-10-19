@@ -465,6 +465,41 @@ def t12_empty_tools_must_be_omitted():
           == "submit_tasks", str(sent[0].get("tools"))[:80])
 
 
+def t13_normalize_task_arrays():
+    """`_normalize_tasks` 对 must_cover / not_yours 的字符串容错（坑 76）。
+
+    v14 真跑：模型把 `must_cover` 回成普通字符串而不是数组，旧代码对它
+    逐字迭代，「覆盖三条路线」被拆成 12 个单字——下游 mandate 全是碎字。
+    修复是 `_as_str_list`：字符串先当 JSON 数组试解，解不开就当一整条。
+    """
+    from research_agent.graph.subgraphs import write as W
+    outline = [{"id": "sec1"}]
+
+    def norm(**over):
+        t = {"id": "t1", "covers": ["sec1"], "mandate": "m",
+             "segments": [], "must_cover": [], "not_yours": []}
+        t.update(over)
+        return W._normalize_tasks([t], outline, set())[0]
+
+    check("⑬ must_cover 数组原样",
+          norm(must_cover=["a", "b"])["must_cover"] == ["a", "b"])
+    check("⑬ JSON 字符串还原成数组",
+          norm(must_cover='["x","y"]')["must_cover"] == ["x", "y"])
+    # 核心回归：普通字符串是**一条**，逐字拆出来的单字一个都不能出现。
+    check("⑬ 普通字符串按一条收、不拆成单字",
+          norm(must_cover="单条要求")["must_cover"] == ["单条要求"])
+    check("⑬ 空串与 None 都归空",
+          norm(must_cover="")["must_cover"] == []
+          and norm(must_cover=None)["must_cover"] == [])
+    check("⑬ 超 12 项截到 12",
+          len(norm(must_cover=[f"r{i}" for i in range(20)]
+                  )["must_cover"]) == 12)
+    check("⑬ 单项超 200 字截到 200",
+          len(norm(must_cover=["x" * 300])["must_cover"][0]) == 200)
+    check("⑬ not_yours 同规则",
+          norm(not_yours="别写路线对比")["not_yours"] == ["别写路线对比"])
+
+
 def main() -> int:
     print("=== run_tool_loop：两阶段交卷 ===")
     for fn in (t1_early_submit_skips_forced_round, t2_text_then_forced,
@@ -479,6 +514,8 @@ def main() -> int:
     t12_empty_tools_must_be_omitted()
     print("\n=== node_plan_tasks 接线 ===")
     t11_node_wiring()
+    print("\n=== _normalize_tasks 数组字段容错 ===")
+    t13_normalize_task_arrays()
     print()
     if FAILED:
         print(f"❌ {len(FAILED)} 项失败：")

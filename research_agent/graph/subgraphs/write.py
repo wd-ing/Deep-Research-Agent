@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from typing import Any
 
@@ -325,6 +326,17 @@ def _brief(state: WriteState) -> dict:
     }
 
 
+def _as_str_list(v) -> list[str]:
+    """模型偶尔把数组字段回成字符串（常是 JSON 编码的数组）；逐字迭代会拆成单字。"""
+    if isinstance(v, str):
+        s = v.strip()
+        try:
+            v = json.loads(s) if s[:1] == "[" else [s]
+        except ValueError:
+            v = [s]
+    return [str(x)[:200] for x in (v or []) if str(x).strip()][:12]
+
+
 def _normalize_tasks(raw: list, outline: list, known: set) -> list:
     """清洗主 agent 的任务列表。脏数据在这里挡住，不让它流到子 agent。
 
@@ -344,8 +356,8 @@ def _normalize_tasks(raw: list, outline: list, known: set) -> list:
             "covers": covers,
             "mandate": str(t.get("mandate") or "")[:600],
             "segments": sorted(set(segs)),
-            "must_cover": [str(x)[:200] for x in (t.get("must_cover") or [])][:12],
-            "not_yours": [str(x)[:200] for x in (t.get("not_yours") or [])][:12],
+            "must_cover": _as_str_list(t.get("must_cover")),
+            "not_yours": _as_str_list(t.get("not_yours")),
         })
         if len(out) >= MAX_TASKS:
             break
