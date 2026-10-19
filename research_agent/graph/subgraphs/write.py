@@ -438,22 +438,23 @@ def node_dispatch(state: WriteState) -> dict:
     ev = {"drafts": dict(drafts), "failed": list(failed)}
     batches = [todo[i:i + CONCURRENCY]
                for i in range(0, len(todo), CONCURRENCY)]
+
+    def _one(t: dict) -> tuple[dict, str | None]:
+        secs, err = _run_task(state, t, revise=None)
+        # 每任务一行：写作环节最长的并行段终于有粒度合适的进度。
+        # 这里就推（fire_progress），不等批收齐——否则 8 个任务还是
+        # 按批到达，用户看到的仍是块而不是流。
+        fire_progress("write", {
+            "kind": "write_task", "task": t["id"],
+            "covers": list(t.get("covers") or []),
+            "ok": bool(secs),
+            "chars": sum(len(str(v)) for v in secs.values()) if secs else 0,
+            "reason": (err or "")[:80]})
+        return secs, err
+
     first_cost = 0.0
     for bi, batch in enumerate(batches):
         t0 = _now()
-
-        def _one(t: dict, _b=batch) -> tuple[dict, str | None]:
-            secs, err = _run_task(state, t, revise=None)
-            # 每任务一行：写作环节最长的并行段终于有粒度合适的进度。
-            # 这里就推（fire_progress），不等批收齐——否则 8 个任务还是
-            # 按批到达，用户看到的仍是块而不是流。
-            fire_progress("write", {
-                "kind": "write_task", "task": t["id"],
-                "covers": list(t.get("covers") or []),
-                "ok": bool(secs),
-                "chars": sum(len(str(v)) for v in secs.values()) if secs else 0,
-                "reason": (err or "")[:80]})
-            return secs, err
 
         # 必须走 parallel_labelled：它内部用 submit_run_in_context 在**主线程**
         # 造好 wrapper 再提交，线程不继承 contextvar 这件事才不会漏。
@@ -475,15 +476,75 @@ def node_dispatch(state: WriteState) -> dict:
                 ev["failed"].append({"task": t["id"],
                                      "reason": err or "empty output"})
 
+    # ---- 偶发失败重试一次（2026-10-19，坑 78）----
+    # 「交卷但正文全空」这类随机失败，同一任务复测 6/6 成功——值一轮重试。
+    # 429/额度/配置类重发没意义（`_task_retryable` 与 `_audit_retryable`
+    # 同一套判据）。只重试本轮新败的：state 里遗留的 failed 已定性。
+    new_failed = {f.get("task"): f for f in ev["failed"][len(failed):]}
+    retry_tasks = [t for t in todo
+                   if t["id"] in new_failed
+                   and _task_retryable(new_failed[t["id"]].get("reason"))]
+    retried = len(retry_tasks)
+    recovered = 0
+    if retry_tasks:
+        def _one_retry(t: dict) -> tuple[dict, str | None]:
+            secs, err = _run_task(state, t, revise=None)
+            # 重试成功照常再发一条 ok=True；仍败**不**再发——
+            # 首跑那条失败进度已在事件流里，重发是重复噪音。
+            if secs:
+                fire_progress("write", {
+                    "kind": "write_task", "task": t["id"], "retry": True,
+                    "covers": list(t.get("covers") or []),
+                    "ok": True,
+                    "chars": sum(len(str(v)) for v in secs.values())})
+            return secs, err
+
+        # 与首跑同一层：parallel_labelled 的 contextvar 记账坑见上面注释。
+        retry_results = parallel_labelled(retry_tasks, _one_retry,
+                                          workers=CONCURRENCY,
+                                          label="write", first_serial=True)
+        recovered_ids: set = set()
+        for t, r in zip(retry_tasks, retry_results):
+            if not r:
+                continue                       # 保留首跑记下的失败原因
+            secs, err = r
+            if secs:
+                ev["drafts"][t["id"]] = secs
+                recovered_ids.add(t["id"])
+            else:
+                # 重试仍败：reason 换成最后一次的（更贴近真死因）
+                new_failed[t["id"]]["reason"] = err or "empty output"
+        if recovered_ids:
+            recovered = len(recovered_ids)
+            ev["failed"] = [f for f in ev["failed"]
+                            if f.get("task") not in recovered_ids]
+
     return {
         "drafts": ev["drafts"],
         "failed": ev["failed"],
         "violations": _check_all_citations(state, ev["drafts"]),
         "events": [{"kind": "write_dispatch", "ran": len(todo),
                     "first_serial_s": first_cost,
+                    "retried": retried, "recovered": recovered,
                     "drafts_total": len(ev["drafts"]),
                     "failed_total": len(ev["failed"])}],
     }
+
+
+def _task_retryable(reason: str | None) -> bool:
+    """失败原因值不值得再跑一次（dispatch 内重试的闸门）。
+
+    与 `_audit_retryable` 同一套判据，只是喂进来的是原因字符串：
+    · HTTP 状态错（429 限流/额度、5xx）——重发一个死一个；
+    · 配置类 / 确定性失败（没分到证据）——重跑一万次也一样；
+    · 交卷异常（空交卷、污染、截断、调用方异常）——随机事件，值一次。
+    """
+    s = reason or ""
+    if re.search(r"MiniMax [45]\d\d", s) or "quota" in s.lower():
+        return False
+    if "ConfigError" in s or "没有分到" in s:
+        return False
+    return True
 
 
 def _pending(state: WriteState) -> list[dict]:
@@ -1680,17 +1741,34 @@ def node_revise(state: WriteState) -> dict:
             drafts[tid] = _merge_sections(drafts.get(tid), new, by_task[tid],
                                           rejected=rejected)
 
+    # 返修救回的任务不能还挂在 failed 里（坑 78）：终稿「存疑与未完成」
+    # 会照着它写「以下任务未能完成」，而正文其实已经在了——报告说假话。
+    # `failed` 是普通 list（无 append reducer），返回过滤后的新列表即生效。
+    cleared_failed = [f.get("task") for f in (state.get("failed") or [])
+                      if _draft_has_body(drafts.get(f.get("task")))]
+    still_failed = [f for f in (state.get("failed") or [])
+                    if f.get("task") not in set(cleared_failed)]
+
     return {
         "drafts": drafts,
+        "failed": still_failed,
         "rework_rounds": state.get("rework_rounds", 0) + 1,
         "violations": _check_all_citations(state, drafts),
         "events": [{"kind": "write_revise",
                     "tasks": order,
                     "targets": [f"{t['task']}→{t.get('section')}" for t in targets],
                     "kept_old": rejected,
+                    "cleared_failed": cleared_failed,
                     "first_serial_s": first_cost,
                     "round": state.get("rework_rounds", 0) + 1}],
     }
+
+
+def _draft_has_body(d) -> bool:
+    """drafts 里的产物是否真有非空正文（dict 按节、str 按整段）。"""
+    if isinstance(d, dict):
+        return any(str(v).strip() for v in d.values())
+    return bool(isinstance(d, str) and d.strip())
 
 
 def _section_map(draft: Any) -> dict:
