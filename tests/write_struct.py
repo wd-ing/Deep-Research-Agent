@@ -145,7 +145,7 @@ class Fake:
         covers = _covers_from(head)
         text = self.sections.get(f"{stage}:{tid}", "")
         if not text:
-            text = _body_for(tid, covers)
+            text = _body_for(tid, covers, _ref_for(self.plan, tid))
         return {"blocks": [{"type": "text", "text": text}], "usage": {}}
 
     def complete(self, stage: str, prompt: str, system: str | None = None,
@@ -154,7 +154,8 @@ class Fake:
         if stage in ("write_section", "write_revise"):
             tid = _task_id_from(prompt)
             text = self.sections.get(f"{stage}:{tid}", "")
-            return text or _body_for(tid, _covers_from(prompt))
+            return text or _body_for(tid, _covers_from(prompt),
+                                     _ref_for(self.plan, tid))
         return "{}"
 
 
@@ -172,12 +173,31 @@ _PAD = (
     "缺口处如实写明未找到独立信源。")
 
 
-def _body_for(tid: str, covers: list[str]) -> str:
-    """多节任务必须逐节标记，否则装配取不到各自那段。"""
+def _body_for(tid: str, covers: list[str], ref: str = "S1·1") -> str:
+    """多节任务必须逐节标记，否则装配取不到各自那段。
+
+    ⚠️ 坑 79 起两个新约束（桩正文本身不能带那三类缺陷，否则触发的是
+    护栏而不是被测的结构行为）：
+    · 不能写「任务 t8 / 的 sec2 正文」这种内部编号——R3 会整句删掉，
+      两节退化成只剩 _PAD 而逐字相同。改用序号表达避开内部 id 字形。
+    · 引用必须是该任务**分到**的段号（`ref` 由调用方按 plan 给出）——
+      以前 violations 只展示，现在残留违规会直接变成返修目标，
+      凭空多一轮返修把场景带偏。
+    """
+    num = tid.lstrip("t")
     if not covers:
-        return f"[S1·1] 任务 {tid} 的正文。\n{_PAD}"
-    return "".join(f"<!-- section:{c} -->\n[S1·1] 任务 {tid} 的 {c} 正文。\n"
-                   f"{_PAD}\n" for c in covers)
+        return f"[{ref}] 第 {num} 号任务的正文。\n{_PAD}"
+    return "".join(
+        f"<!-- section:{c} -->\n[{ref}] 第 {num} 号任务的第 {i + 1} 节正文。\n"
+        f"{_PAD}\n" for i, c in enumerate(covers))
+
+
+def _ref_for(plan: dict, tid: str) -> str:
+    """桩正文引哪段：取该任务分到的第一个段号，保证引用不越界。"""
+    for t in plan.get("tasks") or []:
+        if t.get("id") == tid and t.get("segments"):
+            return t["segments"][0]
+    return "S1·1"
 
 
 def _flat(content) -> str:
@@ -451,7 +471,10 @@ assert sorted(secs8) == ["sec2", "sec3"], \
     f"多节任务应逐节产出，实际 {sorted(secs8)}"
 assert secs8["sec2"] != secs8["sec3"], "两节正文不能相同"
 md8 = out8["report_markdown"]
-assert md8.count("sec2 正文") == 1 and md8.count("sec3 正文") == 1, \
+# 桩正文用「第 N 号任务的第 M 节正文」区分小节（「secN 正文」会被坑 79
+# 的 R3 当内部编号删掉）；断言要带上任务号，否则 t1 的「第 1 节」也命中。
+assert md8.count("第 8 号任务的第 1 节正文") == 1 \
+    and md8.count("第 8 号任务的第 2 节正文") == 1, \
     "每节的内容只应出现一次"
 assert "<!-- section:" not in md8, "分节标记不能留在最终报告里"
 # 装配自检不该报警
@@ -483,16 +506,17 @@ audit_two = {"need_rework": True, "reason": "t8 两节都要改",
                   "problem": "sec3 放错了内容", "fix": "sec3 换成企业格局"}],
              "blocked": [],
              "remaining_issues": [], "spec_issue": None, "rework_effective": True}
+# 返修桩正文同样不能含 secN（会被 R3 整句删），改用小节标题词区分。
 f9 = Fake(plan8, {"write_revise:t8":
-                  "<!-- section:sec2 -->\n[S1·2] 修好的 sec2。\n" + _PAD + "\n"
-                  "<!-- section:sec3 -->\n[S1·2] 修好的 sec3。\n" + _PAD},
+                  "<!-- section:sec2 -->\n[S1·2] 修好的材料路线小节。\n" + _PAD + "\n"
+                  "<!-- section:sec3 -->\n[S1·2] 修好的企业格局小节。\n" + _PAD},
           [audit_two, audit_ok])
 out9 = run(f9, "t8 的 sec2 与 sec3 同时被点名")
 secs9 = (out9.get("drafts") or {}).get("t8") or {}
 print(f"  返修后 t8 的小节: {sorted(secs9)}")
 assert sorted(secs9) == ["sec2", "sec3"], "两节都必须在"
-assert "修好的 sec2" in secs9.get("sec2", ""), "sec2 的修改被覆盖了"
-assert "修好的 sec3" in secs9.get("sec3", ""), "sec3 的修改丢了"
+assert "修好的材料路线" in secs9.get("sec2", ""), "sec2 的修改被覆盖了"
+assert "修好的企业格局" in secs9.get("sec3", ""), "sec3 的修改丢了"
 # 一次调用问完两节，不是分两次
 rev9 = [e for e in (out9.get("events") or []) if e.get("kind") == "write_revise"]
 assert len(rev9) == 1, f"应只有一轮返修，实际 {len(rev9)}"

@@ -519,6 +519,10 @@ def node_dispatch(state: WriteState) -> dict:
             ev["failed"] = [f for f in ev["failed"]
                             if f.get("task") not in recovered_ids]
 
+    # 程序护栏在审查之前（坑 79）：能机械修的引用/编号缺陷先修掉，
+    # 审查和残留检查看到的都是修过的稿子；修不了的才进 violations。
+    ev["drafts"], auto_fixes = _auto_fix_drafts(state, ev["drafts"])
+
     return {
         "drafts": ev["drafts"],
         "failed": ev["failed"],
@@ -527,7 +531,9 @@ def node_dispatch(state: WriteState) -> dict:
                     "first_serial_s": first_cost,
                     "retried": retried, "recovered": recovered,
                     "drafts_total": len(ev["drafts"]),
-                    "failed_total": len(ev["failed"])}],
+                    "failed_total": len(ev["failed"]),
+                    "auto_fixes": len(auto_fixes),
+                    "auto_fix_sample": auto_fixes[:8]}],
     }
 
 
@@ -960,6 +966,274 @@ def _check_citations(text: str, allowed: set[str]) -> list[dict]:
     return out
 
 
+# ---------------- 程序护栏：机械性引用/编号缺陷（坑 79）----------------
+# 三类缺陷是**确定性可查**的，以前只靠审查模型「看看」+ 展示违规：
+#   R1 多引用/区间括号 `[S3·1、S3·2]`/`[S29·1—S29·7]` → 规范成 `[S3·1][S3·2]`
+#   R2 伪引用 `[S21 系报道口径,按规约……]` → 首 token 在分内就规范化 `[S21]`
+#   R3a `secN` → 人读的节名（只替换不删句——首版删整句实测误伤实质内容）
+#   R3b `tN`/`tNa` 任务编号 → 保守删整句（带 [S 引用/表格/标题/超长不删）
+# 修不了的一概**不动**（全越界、跨来源区间、未知节号、带引用的编号句），
+# 留给 `_check_*` 检出为残留 → `node_audit` 转成返修目标。
+
+# ⚠️ 不能用 \b：Python 里中文字符也算 \w，「在 t6b 的任务」里的边界
+# 在 \b 语义下不存在。lookaround 排除 ASCII 字母数字才算「独立成词」。
+_INTERNAL_ID_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:t\d+[ab]?|sec\d+)(?![A-Za-z0-9])")
+_SEC_ID_RE = re.compile(r"(?<![A-Za-z0-9])sec(\d+)(?![A-Za-z0-9])")
+_TASK_ID_RE = re.compile(r"(?<![A-Za-z0-9])t\d+[ab]?(?![A-Za-z0-9])")
+# 区间：S29·1—S29·7 / S29·1—7；连接符 —–-~至到；第二端点若带来源须同源
+_RANGE_TOKEN_RE = re.compile(
+    r"S(\d+)·(\d+)\s*(?:—|–|-|~|至|到)\s*(?:S(\d+)·)?(\d+)")
+_REF_SEPS = "，、,;； \t"
+_SENT_END = "。！？；"                 # R3b 的句末标点（换行边界另行处理）
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+
+
+def _mask_comments(text: str) -> str:
+    """把 <!--...--> 整段换成等长空白（保住换行），防装配标记里的 t6 之类
+    被当正文命中；等长替换保持坐标与原串一一对应。"""
+    return _HTML_COMMENT_RE.sub(
+        lambda m: "".join("\n" if c == "\n" else " " for c in m.group(0)),
+        text or "")
+
+
+def _parse_ref_tokens(inner: str) -> list[str] | None:
+    """括号内容（不含 []）完全由引用 token + 分隔符组成时返回展开后的
+    token 列表；否则返回 None。区间在这里展开：跨来源/倒序/超 12 段
+    都算「不纯」，整个括号不处理。"""
+    toks: list[str] = []
+    i, n = 0, len(inner)
+    while i < n:
+        m = _RANGE_TOKEN_RE.match(inner, i)
+        if m:
+            if m.group(3) and m.group(3) != m.group(1):
+                return None                         # S29·1—S30·2 跨来源
+            a, b = int(m.group(2)), int(m.group(4))
+            if not (0 < b - a <= 12):
+                return None                         # 倒序或超长区间不展开
+            toks.extend(f"S{m.group(1)}·{k}" for k in range(a, b + 1))
+            i = m.end()
+            continue
+        m = re.match(r"S\d+·\d+", inner[i:])
+        if m:
+            toks.append(m.group(0)); i += m.end(); continue
+        m = re.match(r"S\d+", inner[i:])
+        if m:
+            toks.append(m.group(0)); i += m.end(); continue
+        if inner[i] in _REF_SEPS:
+            i += 1
+            continue
+        return None
+    return toks
+
+
+def _ref_allowed(tok: str, allowed: set[str]) -> bool:
+    """段级看精确命中；来源级 `S21` 只要有任意 `S21·*` 分给它就留——
+    与 `_check_citations` 对来源级引用的放行口径一致。"""
+    if "·" in tok:
+        return tok in allowed
+    return tok in allowed or any(
+        k.startswith(tok + "·") for k in allowed)
+
+
+def _auto_fix_r1(raw: str, allowed: set[str]) -> str | None:
+    """R1：纯 token/分隔符括号 → 规范化拆分；不可规范化返回 None。"""
+    toks = _parse_ref_tokens(raw[1:-1])
+    if toks is None:
+        return None
+    kept: list[str] = []
+    for t in toks:
+        if _ref_allowed(t, allowed) and t not in kept:
+            kept.append(t)
+    if not kept:
+        return None       # 展开/拆分后无一在分内：不删，留给残留检查
+    return "".join(f"[{t}]" for t in kept)
+
+
+def _has_nonref_text(inner: str) -> bool:
+    """剥掉 token、区间连接符、分隔符之后还剩的算「非引用文字」。"""
+    s = _RANGE_TOKEN_RE.sub("", inner)
+    s = re.sub(r"S\d+·\d+|S\d+", "", s)
+    s = re.sub(r"[，、,;；\s—–\-~至到]", "", s)
+    return bool(s)
+
+
+def _auto_fix_r2(raw: str, allowed: set[str]) -> str | None:
+    """R2：`[S21 系报道口径,……]` → 首 token 在分内则替换为规范 `[S21]`。"""
+    inner = raw[1:-1]
+    if re.fullmatch(r"S\d+·\d+|S\d+", inner):
+        return None                                     # 已是规范形
+    m = re.match(r"S\d+(?:·\d+)?", inner)
+    if not m or not _has_nonref_text(inner):
+        return None             # 跨来源区间这类「纯 token 杂质」不碰
+    tok = m.group(0)
+    if not _ref_allowed(tok, allowed):
+        return None             # 首 token 越界：不删，留给残留检查
+    return f"[{tok}]"
+
+
+def _auto_fix_r3a(text: str, sec_titles: dict[str, str],
+                  cur_sec: str | None) -> tuple[str, list[dict]]:
+    """R3a：`secN` 翻成人能读的节名。**只替换，绝不删句**——真实稿里
+    写手用 secN 指代别的节时句子本身是实质内容（坑 79 首版删整句
+    实测误伤 ≥4/7，见 CONTEXT）。
+
+    自指换「本节」（吞掉其后一个空格）；大纲里有标题的换「{title}」一节；
+    查无此节的不动，留给残留检查进返修。表格行原地替换（不破坏结构），
+    标题行（# 开头）不动——标题里漏编号多半是真缺陷，让残留报出来。
+    """
+    masked = _mask_comments(text)
+    fixes: list[dict] = []
+    out: list[str] = []
+    pos = 0
+    for m in _SEC_ID_RE.finditer(masked):
+        sid = f"sec{m.group(1)}"
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        if text[line_start:line_start + 3].lstrip().startswith("#"):
+            continue                                        # 标题行不碰
+        if sid == cur_sec:
+            repl = "本节"
+        elif sec_titles.get(sid):
+            repl = f"「{sec_titles[sid]}」一节"
+        else:
+            continue                                        # 未知 id 留残留
+        a = max(0, m.start() - 40)
+        end = m.end()
+        if sid == cur_sec and end < len(text) and text[end] == " ":
+            end += 1                    # 「sec6 的核心问题」→「本节的核心问题」
+        b = min(len(text), end + 40)
+        fixes.append({"rule": "R3a", "before": text[a:b],
+                      "after": text[a:m.start()] + repl + text[end:b]})
+        out.append(text[pos:m.start()])
+        out.append(repl)
+        pos = end
+    if not fixes:
+        return text, fixes
+    out.append(text[pos:])
+    return "".join(out), fixes
+
+
+def _auto_fix_r3b(text: str) -> tuple[str, list[dict]]:
+    """R3b：`tN`/`tNa` 任务编号 → **保守**删整句。
+
+    任务编号对读者没有任何意义，句子多半是「某某在 t6b 范围内」这类
+    元说明——但带 `[S` 引用的句子可能是实质内容，宁可删不干净交给
+    返修，也不整句误删。不删的（带引用/表格行/标题行/>120 字）由
+    残留检查报出来。"""
+    masked = _mask_comments(text)
+    spans: list[tuple[int, int]] = []
+    fixes: list[dict] = []
+    for m in _TASK_ID_RE.finditer(masked):
+        if re.match(r"\.\d", masked[m.end():m.end() + 2]):
+            continue                    # t1.5 这类版本号不是任务编号
+        if any(s <= m.start() < e for s, e in spans):
+            continue                    # 同句里的第二个编号只记一次
+        start = m.start()
+        while start > 0 and masked[start - 1] not in _SENT_END + "\n":
+            start -= 1
+        end = m.end()
+        while end < len(masked) and masked[end] not in _SENT_END + "\n":
+            end += 1
+        if end < len(masked) and masked[end] in _SENT_END:
+            end += 1                    # 连同句末标点；行尾换行则保留换行
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        head = text[line_start:line_start + 8].lstrip()
+        if (head.startswith(("|", "#")) or end - start > 120
+                or re.search(r"\[S\d", text[start:end])):
+            continue
+        spans.append((start, end))
+        fixes.append({"rule": "R3b",
+                      "before": text[start:end], "after": ""})
+    for s, e in sorted(spans, reverse=True):
+        text = text[:s] + text[e:]
+    text = re.sub(r"\n{3,}", "\n\n", text)   # 删句后空行堆叠压成最多一个
+    return text, fixes
+
+
+def _auto_fix_text(text: str, allowed: set[str],
+                   sec_titles: dict[str, str] | None = None,
+                   cur_sec: str | None = None) -> tuple[str, list[dict]]:
+    """R1→R2→R3a→R3b 顺序机械修稿。纯函数、幂等；返回 (新文本, fixes)。
+
+    `sec_titles`：大纲的 section id→标题（R3a 换名用，缺省只换自指）。
+    `cur_sec`：当前正文所属小节 id（R3a 判自指用）。
+    """
+    fixes: list[dict] = []
+    if not text:
+        return text, fixes
+
+    def _r1(m):
+        new = _auto_fix_r1(m.group(0), allowed)
+        if new is not None and new != m.group(0):
+            fixes.append({"rule": "R1", "before": m.group(0)[:80],
+                          "after": new[:80]})
+            return new
+        return m.group(0)
+
+    text = SEG_REF_LOOSE_RE.sub(_r1, text)
+
+    def _r2(m):
+        new = _auto_fix_r2(m.group(0), allowed)
+        if new is not None and new != m.group(0):
+            fixes.append({"rule": "R2", "before": m.group(0)[:80],
+                          "after": new[:80]})
+            return new
+        return m.group(0)
+
+    text = SEG_REF_LOOSE_RE.sub(_r2, text)
+    text, r3a = _auto_fix_r3a(text, sec_titles or {}, cur_sec)
+    fixes.extend(r3a)
+    text, r3b = _auto_fix_r3b(text)
+    fixes.extend(r3b)
+    return text, fixes
+
+
+def _auto_fix_drafts(state: WriteState,
+                     drafts: dict) -> tuple[dict, list[dict]]:
+    """对每份草稿跑 `_auto_fix_text`。allowed = 该任务分到的段号；
+    sec_titles 来自大纲（R3a 换名）；无变化的节不重写，返回新 drafts
+    （不原地改）。"""
+    out = dict(drafts or {})
+    fixes: list[dict] = []
+    tasks = {t["id"]: t for t in state.get("tasks") or []}
+    sec_titles = {o["id"]: o["title"] for o in state.get("outline") or []
+                  if isinstance(o, dict) and o.get("id") and o.get("title")}
+    for tid, d in (drafts or {}).items():
+        t = tasks.get(tid)
+        allowed = set((t or {}).get("segments") or [])
+        changed, secs = False, {}
+        for sec, body in _section_map(d).items():
+            if isinstance(body, str):
+                new_body, fx = _auto_fix_text(
+                    body, allowed, sec_titles, sec or None)
+                for f in fx:
+                    f["task"], f["section"] = tid, sec or None
+                fixes.extend(fx)
+                if new_body != body:
+                    changed = True
+                secs[sec] = new_body
+            else:
+                secs[sec] = body
+        if changed:
+            out[tid] = secs
+    return out, fixes
+
+
+def _check_internal_ids(text: str) -> list[dict]:
+    """R3 没删的内部编号残留（表格行/标题行/长句）——报成违规交给返修。"""
+    masked = _mask_comments(text or "")
+    bad, seen = [], set()
+    for m in _INTERNAL_ID_RE.finditer(masked):
+        if re.match(r"\.\d", masked[m.end():m.end() + 2]):
+            continue                    # 与 R3 同款豁免：t1.5 不是任务编号
+        a = max(0, m.start() - 15)
+        found = (text or "")[a:m.end() + 15]
+        if found not in seen:
+            seen.add(found)
+            bad.append({"kind": "内部编号", "found": found})
+    return bad
+
+
 def _check_all_citations(state: WriteState, drafts: dict) -> dict:
     tasks = {t["id"]: t for t in state.get("tasks") or []}
     out: dict[str, list[dict]] = {}
@@ -970,6 +1244,7 @@ def _check_all_citations(state: WriteState, drafts: dict) -> dict:
         allowed = set(t.get("segments") or [])
         # 配额是按任务分的证据，不是按小节，所以逐节拼起来一起查
         bad = _check_citations(_join(sections), allowed)
+        bad += _check_internal_ids(_join(sections))
         if bad:
             out[tid] = bad
     return out
@@ -1582,6 +1857,35 @@ def node_audit(state: WriteState) -> dict:
                 "fix": str(f.get("fix") or "")[:800],
                 "section": f.get("section"),
             })
+    # ---- 程序检出的残留违规 → 直接变返修目标（坑 79）----
+    # 这类缺陷机械可查，不该消耗模型的判断力：违规列表是给模型看的
+    # 背景（提示词已叫它别重复提 finding），这里程序自己转成目标。
+    # `section=None` 时 node_revise 会退回任务原始 covers，merge 按新稿键并。
+    violation_targets = 0
+    high_tasks = {t["task"] for t in targets}
+    for tid, bads in (violations or {}).items():
+        if not bads or tid not in by_task:
+            continue
+        sample = ";".join(
+            f"{b.get('kind')}:{b.get('found')}" for b in bads[:5])
+        problem = f"程序检出 {len(bads)} 处引用/编号问题:{sample}"
+        fix = ("逐处处理:越界引用——改成你被分配的段号中真正支撑该句的一条,"
+               "找不到支撑就删去该句断言,不要保留无出处的数字;"
+               "自创写法——改成规范的 [S3·5] 形式;"
+               "正文里出现的 t1/sec3 之类内部编号——删掉整句元说明。"
+               "只改这些处,不要动其他文字。")
+        if tid in high_tasks:
+            # 已被模型点名的任务：违规文本并进它的第一条 target，
+            # 不另立 target（返修按任务跑，同任务的意见本就该一起问）、
+            # 也不计 violation_targets——这条返修本来就是模型要的。
+            tgt = next(t for t in targets if t["task"] == tid)
+            tgt["problem"] = tgt["problem"] + "\n" + problem
+            tgt["fix"] = tgt["fix"] + "\n" + fix
+            continue
+        targets.append({
+            "task": tid, "problem": problem, "fix": fix, "section": None,
+        })
+        violation_targets += 1
     # ---- blocked：返修解决不了的，独立成一栏 ----
     # 原来这类内容混在 `remaining_issues` 里，和「本轮不该解决」混在一起，
     # 路由看不出来，于是模型被迫把它们判成 high 才不会漏掉。
@@ -1624,7 +1928,9 @@ def node_audit(state: WriteState) -> dict:
                  + [str(x)[:300] for x in (d.get("remaining_issues") or [])])
 
     audit = {
-        "need_rework": bool(d.get("need_rework")) and bool(targets),
+        # 残留违规是程序判据：模型说「不用返修」不算数（坑 79）
+        "need_rework": (bool(d.get("need_rework")) or violation_targets > 0)
+                       and bool(targets),
         "reason": str(d.get("reason") or "")[:400],
         "spec_issue": d.get("spec_issue"),
         "findings": findings,
@@ -1635,11 +1941,13 @@ def node_audit(state: WriteState) -> dict:
         "rework_check": check,
         "still_open": len(still),
         "checked": checked,
+        "violation_targets": violation_targets,
     }
     _trace(state.get("session_id"), audit=audit,
            stats=_merge_stats(state.get("session_id"), {
                "audit_round": rounds, "high": len(targets),
                "findings": len(findings), "blocked": len(blocked),
+               "violation_targets": violation_targets,
                "need_rework": audit["need_rework"],
                "rework_effective": rework_effective,
                "rework_checked": checked, "rework_still_open": len(still)}))
@@ -1653,6 +1961,7 @@ def node_audit(state: WriteState) -> dict:
         "findings": len(findings),
         "high": len(targets),
         "blocked": len(blocked),
+        "violation_targets": violation_targets,
         "targets": [f"{t['task']}→{t.get('section')}" for t in targets],
         "rework_effective": (rework_effective if rounds > 0 else None),
         "rework_checked": checked,
@@ -1668,6 +1977,7 @@ def node_audit(state: WriteState) -> dict:
                     "attempts": attempts,
                     "high": len(targets), "findings": len(findings),
                     "blocked": len(blocked),
+                    "violation_targets": violation_targets,
                     "need_rework": audit["need_rework"],
                     "rework_effective": rework_effective,
                     "rework_checked": checked, "still_open": len(still),
@@ -1749,6 +2059,9 @@ def node_revise(state: WriteState) -> dict:
     still_failed = [f for f in (state.get("failed") or [])
                     if f.get("task") not in set(cleared_failed)]
 
+    # 程序护栏在审查之前（坑 79）：返修稿同样先机械修再查残留。
+    drafts, auto_fixes = _auto_fix_drafts(state, drafts)
+
     return {
         "drafts": drafts,
         "failed": still_failed,
@@ -1759,6 +2072,8 @@ def node_revise(state: WriteState) -> dict:
                     "targets": [f"{t['task']}→{t.get('section')}" for t in targets],
                     "kept_old": rejected,
                     "cleared_failed": cleared_failed,
+                    "auto_fixes": len(auto_fixes),
+                    "auto_fix_sample": auto_fixes[:8],
                     "first_serial_s": first_cost,
                     "round": state.get("rework_rounds", 0) + 1}],
     }
