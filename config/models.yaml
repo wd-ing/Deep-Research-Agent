@@ -8,6 +8,12 @@
 #   T1  M3.1-Flash-Preview        output_config.effort: low
 #   T2  M3.1-Flash-Preview        output_config.effort: high
 #
+# 现状订正（2026-10-19）：实际运行是 T0=M3 关思考；write_audit 已迁到
+# M3.1-Flash low（M3 开思考审一次 1.6~2.5 万 token，预算接不住）。
+# write_section / write_revise **必须留 M3**：它们靠
+# `forced_thinking: disabled` + `round_max_tokens` 吃饭，
+# 而 M3.1 关不掉思考（disabled → 400）。
+#
 # ⚠️ 不要再用 thinking.budget_tokens
 # 那是 Anthropic 扩展思考的字段，MiniMax 不认。它的 thinking.type 合法值只有
 # adaptive 与 disabled，没有 enabled。那个字段不报 400、只是被静默忽略，于是
@@ -85,6 +91,22 @@ providers:
     # 真实调用（`write_plan_tasks` 65,536 预算）token 量差几个量级，
     # 所以 40/min 只保证**请求速率**不撞，token 速率会不会撞**要下一轮实测**。
     # 这个限制主要保护 relevance 那种高频小调用 —— 上次丢 20/131 的正是它。
+    rate_limit_per_min: 40
+  minimax31:
+    provider: minimax
+    # MiniMax-M3.1-Flash（2026-10-19 实测，样本固化在
+    # tests/data/audit_tool_inputs.json）：
+    #   · effort 是**真**旋钮：low 单次输出约 7~12k token / 60~215s；
+    #     medium 8~17k；high 会烧到 24.6k 仍被截断——**只能 low**。
+    #   · **关不掉思考**：`thinking.type=disabled` 直接 400。
+    #     `StageConfig.validate()` 会拦死 reasoning_effort 缺省
+    #     与 forced_thinking 这两种「关思考」写法。
+    # ⚠️ **必须写 `-Flash`**：`MiniMax-M3.1` / `MiniMax-M3.1-Preview`
+    #    会被平台**静默别名回 M3**——名字写错不报错，只是能力没了。
+    model: MiniMax-M3.1-Flash
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    # 与 minimax 档案同端点：限流器按 base_url 登记，两个档案共用同一个。
     rate_limit_per_min: 40
   opencode:
     provider: opencode
@@ -500,13 +522,28 @@ stages:
 
   # 判定依据见 DESIGN_R6_REVIEW.md 2.2 与 DECISIONS.md。
   write_audit:
-    # 流式：为绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测
-    # 已连撞三次 504、环节判定不可用；同参数流式跑过 245.5s）。**只为规避超时，不是为了提速**。
-    stream: true
-    reasoning_effort: high
+    # 2026-10-19 迁到 M3.1-Flash（**钉死在档案上**，不跟 defaults.provider
+    # 走——它需要的是这个模型的 effort 旋钮，不是「当前默认平台」）：
+    #   · M3 开思考审一次 1.6~2.5 万 token，8192/16384 预算实测全被截断；
+    #   · M3.1-Flash 的 effort 是真旋钮：low 实测单次 7~12k / 60~215s；
+    #   · effort=high 在 M3.1 上更糟（24.6k 仍截断）——**只能 low**；
+    #   · 工具入参 2/16 偏离 schema，由 write.py `_normalize_audit_input`
+    #     归一化 + 重试兜住（坑 77）。
+    provider: minimax31
+    # M3.1 关不掉思考（disabled→400）：reasoning_effort 在这只当
+    # truthy 开关发 adaptive，深度由 thinking_effort=low 控制。
+    # validate() 会拦死 reasoning_effort 缺省 / forced_thinking。
+    reasoning_effort: low
+    thinking_effort: low
     temperature: 0.0
-    max_output_tokens: 8192
-    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 16384 }
+    # 24576 ≈ 实测最大输出（~12k）的 2 倍富余。这条路径不走 guard
+    # 梯度提预算；guard 上限写同值只为满足 NEEDS_GUARD 的显式配置要求。
+    max_output_tokens: 24576
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
+    # 流式照旧：绕网关读超时（M3.1-Flash low 实测最长 215s，
+    # timeout 给到 420s ≈ 2 倍富余）。**只为规避超时，不是为了提速**。
+    stream: true
+    timeout_s: 420
 
   # 子 agent 写一个任务。N 次调用，system prompt 与规约前缀固定以命中缓存。
   #

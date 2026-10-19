@@ -1,7 +1,7 @@
 # CONTEXT · 交接文档
 
 > 这份文档的定位：**接手这个项目前必须先读的东西**。
-> 架构、仍然有效的决策、踩过的坑（76 条）、工作约定、已知缺口。
+> 架构、仍然有效的决策、踩过的坑（77 条）、工作约定、已知缺口。
 >
 > 工程层面**已经知道、但有意押后**的欠账另记在 [`TECH_DEBT.md`](TECH_DEBT.md)
 > （`checkpoints.db` 无清理机制、守门测试污染默认库等）。本文第十节记的是
@@ -283,7 +283,7 @@ server 不是**。要么 `set -a; . ./.env; set +a`，要么给 uvicorn 装
 
 ---
 
-## 八、踩过的坑（76 条 · 只留会再踩的）
+## 八、踩过的坑（77 条 · 只留会再踩的）
 
 
 ### 1. 避坑注释写在别处 ≠ 那个坑被填上了
@@ -1873,6 +1873,53 @@ schema 与实验版逐字一致（`tests/exp_submit_section.py`）。
 解不开就当**一整条**；None/空串归空。`must_cover`/`not_yours`
 两个字段都走它。回归测试：`test_plan_tasks_forced.py` ⑬ 组。
 
+### 77. write_audit 在 M3 上思考吃光预算，迁到 M3.1-Flash low（2026-10-19）
+
+**现象**：v14 重跑里 `write_audit` 三次调用全部被 `max_tokens` 截断
+——预算梯度 8192→16384→16384，第 3 次还是原样重发。
+开思考实测 5 次：输出 15.5k~25k token、217~349 秒，
+结论不稳（high 0~2 条）、1/5 JSON 解析失败；
+思考内容是逐节清点 + 反复「OK finalizing」——烧的都是巡回确认。
+（`tests/exp_audit_*.py`，样本 `/tmp/exp_audit3/`）
+
+**试过的岔路**：M3 上「关思考 + 强制工具」能用（5/5 真调用、
+2.5k~7.2k token），但**质量不行**——high 数暴增 3~8 倍，
+还把「草稿已如实声明的缺口」判成 high（违反 no_material→blocked
+的分流规则），need_rework 10/10 全为真，等于审查退化成全报警。
+
+**方案**：换 **MiniMax-M3.1-Flash + effort low**——M3.1 的
+`output_config.effort` 是**真**旋钮（low 单次 7~12k token，
+medium 8~17k，high 反而更糟：24.6k 仍被截断——**只能用 low**）。
+⚠️ M3.1 **关不掉思考**（`thinking.type=disabled` 直接 400），
+所以 `reasoning_effort` 只能当 truthy 开关发 adaptive，
+深度归 `thinking_effort: low` 管；`validate()` 会拦死
+reasoning_effort 缺省 / forced_thinking 这两种写法——
+write_section/write_revise 必须留 M3 就靠这道护栏挡「顺手迁过去」。
+⚠️ 型号名必须写 `MiniMax-M3.1-Flash`：`MiniMax-M3.1` /
+`MiniMax-M3.1-Preview` 会被平台**静默别名回 M3**。
+
+**M3.1 的新毛病**：工具入参 2/16 偏离 schema——整个结论套在
+`audit`/`audit_result` 多余键里、列表包成 `{"item":[...]}`、
+`need_rework` 是 `"true"` 字符串或带 `$text` 的 dict，
+blocked 甚至漂成了 `blocker` 键名。
+把这类结果当「审查通过」会静默放过问题，所以加了
+`_normalize_audit_input`：解包两层、`item` 展平、`$text`/字符串
+转 bool；归一不了判无效 → `node_audit` 重试一次
+（429/HTTP 类与 ConfigError 不重试），仍不行走原有降级分支。
+⚠️ 判无效是**严格**的：`need_rework` 给不出 bool、`findings` 或
+`blocked` 键缺席都算无效——`blocker` 那种漂名不设别名白名单
+（不猜模型会飘成什么键），代价是这类样本要多烧一次调用，
+换来的是整栏不会静默丢。
+
+**修复点**：`config/models.yaml` 新增 `providers.minimax31` 档案
+（write_audit 钉死它，不跟 defaults.provider 走）；
+`node_audit` 改用 `complete_json_forced` + `AUDIT_SCHEMA` +
+`submit_audit` 强制工具；`_normalize_audit_input`；最多 2 次尝试，
+事件记 `attempts`；`StageConfig.validate()` 的 M3.1 护栏。
+
+**局限**：实验每格 n=3、只跑一份稿子；M3.1 的审查质量只抽读了几条
+high，「不漏判/不误判」没有系统对比过——换稿或改规约后要复测。
+
 ---
 
 ## 九、工作约定
@@ -1886,7 +1933,7 @@ schema 与实验版逐字一致（`tests/exp_submit_section.py`）。
    引导性规则优于硬约束，硬约束只用于合规性与底层限制
 5. **结构性修改一律先说方案再改**
 6. **每个决定记进 `CONTEXT.md`**（原 `DECISIONS.md` 已删）
-7. **自己判断错了要当场纠正并说明** —— 下面 76 条里至少有 6 条是我猜错之后
+7. **自己判断错了要当场纠正并说明** —— 下面 77 条里至少有 6 条是我猜错之后
    被自己的实验推翻才写进去的
 
 ---
@@ -1911,7 +1958,7 @@ schema 与实验版逐字一致（`tests/exp_submit_section.py`）。
 ## 十一、要改代码前先确认的清单
 
 - 加 state 字段 → **必须在 `ResearchState` / `WriteState` 里声明**，否则 LangGraph 静默丢弃
-- 改 provider → 读第六节（76 条坑）+ 「切换时必须一起改的东西」
+- 改 provider → 读第六节（77 条坑）+ 「切换时必须一起改的东西」
 - 写/改守门测试 → provider **钉死**，不许跟着 `defaults` 漂；桩要接在**正确的层**上
 - 加一条新的发请求路径 → **数一遍同类路径有几条**（这轮栽了三次：空 tools 400、流式分支、截断检测）
 - 断 provider 协议形状 → **逐个字段核对** usage / stop_reason / tools / tool_choice，

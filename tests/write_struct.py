@@ -101,6 +101,21 @@ class Fake:
             return d
         return self.sections.get(stage, {})
 
+    def complete_json_forced(self, stage, prompt, name, schema,
+                             system=None):
+        """write_audit 2026-10-19 起改走强制工具 submit_audit（坑 77）。
+
+        桩必须挂在**这层**：没有它，node_audit 会吃 AttributeError →
+        `_audit_retryable` 判它可重试 → 再炸一次 → 走降级分支——
+        症状是审查「失败但报告照出」，整条审查断言悄悄测不到。
+        """
+        self.calls.append((stage, len(prompt)))
+        if stage == "write_audit":
+            d = self.audits[min(self._ai, len(self.audits) - 1)]
+            self._ai += 1
+            return d
+        raise AssertionError(f"complete_json_forced 没打桩: {stage}")
+
     def complete_with_tools(self, stage: str, system, messages, tools):
         """模拟子 agent：第一轮要 2 段全文，第二轮直接给正文。"""
         self.calls.append((stage + ":tools", len(messages)))
@@ -192,15 +207,18 @@ def _covers_from(prompt) -> list[str]:
 
 def run(fake: Fake, label: str, expect_tasks: int | None = None) -> dict:
     orig_j, orig_c = W.LLM.complete_json, W.LLM.complete
+    orig_f = getattr(W.LLM, "complete_json_forced", None)
     orig_t = getattr(W.LLM, "complete_with_tools", None)
     W.LLM.complete_json = fake.complete_json
     W.LLM.complete = fake.complete
+    W.LLM.complete_json_forced = fake.complete_json_forced
     W.LLM.complete_with_tools = fake.complete_with_tools
     try:
         out = W.run_write("s_test", BASE["question"], OUTLINE, BASE["signals"],
                           SEGMENTS, SEGMENTS, SRC)
     finally:
         W.LLM.complete_json, W.LLM.complete = orig_j, orig_c
+        W.LLM.complete_json_forced = orig_f
         W.LLM.complete_with_tools = orig_t
     md = out.get("report_markdown") or ""
     kinds = [e.get("kind") for e in out.get("events") or []]
@@ -235,7 +253,10 @@ plan1 = {"tasks": [
     "cautions": ["S3 是厂商自述，不能当独立验证"],
     "spec_uncertainty": "「准固态」的归属材料里没有定论",
     "sections": [{"id": "sec1", "role": "定义"}]}
+# ⚠️ 审查 fixture 必须有 blocked 键：坑 77 起 `_normalize_audit_input`
+# 对缺 schema 键的返回判无效重试——桩漏写会让审查整条静默降级。
 audit_ok = {"need_rework": False, "reason": "整体没问题", "findings": [],
+            "blocked": [],
             "remaining_issues": [], "spec_issue": None, "rework_effective": True}
 out1 = run(Fake(plan1, {}, [audit_ok]), "场景 1：正常一轮，主 agent 判定无需返修")
 assert "## 定义与层级" in out1["report_markdown"], "小节标题应按大纲顺序出现"
@@ -253,8 +274,10 @@ audit_bad = {"need_rework": True,
              "findings": [{"task": "t1", "section": "sec1", "severity": "high",
                            "problem": "引用了 [S3] 但 t1 没有 S3",
                            "fix": "删掉 [S3] 那句"}],
+             "blocked": [],
              "remaining_issues": [], "spec_issue": None, "rework_effective": True}
 audit_after = {"need_rework": False, "reason": "已修", "findings": [],
+               "blocked": [],
                "remaining_issues": [], "spec_issue": None, "rework_effective": True}
 f2 = Fake(plan1, {"write_revise:t1": "改过的正文，只引用 [S1]。\n" + _PAD},
           [audit_bad, audit_after])
@@ -458,6 +481,7 @@ audit_two = {"need_rework": True, "reason": "t8 两节都要改",
                   "problem": "sec2 越界", "fix": "sec2 改成只引 S1·2"},
                  {"task": "t8", "section": "sec3", "severity": "high",
                   "problem": "sec3 放错了内容", "fix": "sec3 换成企业格局"}],
+             "blocked": [],
              "remaining_issues": [], "spec_issue": None, "rework_effective": True}
 f9 = Fake(plan8, {"write_revise:t8":
                   "<!-- section:sec2 -->\n[S1·2] 修好的 sec2。\n" + _PAD + "\n"
@@ -518,6 +542,13 @@ class SpyFake(Fake):
     def complete_json(self, stage, prompt, system=None):
         self.prompts.append(prompt)
         return super().complete_json(stage, prompt, system)
+
+    def complete_json_forced(self, stage, prompt, name, schema, system=None):
+        # 审查提示词现在走这条路——不记的话「审查看没拿到分派摘要」
+        # 抓到的是空列表，断言会假红。
+        self.prompts.append(prompt)
+        return super().complete_json_forced(stage, prompt, name, schema,
+                                            system)
 
 
 fake0 = SpyFake(plan1, {}, [audit_ok, audit_bad, audit_after])

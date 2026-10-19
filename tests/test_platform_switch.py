@@ -140,10 +140,13 @@ check("两平台档案的 effort_off 声明符合实测",
       f"internai: {ei_off!r}（实测省略=开思考，要关得显式发 none）｜"
       f"xj189: {ex_off!r}（实测省略=关思考，不声明即不发字段）")
 
-# 单点切换：所有阶段都不该再硬写 provider
+# 单点切换：除 write_audit 外所有阶段都不该再硬写 provider。
+# write_audit 是**有意例外**（2026-10-19，坑 77）：它要的是 M3.1-Flash
+# 的 effort 旋钮，钉在 `minimax31` 档案上，不跟 defaults.provider 走——
+# 换平台时它也不许漂（M3.1 的能力不是「默认平台」的属性）。
 hardcoded = [k for k, v in raw["stages"].items() if v.get("provider")]
-check("14 个阶段都不再硬写 provider（单点切换生效）",
-      not hardcoded,
+check("除 write_audit 外阶段都不再硬写 provider（单点切换生效）",
+      hardcoded == ["write_audit"],
       f"仍硬写的: {hardcoded or '无'}"
       f"｜defaults.provider = {(raw.get('defaults') or {}).get('provider')!r}")
 

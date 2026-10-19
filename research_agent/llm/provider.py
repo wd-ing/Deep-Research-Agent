@@ -533,6 +533,28 @@ class StageConfig:
                     f"{self.provider}。这是 MiniMax 工具路径的 payload 参数，"
                     "换 provider 时必须一并删掉，否则会被静默忽略。"
                 )
+        # MiniMax-M3.1 系列的硬约束（2026-10-19 实测，样本见
+        # tests/data/audit_tool_inputs.json 的出处）：M3.1 **关不掉思考**，
+        # `thinking.type=disabled` 直接 400。所以两种「关思考」写法都要拦：
+        # reasoning_effort 缺省（= 发 disabled）与 forced_thinking。
+        # thinking_effort 的取值合法性由上面的通用检查负责，这里不重复。
+        # write_section/write_revise 必须留 M3，就靠这条挡住「顺手迁过去」。
+        if (self.provider == "minimax"
+                and (self.model or "").startswith("MiniMax-M3.1")):
+            if self.reasoning_effort is None:
+                raise ConfigError(
+                    f"环节 {self.stage} 用 {self.model} 但 reasoning_effort "
+                    "缺省：它会被发成 thinking.type=disabled，M3.1 直接 400"
+                    "（这个模型关不掉思考）。必须显式写 reasoning_effort"
+                    "（low/high/…），深度由 thinking_effort 调。"
+                )
+            if self.forced_thinking == "disabled":
+                raise ConfigError(
+                    f"环节 {self.stage} 用 {self.model} 但配了 "
+                    "forced_thinking: disabled——强制交卷轮会发 "
+                    "thinking.type=disabled，M3.1 直接 400。"
+                    "关不掉思考的模型不能用这个开关。"
+                )
         # ⚠️ 2026-10-17 **撤销了原来这条拦截**。
         #
         # 它写于 2026-10-09，当时 MiniMax 确实完全忽略 `reasoning_effort`，

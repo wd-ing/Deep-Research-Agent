@@ -23,8 +23,8 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from ...llm.provider import (LLMClient, _parse_json, fire_progress,
-                             parallel_labelled)
+from ...llm.provider import (LLMClient, ConfigError, _parse_json,
+                             fire_progress, parallel_labelled)
 from ...llm.toolloop import run_tool_loop
 from .. import prompts
 from ..state import WriteState
@@ -161,6 +161,40 @@ SUBMIT_SECTION: dict = {
 # 那是 t7 8/8、t5r 8/8 的实测版本，别顺手改写。
 SUBMIT_NUDGE = ("证据读取额度已用完。不要再调用任何读取工具；"
                 "请基于你已经读到的内容，立即调用 submit_section 交卷。")
+
+# write_audit 的强制交卷 schema（2026-10-19，坑 77：迁 M3.1-Flash）。
+# 字段与 prompts.WRITE_AUDIT 要求的输出一一对应；形状与
+# tests/exp_audit_nothink.py 的 SUBMIT_AUDIT 逐字一致——
+# 那是真实验收跑通的版本，字段名改了模型就要重新学。
+AUDIT_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "rework_check": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "task": {"type": "string"}, "section": {"type": "string"},
+                "status": {"type": "string",
+                           "enum": ["fixed", "still_there",
+                                    "changed_form"]}}}},
+        "need_rework": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "spec_issue": {"type": ["string", "null"]},
+        "findings": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "task": {"type": "string"}, "section": {"type": "string"},
+                "severity": {"type": "string",
+                             "enum": ["high", "mid", "low"]},
+                "problem": {"type": "string"}, "fix": {"type": "string"}},
+            "required": ["task", "section", "severity", "problem", "fix"]}},
+        "blocked": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "task": {"type": "string"}, "section": {"type": "string"},
+                "kind": {"type": "string",
+                         "enum": ["no_material", "bad_assignment",
+                                  "spec_conflict"]},
+                "issue": {"type": "string"}}}},
+    },
+    "required": ["need_rework", "reason", "findings", "blocked"],
+}
 
 
 # ================================================================ 规划
@@ -1294,6 +1328,97 @@ def _last_high_findings(session_id: str | None) -> list[dict]:
     return out
 
 
+_AUDIT_KEYS = {"need_rework", "findings", "blocked", "reason"}
+
+
+def _norm_audit_list(v) -> list:
+    """M3.1 实测会把数组包成 `{"item": [...]}` 或回成字符串——统一收成 list。
+
+    单 dict 的 `item` 值包成一项；字符串按 JSON 试解；其余非 list 归 []。
+    """
+    if isinstance(v, dict):
+        v = v.get("item")            # {"item": X} 包装（真实样本出现过）
+    if isinstance(v, dict):
+        v = [v]                      # X 本身是单个 dict → 一项
+    elif isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except ValueError:
+            v = []
+    return v if isinstance(v, list) else []
+
+
+def _normalize_audit_input(raw) -> dict | None:
+    """把 `submit_audit` 的工具入参归一成下游读的 dict；归一不了返回 None。
+
+    为什么需要它（2026-10-19，18 个真实样本里 2 个偏离 schema）：
+    M3.1 会把整个结论套进多余的键（`audit` / `audit_result`）、把列表包成
+    `{"item": [...]}`、把 `need_rework` 回成 `"true"` 字符串或
+    `{"reason":…,"rework_check":…,"$text":"true"}` 的 dict。
+    **把这类结果当「审查通过」会静默放过问题**——所以归一化不了就判无效，
+    让上层重试一次，而不是拿半残的结构往下走。
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if not isinstance(raw, dict):
+        return None
+    # 解包：顶层不含任何期望键、且恰好只有一个值为 dict 的键 → 剥开。
+    # 最多解两层（样本里出现过套娃）。
+    d = raw
+    for _ in range(2):
+        if any(k in d for k in _AUDIT_KEYS):
+            break
+        dict_vals = [v for v in d.values() if isinstance(v, dict)]
+        if len(dict_vals) == 1:
+            d = dict_vals[0]
+        else:
+            break
+    # need_rework：bool 原样；"true"/"false" 字符串转 bool；
+    # dict 形状取 "$text"，并把里层的 reason/rework_check 提升到顶层
+    # （顶层已有的不覆盖）。
+    nr = d.get("need_rework")
+    lifted: dict = {}
+    if isinstance(nr, dict):
+        for k in ("reason", "rework_check"):
+            if k in nr and k not in d:
+                lifted[k] = nr[k]
+        nr = nr.get("$text")
+    if isinstance(nr, str):
+        nr = {"true": True, "false": False}.get(nr.strip().lower())
+    if (not isinstance(nr, bool)
+            or "findings" not in d or "blocked" not in d):
+        # 「need_rework 缺失/给不出 bool」或 schema 键缺席 = 无效。
+        # `blocked` 也要**键在**——真实样本里它漂成了 `blocker`，
+        # 不设别名白名单（不猜模型会飘成什么键），缺键就判无效
+        # 让上层重试：宁可多花一次调用，也不能让 blocked 整栏静默丢。
+        # 注意 `need_rework=False, findings=[], blocked=[]` 是合法的
+        # 「审查通过」，不能误杀——缺的只是字段才算无效。
+        return None
+    out = dict(d)
+    out.update(lifted)
+    out["need_rework"] = nr
+    for k in ("findings", "blocked", "rework_check"):
+        out[k] = _norm_audit_list(out.get(k))
+    if not isinstance(out.get("reason"), str):
+        out["reason"] = "" if out.get("reason") is None else str(out["reason"])
+    return out
+
+
+def _audit_retryable(e: Exception) -> bool:
+    """哪些异常值得再打一次。
+
+    EmptyOutput（空返回、工具参数被 `_reject_broken_args` 判截断）是
+    随机失败，重试有意义；`MiniMax <status>` 是 HTTP 层——429 是额度
+    问题、5xx 整次重发没意义；ConfigError 是配置错，重试一万次也一样。
+    """
+    if isinstance(e, ConfigError):
+        return False
+    return not str(e).startswith("MiniMax ")
+
+
 def node_audit(state: WriteState) -> dict:
     """主 agent 通读全稿。返回是否返修、返修谁、以及返修有没有真的解决问题。
 
@@ -1339,18 +1464,50 @@ def node_audit(state: WriteState) -> dict:
         if prev:
             payload["上一轮你提出的问题（逐条核对，现在还在吗）"] = prev
 
-    try:
-        d = LLM.complete_json("write_audit", _clip(_dumps(payload), 120000),
-                               system=prompts.WRITE_AUDIT)
-    except Exception as e:
+    # 2026-10-19 起结论走强制工具 `submit_audit`（坑 77）：M3 开思考
+    # 手写 JSON 太长必被截断；M3.1-Flash low 单次 7~12k 接得住，
+    # 但它的工具入参有约 2/18 偏离 schema → 必须过
+    # `_normalize_audit_input`，归一不了当失败重试。
+    # 点名工具的话术与 tests/exp_audit_nothink.py 的实测版本逐字一致。
+    prompt = (_clip(_dumps(payload), 120000)
+              + "\n\n审完后**调用 `submit_audit` 工具**提交结论，"
+                "结论只放在工具参数里，不要在对话文本里写 JSON。")
+    d: dict | None = None
+    err: object = ""
+    attempts = 0
+    for _attempt in (1, 2):
+        attempts = _attempt
+        try:
+            raw = LLM.complete_json_forced(
+                "write_audit", prompt, "submit_audit", AUDIT_SCHEMA,
+                system=prompts.WRITE_AUDIT)
+        except Exception as e:
+            err = e
+            if _attempt == 1 and _audit_retryable(e):
+                print(f"⚠️  [write_audit] 调用失败"
+                      f"（{type(e).__name__}: {str(e)[:80]}），重试一次",
+                      flush=True)
+                continue
+            break
+        d = _normalize_audit_input(raw)
+        if d is None:
+            err = "submit_audit 入参偏离 schema，无法归一化"
+            if _attempt == 1:
+                print("⚠️  [write_audit] 返回结构无法归一化，重试一次",
+                      flush=True)
+                continue
+        break
+
+    if d is None:
         # 审查失败不阻断：保留现状，把问题暴露出来而不是假装没问题
-        return {"audit": {"need_rework": False, "error": str(e)[:200],
+        msg = f"{err}（已尝试 {attempts} 次）"[:200]
+        return {"audit": {"need_rework": False, "error": msg,
                           "findings": [], "targets": [], "blocked": [],
                           "rework_check": [], "checked": 0, "still_open": 0,
                           "rework_effective": True,
                           "remaining_issues": ["审查环节失败，未能核查"]},
                 "rework_effective": True,
-                "events": [{"kind": "write_audit_error", "error": str(e)[:200]}]}
+                "events": [{"kind": "write_audit_error", "error": msg}]}
 
     findings = [f for f in (d.get("findings") or []) if isinstance(f, dict)]
     by_task = {t["id"]: t for t in state.get("tasks") or []}
@@ -1447,6 +1604,7 @@ def node_audit(state: WriteState) -> dict:
         "audit": audit,
         "rework_effective": rework_effective,
         "events": [{"kind": "write_audit", "rounds": rounds,
+                    "attempts": attempts,
                     "high": len(targets), "findings": len(findings),
                     "blocked": len(blocked),
                     "need_rework": audit["need_rework"],

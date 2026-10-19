@@ -10,6 +10,9 @@ dist/
 .searxng/
 .venv*/
 data/
+# 测试 fixture 不在忽略范围（如 tests/data/audit_tool_inputs.json 是
+# 固化下来的真实模型样本，必须随仓库走）。
+!tests/data/
 *.log
 .DS_Store
 *.tsbuildinfo
