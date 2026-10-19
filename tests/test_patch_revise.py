@@ -266,6 +266,37 @@ def t_call_failures():
           len([c for c in llm.calls if c["stage"] == "write_patch"]) == 1
           and len(run.calls) == 1)
 
+    # MiniMax 529 过载是瞬时错误（服务端明说「请稍后重试」）——
+    # 等 _TRANSIENT_WAIT_S 后再发。离线把等待置 0。
+    o_wait = W._TRANSIENT_WAIT_S
+    W._TRANSIENT_WAIT_S = 0
+    try:
+        st = _state([_task("t1")], drafts={"t1": {"sec1": body}},
+                    audit={"targets": [tgt]})
+        llm, run, out = _run_revise(
+            st, [RuntimeError("MiniMax 529: overloaded_error"),
+                 {"patches": [{"item": 0, "old": "乙句要改。",
+                               "new": "乙句改好。"}],
+                  "unresolved": []}])
+        check("⑥ 529 重试救回（2 次补丁调用、不回退）",
+              len([c for c in llm.calls if c["stage"] == "write_patch"]) == 2
+              and out["drafts"]["t1"]["sec1"] == "甲句。乙句改好。丙句。"
+              and len(run.calls) == 0, str(run.calls))
+
+        # 连续过载 → 最多 3 次尝试后回退（不无限重发）。
+        st = _state([_task("t1")], drafts={"t1": {"sec1": body}},
+                    audit={"targets": [tgt]})
+        llm, run, out = _run_revise(
+            st, [RuntimeError("MiniMax 529: a"),
+                 RuntimeError("MiniMax 529: b"),
+                 RuntimeError("MiniMax 529: c")],
+            {"t1": [({"sec1": "重写的"}, None)]})
+        check("⑥ 连续 529 → 3 次尝试后回退",
+              len([c for c in llm.calls if c["stage"] == "write_patch"]) == 3
+              and len(run.calls) == 1, str(run.calls))
+    finally:
+        W._TRANSIENT_WAIT_S = o_wait
+
 
 # --------------------------------------------------- ⑦ 混合任务
 
@@ -431,6 +462,50 @@ def t_legacy_findings():
           and out["drafts"]["t1"]["sec1"] == "旧路径重写")
 
 
+# ------------------------------------- ⑬ 整段删除 / 标题行 quote
+#
+# 真实跑里两个形态：t5/sec5 整段是元叙述（应整段删，但审查提了
+# rewrite_section 被逼整节重写）；t8/sec9 的 quote 是标题行
+# `### 8.1 …`——编号是装配时系统补的，draft 里没这个字面，
+# quote 定位失败掉回整节重写。第一条现在应走补丁，第二条回退。
+
+def t_para_delete_and_heading_quote():
+    para1 = "甲段内容，照实陈述。"
+    para2 = ("乙段整段是元叙述：本节将介绍若干要点，"
+             "按规约这些要点需在别处展开。")
+    para3 = "丙段也照实陈述。"
+    body = f"{para1}\n\n{para2}\n\n{para3}"
+    st = _state([_task("t1")],
+                drafts={"t1": {"sec1": body}},
+                audit={"targets": [_tgt("t1", "sec1", para2[:20],
+                                        action="delete",
+                                        fix="整段删除")]})
+    llm, run, out = _run_revise(
+        st, [{"patches": [{"item": 0, "old": para2, "new": ""}],
+              "unresolved": []}])
+    new_body = out["drafts"]["t1"]["sec1"]
+    # replace 留下的 \n\n\n\n 会被事后 _auto_fix_drafts 压成 \n\n
+    # （删句后空行堆叠归一，R3b 同款），其余段逐字节不变。
+    check("⑬ 整段删除：该段消失、其余段逐字节不变",
+          new_body == f"{para1}\n\n{para3}",
+          repr(new_body[:80]))
+    check("⑬ 整段删除：_run_task 0 次、applied=1",
+          len(run.calls) == 0 and _patch_ev(out).get("applied") == 1)
+
+    # quote 是系统补的标题行（draft 里没这个字面）→ 定位失败回退旧路径。
+    st = _state([_task("t1")],
+                drafts={"t1": {"sec1": body}},
+                audit={"targets": [_tgt("t1", "sec1",
+                                        "### 8.1 应用顺序的报道口径",
+                                        problem="标题编号与 sec 编号冲突")]})
+    llm, run, out = _run_revise(
+        st, [{"patches": [], "unresolved": []}],
+        {"t1": [({"sec1": "重写后的"}, None)]})
+    check("⑬ quote 是标题行：不发补丁调用、回退旧路径",
+          len([c for c in llm.calls if c["stage"] == "write_patch"]) == 0
+          and len(run.calls) == 1, str(run.calls)[:100])
+
+
 def main() -> int:
     print("=== ① 快乐路径 ===")
     t_happy_path()
@@ -454,6 +529,8 @@ def main() -> int:
     t_normalize_patch_input()
     print("\n=== ⑫ 向后兼容 ===")
     t_legacy_findings()
+    print("\n=== ⑬ 整段删除 / 标题行 quote ===")
+    t_para_delete_and_heading_quote()
     print()
     if FAILED:
         print(f"❌ {len(FAILED)} 项失败：")

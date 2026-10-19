@@ -167,18 +167,20 @@ def _run_audit(checks, unres=None, prev_high=8, cur_findings=3):
                         "segments": [], "must_cover": []}
                        for i in range(1, 10)],
              "violations": {},
-             "revise_unresolved": unres or []}
+             "revise_unresolved": unres or [],
+             # prev_high 从 state["audit"]["model_high"] 取（上一轮审查
+             # 写在 checkpoint 里的结论）；None 表示旧 audit 没这键，
+             # 退回旧规则。
+             "audit": ({"model_high": prev_high}
+                       if prev_high is not None else {})}
     raw = {"need_rework": True, "reason": "r", "findings": _findings(cur_findings),
            "blocked": [], "rework_check": checks}
     orig_llm = W.LLM.complete_json_forced
-    orig_prev = W._prev_high
     W.LLM.complete_json_forced = StubAuditLLM(raw).complete_json_forced
-    W._prev_high = lambda sid, r: prev_high
     try:
         return W.node_audit(state)
     finally:
         W.LLM.complete_json_forced = orig_llm
-        W._prev_high = orig_prev
 
 
 # 真实形状：fixed 4 + changed_form 1 + still_there 3，
@@ -243,9 +245,19 @@ def t_rework_effective():
     out = _run_audit(checks, [], prev_high=8, cur_findings=3)
     check("B7 fixed=0 且 still_real → 无效", out["rework_effective"] is False)
 
-    # _prev_high 真函数：无 session/rounds=0 → None
-    check("B8 _prev_high(None)→None", W._prev_high(None, 1) is None
-          and W._prev_high("s", 0) is None)
+    # _prev_high_from_state 真函数：从 state["audit"]["model_high"] 取，
+    # 不读 audit_history（历史按 round 去重跨跑累积，重跑时陈旧）。
+    check("B8 _prev_high_from_state 取 state.audit.model_high",
+          W._prev_high_from_state({"audit": {"model_high": 4}}, 1) == 4
+          and W._prev_high_from_state({"audit": {"model_high": True}}, 1) is None
+          and W._prev_high_from_state({"audit": {}}, 1) is None
+          and W._prev_high_from_state({}, 1) is None
+          and W._prev_high_from_state({"audit": {"model_high": 4}}, 0) is None)
+    # 新 audit dict 里也写进了 model_high，供下一轮当 prev_high 用
+    out = _run_audit(CHECK_REAL, UNRES_REAL, prev_high=8, cur_findings=3)
+    check("B8 本轮 audit.model_high == cur_high（进 state 供下轮用）",
+          out["audit"].get("model_high") == 3
+          and out["audit"].get("prev_high") == 8)
 
 
 if __name__ == "__main__":

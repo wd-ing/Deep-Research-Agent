@@ -208,6 +208,50 @@ def t_node_audit():
           len(stub.seen) == 2 and ev.get("kind") == "write_audit"
           and ev.get("attempts") == 2, f"{len(stub.seen)} {ev.get('kind')}")
 
+    # (f) MiniMax 529 过载 → 瞬时错误：等 _TRANSIENT_WAIT_S 后重试。
+    #     （真实跑里二轮审查撞 529 被判不重试直接兜底、返修稿没复审
+    #     就收工——服务端明说「请稍后重试」。）离线把等待置 0、sleep 桩掉。
+    o_wait, o_sleep = W._TRANSIENT_WAIT_S, W.time.sleep
+    slept: list[float] = []
+    W._TRANSIENT_WAIT_S = 0
+    W.time.sleep = lambda s: slept.append(s)
+    try:
+        stub, out = _run_audit([RuntimeError("MiniMax 529: overloaded_error"),
+                                FIXTURES["clean"]])
+        ev = (out.get("events") or [{}])[0]
+        check("② 529→等后重试成功（2 次调用、睡 1 次）",
+              len(stub.seen) == 2 and ev.get("kind") == "write_audit"
+              and ev.get("attempts") == 2 and slept == [0],
+              f"{len(stub.seen)} {ev.get('kind')} slept={slept}")
+
+        # (g) 连续过载 → 最多 3 次尝试后兜底（不无限重发）。
+        slept.clear()
+        stub, out = _run_audit([RuntimeError("MiniMax 529: a"),
+                                RuntimeError("MiniMax 529: b"),
+                                RuntimeError("MiniMax 529: c")])
+        ev = (out.get("events") or [{}])[0]
+        check("② 连续 529 → 3 次尝试后兜底（睡 2 次）",
+              len(stub.seen) == 3 and ev.get("kind") == "write_audit_error"
+              and "3" in str(ev.get("error")) and slept == [0, 0],
+              f"{len(stub.seen)} {str(ev.get('error'))[:60]} slept={slept}")
+    finally:
+        W._TRANSIENT_WAIT_S = o_wait
+        W.time.sleep = o_sleep
+
+
+def t_transient_http():
+    check("_transient_http：529/503/500、带前缀的 reason 都命中",
+          W._transient_http(RuntimeError("MiniMax 529: overloaded"))
+          and W._transient_http("调用失败：MiniMax 503")
+          and W._transient_http("MiniMax 500")
+          and W._transient_http("MiniMax 504 超时"))
+    check("_transient_http：429/4xx/ConfigError/EmptyOutput 不命中",
+          not W._transient_http("MiniMax 429: rate limit")
+          and not W._transient_http("MiniMax 400")
+          and not W._transient_http(P.ConfigError("缺 key"))
+          and not W._transient_http(P.EmptyOutput("截断"))
+          and not W._transient_http(None))
+
 
 # --------------------------------------------------------------- ③ 配置与 payload
 
@@ -313,6 +357,7 @@ def main() -> int:
     t_normalize()
     print("\n=== ② node_audit 强制工具 + 重试 ===")
     t_node_audit()
+    t_transient_http()
     print("\n=== ③ 配置 / payload / M3.1 护栏 ===")
     t_config_and_payload()
     t_validate_m31()

@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -514,6 +515,14 @@ def node_dispatch(state: WriteState) -> dict:
     retried = len(retry_tasks)
     recovered = 0
     if retry_tasks:
+        # 本批只要有任务是过载败的，整个重试批先等一轮再发——
+        # 瞬时过载时立刻重发只会再撞 529。非过载的失败不等。
+        if any(_transient_http(new_failed[t["id"]].get("reason"))
+               for t in retry_tasks):
+            print(f"⚠️  [write_section] 服务过载，{_TRANSIENT_WAIT_S}s 后"
+                  "重试失败任务", flush=True)
+            time.sleep(_TRANSIENT_WAIT_S)
+
         def _one_retry(t: dict) -> tuple[dict, str | None]:
             secs, err = _run_task(state, t, revise=None)
             # 重试成功照常再发一条 ok=True；仍败**不**再发——
@@ -568,11 +577,14 @@ def _task_retryable(reason: str | None) -> bool:
     """失败原因值不值得再跑一次（dispatch 内重试的闸门）。
 
     与 `_audit_retryable` 同一套判据，只是喂进来的是原因字符串：
-    · HTTP 状态错（429 限流/额度、5xx）——重发一个死一个；
+    · MiniMax 5xx/529——瞬时过载，值一次（先等 _TRANSIENT_WAIT_S）；
+    · HTTP 4xx（429 限流/额度、参数错）——重发一个死一个；
     · 配置类 / 确定性失败（没分到证据）——重跑一万次也一样；
     · 交卷异常（空交卷、污染、截断、调用方异常）——随机事件，值一次。
     """
     s = reason or ""
+    if _transient_http(s):
+        return True
     if re.search(r"MiniMax [45]\d\d", s) or "quota" in s.lower():
         return False
     if "ConfigError" in s or "没有分到" in s:
@@ -1691,21 +1703,18 @@ def _last_high_findings(session_id: str | None) -> list[dict]:
     return out
 
 
-def _prev_high(session_id: str | None, rounds: int) -> int | None:
-    """上一轮审查的 high 条数（audit_history 里 `high` = 当时 targets 数，
-    含程序违规目标——它是历史里唯一可查的口径）。取不到返回 None。"""
-    if not session_id or rounds <= 0:
+def _prev_high_from_state(state: WriteState, rounds: int) -> int | None:
+    """上一轮审查的模型 high 条数，从 **state 里的 audit** 取。
+
+    曾经从 audit_history（DB trace）取——它按 round 去重、跨重跑累积，
+    重跑同一份 session 时读到的是旧运行的条目（2026-10-19 真实跑里
+    prev_high 显示 7，而本轮上一轮其实是 4）。state["audit"] 就是
+    checkpoint 里带着的上一轮审查结论，不会串。取不到返回 None。
+    """
+    if rounds <= 0:
         return None
-    try:
-        from ...db.repo import get_repo
-        hist = get_repo().write_trace(session_id).get("audit_history") or []
-    except Exception:
-        return None
-    for rec in reversed(hist):
-        if (isinstance(rec, dict) and isinstance(rec.get("high"), int)
-                and (rec.get("round") or 0) < rounds):
-            return rec["high"]
-    return None
+    mh = (state.get("audit") or {}).get("model_high")
+    return int(mh) if isinstance(mh, int) and not isinstance(mh, bool) else None
 
 
 _AUDIT_KEYS = {"need_rework", "findings", "blocked", "reason"}
@@ -1840,16 +1849,40 @@ def _normalize_patch_input(raw) -> dict | None:
             "unresolved": _items(d.get("unresolved"), ("reason",))}
 
 
+# MiniMax 5xx/529 是「当前服务集群负载较高，请稍后重试」的瞬时过载——
+# 服务端自己要求重试，等 _TRANSIENT_WAIT_S 秒再打一次是有意义的；
+# 429/其他 4xx 是额度或参数问题，重发一个死一个，不在此列。
+# （2026-10-19 真实跑：二轮审查撞 529 被判不重试，返修稿没复审就收工。）
+_TRANSIENT_WAIT_S = 20
+_TRANSIENT_RE = re.compile(r"MiniMax (500|502|503|504|529)\b")
+
+
+def _transient_http(e_or_reason) -> bool:
+    """异常对象或原因字符串里是否带 MiniMax 5xx/529 瞬时过载。"""
+    return bool(_TRANSIENT_RE.search(str(e_or_reason or "")))
+
+
 def _audit_retryable(e: Exception) -> bool:
     """哪些异常值得再打一次。
 
-    EmptyOutput（空返回、工具参数被 `_reject_broken_args` 判截断）是
-    随机失败，重试有意义；`MiniMax <status>` 是 HTTP 层——429 是额度
-    问题、5xx 整次重发没意义；ConfigError 是配置错，重试一万次也一样。
+    · MiniMax 5xx/529——瞬时过载（服务端明说「请稍后重试」），重试；
+    · EmptyOutput（空返回、工具参数被 `_reject_broken_args` 判截断）及
+      其他非 HTTP 异常——随机失败，重试；
+    · `MiniMax 4xx`（429 额度/限流、参数错）与 ConfigError——重发没意义。
     """
     if isinstance(e, ConfigError):
         return False
+    if _transient_http(e):
+        return True
     return not str(e).startswith("MiniMax ")
+
+
+def _wait_transient(stage: str, e) -> None:
+    """因过载重试前先等一会儿，并打一行可被日志看见的提示。"""
+    code = _TRANSIENT_RE.search(str(e))
+    print(f"⚠️  [{stage}] 服务过载（MiniMax {code.group(1) if code else '5xx'}），"
+          f"{_TRANSIENT_WAIT_S}s 后重试", flush=True)
+    time.sleep(_TRANSIENT_WAIT_S)
 
 
 def node_audit(state: WriteState) -> dict:
@@ -1908,7 +1941,7 @@ def node_audit(state: WriteState) -> dict:
     d: dict | None = None
     err: object = ""
     attempts = 0
-    for _attempt in (1, 2):
+    for _attempt in (1, 2, 3):
         attempts = _attempt
         try:
             raw = LLM.complete_json_forced(
@@ -1916,11 +1949,18 @@ def node_audit(state: WriteState) -> dict:
                 system=prompts.WRITE_AUDIT)
         except Exception as e:
             err = e
-            if _attempt == 1 and _audit_retryable(e):
-                print(f"⚠️  [write_audit] 调用失败"
-                      f"（{type(e).__name__}: {str(e)[:80]}），重试一次",
-                      flush=True)
-                continue
+            if _audit_retryable(e):
+                transient = _transient_http(e)
+                # 过载是瞬时错误，值得等久一点多发一次（最多 3 次）；
+                # 其他可重试错误保持两次。
+                if _attempt < (3 if transient else 2):
+                    if transient:
+                        _wait_transient("write_audit", e)
+                    else:
+                        print(f"⚠️  [write_audit] 调用失败"
+                              f"（{type(e).__name__}: {str(e)[:80]}），重试一次",
+                              flush=True)
+                    continue
             break
         d = _normalize_audit_input(raw)
         if d is None:
@@ -2033,7 +2073,7 @@ def node_audit(state: WriteState) -> dict:
                   if (c.get("task"), c.get("section")) not in unres_keys]
     still_unres_n = len(still_all) - len(still_real)
     fixed_n = sum(1 for c in check if str(c.get("status")) == "fixed")
-    prev_high = _prev_high(state.get("session_id"), rounds)
+    prev_high = _prev_high_from_state(state, rounds)
     cur_high = model_high
     if rounds > 0 and checked:
         # 没有真没改掉的 → 有效；仍有真没改掉的 → 只在「修过至少一条
@@ -2074,6 +2114,7 @@ def node_audit(state: WriteState) -> dict:
         "still_open": len(still),
         "still_unresolved": still_unres_n,
         "prev_high": prev_high, "cur_high": cur_high,
+        "model_high": model_high,
         "checked": checked,
         "violation_targets": violation_targets,
     }
@@ -2096,7 +2137,9 @@ def node_audit(state: WriteState) -> dict:
         "high": len(targets),
         "blocked": len(blocked),
         "violation_targets": violation_targets,
-        "targets": [f"{t['task']}→{t.get('section')}" for t in targets],
+        "targets": [f"{t['task']}→{t.get('section')}"
+                    f":{t.get('action') or 'rewrite_section'}"
+                    for t in targets],
         "rework_effective": (rework_effective if rounds > 0 else None),
         "rework_checked": checked,
         "still_open": len(still),
@@ -2235,7 +2278,10 @@ def _para_of(body: str, needle: str) -> str:
         return body[:4000]
     s = body.rfind("\n\n", 0, i) + 2
     e = body.find("\n\n", i)
-    return body[s:e if e >= 0 else len(body)]
+    para = body[s:e if e >= 0 else len(body)]
+    # 整段删除/改写要拿全段做 old——段落本身不截（除非 >3000 字，
+    # 那种段落补丁本来也难定位）；截断会害模型复制出半截 old。
+    return para[:3000]
 
 
 def _patch_prompt(state: WriteState, tid: str, items: list[dict],
@@ -2345,7 +2391,9 @@ def _apply_patches(state: WriteState, tid: str, items: list[dict],
         if _check_internal_ids(fixed):
             _reject(it, "内部编号")
             continue
-        if set(_contamination(fixed)) & STRONG:
+        # new="" 是 delete 的合法形态——`_contamination("")` 恒报
+        # "empty"，不豁免会让删除动作永远被拒。
+        if new and set(_contamination(fixed)) & STRONG:
             _reject(it, "污染输出")
             continue
         bodies[sec] = body.replace(use, fixed, 1)
@@ -2415,17 +2463,22 @@ def node_revise(state: WriteState) -> dict:
         prompt = _patch_prompt(state, tid, patch_items[tid],
                                _section_map(drafts.get(tid)))
         last: dict | None = None
-        for _attempt in (1, 2):
+        for _attempt in (1, 2, 3):
             try:
                 patch_calls += 1
                 raw = LLM.complete_json_forced(
                     "write_patch", prompt, "submit_patches", PATCH_SCHEMA,
                     system=prompts.WRITE_PATCH)
             except Exception as e:
-                if _attempt == 1 and _audit_retryable(e):
-                    print(f"⚠️  [write_patch] {tid} 调用失败"
-                          f"（{type(e).__name__}: {str(e)[:80]}），重试一次",
-                          flush=True)
+                transient = _transient_http(e)
+                if (_audit_retryable(e)
+                        and _attempt < (3 if transient else 2)):
+                    if transient:
+                        _wait_transient("write_patch", e)
+                    else:
+                        print(f"⚠️  [write_patch] {tid} 调用失败"
+                              f"（{type(e).__name__}: {str(e)[:80]}），重试一次",
+                              flush=True)
                     continue
                 patch_errs[tid] = f"{type(e).__name__}: {str(e)[:80]}"
                 return tid, None
@@ -2576,7 +2629,9 @@ def node_revise(state: WriteState) -> dict:
         "violations": _check_all_citations(state, drafts),
         "events": [{"kind": "write_revise",
                     "tasks": list(by_task),
-                    "targets": [f"{t['task']}→{t.get('section')}" for t in targets],
+                    "targets": [f"{t['task']}→{t.get('section')}"
+                                f":{t.get('action') or 'rewrite_section'}"
+                                for t in targets],
                     "kept_old": rejected,
                     "cleared_failed": cleared_failed,
                     "auto_fixes": len(auto_fixes),

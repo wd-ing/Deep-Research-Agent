@@ -127,6 +127,24 @@ def t_dispatch_retry():
           and ev.get("retried") == 1 and ev.get("recovered") == 1,
           f"{stub.calls} {ev.get('retried')}/{ev.get('recovered')}")
 
+    # ④b MiniMax 529 过载 → 瞬时错误：等 _TRANSIENT_WAIT_S 后重试。
+    #     （真实跑里第二次审查撞 529 被判不重试直接兜底——
+    #     服务端明说「请稍后重试」，该等。）离线把等待置 0。
+    o_wait = W._TRANSIENT_WAIT_S
+    W._TRANSIENT_WAIT_S = 0
+    try:
+        stub, out = _with_stub(
+            {"t1": [({}, "调用失败：MiniMax 529: 服务过载"),
+                    ({"sec1": BODY}, None)]},
+            lambda: W.node_dispatch(_state([_task("t1")])))
+    finally:
+        W._TRANSIENT_WAIT_S = o_wait
+    ev = (out.get("events") or [{}])[0]
+    check("④b 529 过载重试成功（2 次调用、进 drafts）",
+          stub.calls.get("t1") == 2 and out["drafts"].get("t1") == {"sec1": BODY}
+          and ev.get("retried") == 1 and ev.get("recovered") == 1,
+          f"{stub.calls} {ev}")
+
 
 def t_revise_clears_failed():
     # ⑤ revise 救回 t2 → failed 清掉；没救回的 t9 保留。
