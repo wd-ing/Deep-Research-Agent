@@ -519,6 +519,15 @@ stages:
     # 已贴 60 秒墙（工具那一轮直接 504 且**静默降级**，不报错）
     stream: true
     reasoning_effort: low
+    # 强制交卷轮只负责把**已经想好**的正文填进 submit_section 参数，
+    # 不需要再思考。实测（2026-10-19，n=5，t7/t5r 两个任务）：
+    # 开思考干净 1/5 & 3/5（思考吃光 max_tokens 导致正文截断），
+    # 关思考 4/5 & 4/5，输出 token 14.3k→9.1k。
+    # 风险：MiniMax 关思考+点名工具偶发编造调用——真实验收实测
+    # ~1/8～2/8——由 run_tool_loop 检测到没交上后**再关思考**重试
+    # 一次（开思考重试会吃光预算，已弃用）。重试仍可能失败：
+    # 失败走 fallback 并被判失败进降级，不会带脏文本入稿。
+    forced_thinking: disabled
     temperature: 0.2
     max_output_tokens: 8192
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 16384 }
@@ -529,6 +538,10 @@ stages:
     # 已贴 60 秒墙（工具那一轮直接 504 且**静默降级**，不报错）
     stream: true
     reasoning_effort: low
+    # 同 write_section：强制交卷轮关思考更干净、更省。
+    # 单独再注一遍是因为 v13 的丢稿事故就出在**返修**——
+    # 返修输出只有英文推理却覆盖了旧稿（merge 保护就是为它加的）。
+    forced_thinking: disabled
     temperature: 0.1
     max_output_tokens: 4096
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 8192 }

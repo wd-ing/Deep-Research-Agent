@@ -77,6 +77,7 @@ def run_tool_loop(
     provider: ToolProvider,
     max_rounds: int = 3,
     final_tool: dict | None = None,
+    meta: dict | None = None,
 ) -> tuple[str, list[dict], list[list[dict]]]:
     """跑到模型不再调工具为止。
 
@@ -108,6 +109,14 @@ def run_tool_loop(
     ⚠️ 提交轮失败**不抛**，退回上一轮的文本让调用方自己 `_parse_json`。
     理由同 `node_plan_tasks` 的退路：分派不是非走这条路不可，
     但「保证」失效必须看得见，所以会打一条告警而不是无声降级。
+
+    ## `meta`（2026-10-19 加）
+
+    传一个 dict 就回填 `meta["via"]`，记正文是从哪条通道拿到的：
+    `voluntary`（Phase A 自愿交卷）/ `forced`（Phase B 首次）/
+    `forced_retry`（Phase B 同档位重试）/ `fallback`（没拿到交卷，
+    返回的是自由文本）。下游靠它决定要不要走文本清洗——
+    交卷产物可信，自由文本要按污染通道处理。
     """
     messages = list(messages)
     log: list[list[dict]] = []
@@ -165,6 +174,8 @@ def run_tool_loop(
                 if c.get("name") == final_name:
                     done = _submitted(c)
                     if done:
+                        if meta is not None:
+                            meta["via"] = "voluntary"
                         return done, messages, log
 
         log.append(calls)
@@ -189,7 +200,11 @@ def run_tool_loop(
         return text, messages, log
 
     # ---- Phase B：强制交卷 ----
+    err: Exception | None = None
     try:
+        # ⚠️ 第一次刻意**不传 `thinking`**：交给 provider 按环节配置决定
+        # （`forced_thinking: disabled` 的环节这一轮会关思考）。
+        # 也让不认 `thinking` 形参的老测试桩不受影响。
         resp = llm.complete_with_tools(stage, system, messages, [final_tool],
                                        tool_choice=final_name)
         blocks = resp.get("blocks") or []
@@ -197,13 +212,56 @@ def run_tool_loop(
             if b.get("type") == "tool_use" and b.get("name") == final_name:
                 done = _submitted(b)
                 if done:
+                    if meta is not None:
+                        meta["via"] = "forced"
                     return done, messages, log
         # 强制了却没拿到工具调用——平台无视了 tool_choice。保留上一轮的文本。
         text = "".join(x.get("text", "") for x in blocks
                        if x.get("type") == "text") or text
     except Exception as e:
-        print(f"⚠️  [{stage}] 强制交卷失败，退回上一轮文本: {e}", flush=True)
+        err = e
 
+    # 强制轮没交卷 → 只在环节**显式配了** `forced_thinking: disabled` 时
+    # 用**同一档位**重试**一次**（2026-10-19 加，当日真实验收数据订正）。
+    # 依据：MiniMax 关思考 + 点名工具的编造调用是 ~10% 的随机事件，
+    # 第二次关思考重试成功概率高得多；而**开思考的强制轮会先把预算
+    # 烧在 thinking 上**——v13 t7 生产验收实测：第一次强制轮编造了
+    # `read_context`，thinking=True 重试思考 8192 token 吃光
+    # max_tokens、一个字没写，两轮合计烧 ~17k 后照样 fallback。
+    # 所以重试是同档位再来一次，不是「回退到稳的那档」。
+    # 没配这个开关的环节维持原行为，不为它们凭空多打一次调用；
+    # 取不到配置（桩 llm、registry 异常）也按「没配」处理，不因此抛错。
+    retry = False
+    try:
+        retry = getattr(llm.registry.stage(stage), "forced_thinking",
+                        None) == "disabled"
+    except Exception:
+        retry = False
+    if retry:
+        try:
+            resp = llm.complete_with_tools(stage, system, messages,
+                                           [final_tool],
+                                           tool_choice=final_name,
+                                           thinking=False)
+            blocks = resp.get("blocks") or []
+            for b in blocks:
+                if b.get("type") == "tool_use" and b.get("name") == final_name:
+                    done = _submitted(b)
+                    if done:
+                        if meta is not None:
+                            meta["via"] = "forced_retry"
+                        return done, messages, log
+            text = "".join(x.get("text", "") for x in blocks
+                           if x.get("type") == "text") or text
+        except Exception as e2:
+            err = e2
+        if err is None:
+            err = RuntimeError(f"两轮强制交卷都没拿到 {final_name}")
+
+    if err is not None:
+        print(f"⚠️  [{stage}] 强制交卷失败，退回上一轮文本: {err}", flush=True)
+    if meta is not None:
+        meta["via"] = "fallback"
     return text, messages, log
 
 

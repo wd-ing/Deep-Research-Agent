@@ -469,6 +469,13 @@ class StageConfig:
     # 只给离 60 秒近的环节开——`relevance` 2.3s、`summarize` 6.8s
     # 离得远，全量流式属于为看不见的收益买单。
     stream: bool = False
+    # 「强制交卷那一轮要不要思考」。只服务 `run_tool_loop` 的 Phase B：
+    # 那一轮只负责把**已经想好**的正文填进 submit_section 参数，再思考一遍
+    # 会把预算烧在想上、正文反而填不完——实测（2026-10-19，n=5 双任务）：
+    # 开思考干净 1/5 & 3/5、关思考 4/5 & 4/5，输出 token 14.3k→9.1k。
+    # 唯一合法值 "disabled"。⚠️ 不能叫 `off`：YAML 1.1 把裸 off 解析成
+    # 布尔 false，判等不成立、配置静默不生效（reasoning_effort 同款坑）。
+    forced_thinking: str | None = None
     guard: GuardPolicy = field(default_factory=GuardPolicy)
 
     def validate(self) -> None:
@@ -489,6 +496,19 @@ class StageConfig:
                     f"{self.provider}。output_config.effort 是 MiniMax 的参数，"
                     "换 provider 时必须一并删掉，否则会被静默忽略——"
                     "那正是上一轮踩过的坑。"
+                )
+        if self.forced_thinking is not None:
+            if self.forced_thinking != "disabled":
+                raise ConfigError(
+                    f"环节 {self.stage} 的 forced_thinking="
+                    f"{self.forced_thinking!r} 非法，只接受 `disabled`。"
+                    "（不要写 `off`：YAML 会解析成布尔 false。）"
+                )
+            if self.provider != "minimax":
+                raise ConfigError(
+                    f"环节 {self.stage} 配了 forced_thinking，但 provider 是 "
+                    f"{self.provider}。`thinking` 字段是 MiniMax 的参数，"
+                    "换 provider 时必须一并删掉，否则会被静默忽略。"
                 )
         # ⚠️ 2026-10-17 **撤销了原来这条拦截**。
         #
@@ -597,6 +617,7 @@ class ModelRegistry:
             temperature=float(s.get("temperature", d.get("temperature", 0.0))),
             reasoning_effort=s.get("reasoning_effort"),
             thinking_effort=s.get("thinking_effort"),
+            forced_thinking=s.get("forced_thinking"),
             timeout_s=float(s.get("timeout_s", d.get("timeout_s", 180))),
             base_url=s.get("base_url", d.get("base_url", "")).rstrip("/"),
             api_key_env=s.get("api_key_env") or d.get("api_key_env"),
@@ -1306,11 +1327,16 @@ class LLMClient:
         messages: list[dict],
         tools: list[dict],
         tool_choice: str | None = None,
+        thinking: bool | None = None,
     ) -> dict:
         """带工具的一次调用。返回原始 content 块与 usage。
 
         `tool_choice`（2026-10-17 加）传工具名 = **必须**调它，只发那一个工具。
         不传 = 老规矩，`tools` 里随便挑或直接回文本。
+
+        `thinking`（2026-10-19 加）：`None`=按环节配置决定；`True`=强制开
+        思考；`False`=强制关。目前只有 MiniMax 分支消费它（强制交卷轮
+        的关思考与同档位重试，见 `_minimax_tools`）；别的 provider 忽略。
 
         `tool_choice` 管的是**输出形状**：`run_tool_loop` 原来最后一轮
         不带工具，于是「最终答案」是让模型手写一整份 JSON 文本——
@@ -1375,7 +1401,8 @@ class LLMClient:
                 # 兜底靠另外两层（Phase A 自愿交卷 + `_parse_json`），不是靠降级。
                 blocks, usage = self._minimax_tools(
                     cfg, system, messages, tools,
-                    tool_choice=(forced or {}).get("name"))
+                    tool_choice=(forced or {}).get("name"),
+                    thinking=thinking)
             else:
                 raise ConfigError(
                     f"环节 {stage} 的 provider {cfg.provider} 暂不支持工具调用")
@@ -1944,7 +1971,8 @@ class LLMClient:
 
     def _minimax_tools(self, cfg: StageConfig, system: str | None,
                        messages: list[dict], tools: list[dict],
-                       tool_choice: str | None = None) -> tuple[list, dict]:
+                       tool_choice: str | None = None,
+                       thinking: bool | None = None) -> tuple[list, dict]:
         key = os.environ.get(cfg.api_key_env or "MINIMAX_API_KEY", "")
         if not key:
             raise ConfigError(f"未设置 {cfg.api_key_env or 'MINIMAX_API_KEY'}")
@@ -2000,7 +2028,27 @@ class LLMClient:
         # 危险格是「**提示词点名工具** + 关思考」，命中率掉到 5~6/10 并出现真编造；
         # 而「只说『查一下 X』」不点名时，关思考照样 3/3 正常调用。
         # 由 `run_tool_loop` 在发之前拦住（只有真要发工具的那次调用才知道）。
-        if cfg.reasoning_effort:
+        #
+        # `thinking` 形参（2026-10-19 加）只服务于强制交卷轮的两步：
+        #   · `thinking is None` + `tool_choice` + `forced_thinking: disabled`
+        #     → 配置要求这一轮关思考。实测（见 models.yaml 注释）：强制轮只是
+        #     把已想好的正文填进参数，关思考更干净且输出 token 省 ~35%。
+        #     ⚠️ 不发 `output_config`：effort 是「想多深」的调档，和 disabled
+        #     同发语义冲突。
+        #   · `thinking is True` → 强制开思考。**当前没有生产调用方**：
+        #     Phase B 重试曾用它，但真实验收证明开思考的强制轮会把
+        #     预算烧在 thinking 上（8192 token 想完一字未写），
+        #     重试已改回同档位 `thinking=False`（见 run_tool_loop）。
+        #     形参保留给将来/实验用，语义不变。
+        #   其余调用（Phase A 自愿交卷、规划环节）维持原判定。
+        if thinking is True:
+            payload["thinking"] = {"type": "adaptive"}
+            if cfg.thinking_effort:
+                payload["output_config"] = {"effort": cfg.thinking_effort}
+        elif (thinking is False
+              or (tool_choice and cfg.forced_thinking == "disabled")):
+            payload["thinking"] = {"type": "disabled"}
+        elif cfg.reasoning_effort:
             payload["thinking"] = {"type": "adaptive"}
             if cfg.thinking_effort:
                 payload["output_config"] = {"effort": cfg.thinking_effort}

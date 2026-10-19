@@ -143,12 +143,26 @@ class Fake:
         return "{}"
 
 
+# 桩正文必须像真正文一样长（2026-10-19）：坑 75 起 fallback 通道有
+# 200 字符下限——真实验收抓到过 30 字符的「正文」被照收。桩短了会
+# **正确地**被判失败，那测的就是长度规则而不是结构行为了。
+_PAD = (
+    "这一节展开说明材料里的关键事实：固态电池按电解质路线分为"
+    "硫化物、氧化物与聚合物三类，各自的电导率、界面稳定性与"
+    "量产难度不同；材料给出的量产时间口径以厂商公开表态为准，"
+    "第三方实测与厂商自述不一致处以并列方式呈现，不合并成单一说法。"
+    "以上仅复述已分配段落的内容，未补充材料外信息；段落之间若"
+    "互相矛盾则如实标注缺口，不替材料做取舍，也不替其他小节代笔，"
+    "不同路线在成本与工艺兼容性上的权衡也按材料口径照录，"
+    "缺口处如实写明未找到独立信源。")
+
+
 def _body_for(tid: str, covers: list[str]) -> str:
     """多节任务必须逐节标记，否则装配取不到各自那段。"""
     if not covers:
-        return f"[S1·1] 任务 {tid} 的正文。"
+        return f"[S1·1] 任务 {tid} 的正文。\n{_PAD}"
     return "".join(f"<!-- section:{c} -->\n[S1·1] 任务 {tid} 的 {c} 正文。\n"
-                   for c in covers)
+                   f"{_PAD}\n" for c in covers)
 
 
 def _flat(content) -> str:
@@ -242,7 +256,8 @@ audit_bad = {"need_rework": True,
              "remaining_issues": [], "spec_issue": None, "rework_effective": True}
 audit_after = {"need_rework": False, "reason": "已修", "findings": [],
                "remaining_issues": [], "spec_issue": None, "rework_effective": True}
-f2 = Fake(plan1, {"write_revise:t1": "改过的正文，只引用 [S1]。"}, [audit_bad, audit_after])
+f2 = Fake(plan1, {"write_revise:t1": "改过的正文，只引用 [S1]。\n" + _PAD},
+          [audit_bad, audit_after])
 out2 = run(f2, "场景 2：high 级问题触发返修，返修后收敛")
 assert out2["rework_rounds"] == 1, f"应返修 1 轮，实际 {out2['rework_rounds']}"
 assert any(c[0].startswith("write_revise") for c in f2.calls), "应调用 write_revise"
@@ -445,8 +460,8 @@ audit_two = {"need_rework": True, "reason": "t8 两节都要改",
                   "problem": "sec3 放错了内容", "fix": "sec3 换成企业格局"}],
              "remaining_issues": [], "spec_issue": None, "rework_effective": True}
 f9 = Fake(plan8, {"write_revise:t8":
-                  "<!-- section:sec2 -->\n[S1·2] 修好的 sec2。\n"
-                  "<!-- section:sec3 -->\n[S1·2] 修好的 sec3。"},
+                  "<!-- section:sec2 -->\n[S1·2] 修好的 sec2。\n" + _PAD + "\n"
+                  "<!-- section:sec3 -->\n[S1·2] 修好的 sec3。\n" + _PAD},
           [audit_two, audit_ok])
 out9 = run(f9, "t8 的 sec2 与 sec3 同时被点名")
 secs9 = (out9.get("drafts") or {}).get("t8") or {}
@@ -563,7 +578,8 @@ plan12 = {"tasks": [
 ],
     "thesis": "T", "glossary": [{"canonical": "X"}], "units": ["u"],
     "cautions": ["c"], "spec_uncertainty": "u", "sections": []}
-f12 = Fake(plan12, {"write_section:t1": "## 子 agent 又写了标题\n[S1·1] 正文。\n"}, [audit_ok])
+f12 = Fake(plan12, {"write_section:t1":
+                    "## 子 agent 又写了标题\n[S1·1] 正文。\n" + _PAD}, [audit_ok])
 out12 = run(f12, "装配把自造标题降级")
 md12 = out12["report_markdown"]
 head12 = [m.group().strip()[3:] for m in re.finditer(r"^## (?!#).*$", md12, re.M)]

@@ -110,6 +110,49 @@ SUBMIT_TASKS: dict = {
     "input_schema": PLAN_TASKS_SCHEMA,
 }
 
+# 子 agent 的「交卷」工具（2026-10-19 加）：正文走 `input.sections[].body`，
+# 不走对话文本。措辞与 tests/exp_submit_section.py 的实验版逐字一致——
+# 那版在真实 API 上验证过有效，别顺手改写。
+#
+# 为什么必须走工具：v13 实测把工具循环最后一轮的 text 块当正文，
+# 里面混着前言（「下面是我重写的 sec2 正稿」）、英文推理/自检、
+# MiniMax 伪工具调用标记（`]<]minimax[>[<tool_call>…`）、```markdown
+# 围栏、`# secN` 任务头——`_split_sections` 只 strip，全漏进报告。
+# 更糟的一次：返修输出只有英文推理，却**覆盖了**本来完好的旧稿。
+# 结构化之后正文是数据不是自由文本，这条污染通道直接消失（坑 75）。
+SUBMIT_SECTION: dict = {
+    "name": "submit_section",
+    "description": (
+        "交卷：写完正文后调用一次。"
+        "**正文只能放在 sections[].body 里**（每节一项，id 是小节 id）；"
+        "工具调用之外的对话文本会被丢弃，不要在那里写正文、前言或自检。"),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "sections": {
+                "type": "array",
+                "description": "每个覆盖小节一项，顺序即正文顺序",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string",
+                               "description": "小节 id，如 sec3"},
+                        "body": {"type": "string",
+                                 "description": "该节的 Markdown 正文"
+                                                "（含 [S{n}·{m}] 引用、"
+                                                "<!-- lead --> 标记）；"
+                                                "不含前言、自检、任务头或代码围栏"},
+                    },
+                    "required": ["id", "body"],
+                },
+            },
+            "notes": {"type": "string",
+                      "description": "给审阅者的备注（不进报告）：引用核对、材料缺口等"},
+        },
+        "required": ["sections"],
+    },
+}
+
 
 # ================================================================ 规划
 
@@ -450,6 +493,171 @@ def _cut_marked(text: str, covers: list[str]) -> dict[str, str]:
     return out
 
 
+def _parse_submission(text: str, covers: list[str]) -> tuple[dict, str | None, str]:
+    """`submit_section` 交卷 JSON → ({section_id: 正文}, 出错说明, 模型 notes)。
+
+    sections 为空 dict = 交卷无效，调用方按失败处理（走 failed→降级）。
+    **body 不做任何文本清洗**——结构化通道可信，清洗只会制造第二份
+    「模型原文 vs 落库原文」的对不上。
+
+    归位规则：
+    - `id` 在 covers 里才收，多余 id 丢弃；
+    - covers 只有一节、模型也只交了一项但 id 写错 → 映射到 covers[0]。
+      只有「一项对一项」时这个映射才是无歧义的（实测模型会把
+      任务 id 或小节标题写进 id）。
+    """
+    import json
+    covers = [c for c in (covers or []) if c]
+    try:
+        data = json.loads(text or "")
+    except Exception:
+        # 不抛：交卷产物不该是坏 JSON，但上游（截断等）确实可能给出。
+        # 返回失败让上层走降级，比在这里炸掉多留一次抢救机会。
+        return {}, "交卷内容不是合法 JSON", ""
+    secs_in = data.get("sections") or []
+    notes = str(data.get("notes") or "")
+    out: dict[str, str] = {}
+    for s in secs_in:
+        if not isinstance(s, dict):
+            continue
+        sid, body = s.get("id"), (s.get("body") or "")
+        if sid in covers and body.strip():
+            out[sid] = body
+    if not out and len(covers) == 1 and len(secs_in) == 1:
+        only = secs_in[0]
+        if isinstance(only, dict) and str(only.get("body") or "").strip():
+            out[covers[0]] = str(only["body"])
+    if not out:
+        return {}, "交卷但正文全空", notes
+    missing = [c for c in covers if c not in out]
+    note = (f"多节任务只产出了 {'、'.join(out)}，"
+            f"缺 {'、'.join(missing)}（交卷里没有对应 id 的项）") if missing else None
+    return out, note, notes
+
+
+# ---- 自由文本通道的污染检测 ----
+#
+# 这批标记是从 tests/exp_submit_section.py 的 contam 搬来的——
+# 每一条都是 v13 真实草稿上出现过的形态，别随手加新正则：
+# 宽了会误杀正常正文（比如正文里提到「下面」开头的引用），
+# 窄了漏掉的会原样进报告。
+#
+# 刻意**不含** `too_short`：实验版有它是为了给自由文本兜底，
+# 但「写得短」不等于脏（返修小改本来就短），长度判断归 _merge_sections
+# 的 40% 条款管，那里能跟旧稿比，比绝对阈值准。
+_PSEUDO_RE = re.compile(r"minimax\]\[|\]<\]minimax|<tool_call|<invoke|read_segments")
+# 前言：开头先说「下面/我来/Here」再进正文。`---` 和围栏先行跳过——
+# 模型喜欢在正文前甩一个分隔线。
+_PREAMBLE_RE = re.compile(
+    r"^(下面|以下|现在|好的|我(先|来|已|看|将|重写|补|掌握|核对|把)|"
+    r"Now|Let me|I'll|I've|I have|Here|OK|Okay|Sure|First)", re.I)
+# 自检/核对类元信息：混在正文末尾的「检查清单」式英文或中文碎片。
+_META_RE = re.compile(
+    r"(Citation check|Constraints satisfied|Let me verify|self-check|"
+    r"I've drafted|自检|核对清单|Other notable points)", re.I)
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+# 任务头：模型自作主张写的节标题，如 `# sec3` / `## 第二节`。
+# 装配时标题由系统统一加，模型写的只会让层级错位（坑 64 同源）。
+_TASK_HEADER_RE = re.compile(r"^#{1,2}\s*(sec\d+|第[一二三四五六七八九十]+节)", re.I)
+
+# 命中这些 = 新稿本身就是垃圾，没有讨论余地。
+# 其余标记（前言/围栏/任务头）只出现在自由文本通道，_clean_fallback
+# 整体判失败；merge 保护只用 STRONG，因为「带个前言」还轮不到拒收整节。
+STRONG = {"empty", "pseudo_tool", "english_block"}
+
+
+def _contamination(body: str) -> list[str]:
+    """正文污染检测。返回标记列表，空 = 干净。"""
+    flags: list[str] = []
+    lines = [x for x in (body or "").split("\n") if x.strip()]
+    if not lines:
+        return ["empty"]
+    if _PSEUDO_RE.search(body):
+        flags.append("pseudo_tool")
+    first = next((x.strip() for x in lines
+                  if x.strip() not in ("---", "```markdown", "```")), "")
+    if lines[0].strip().startswith("```"):
+        flags.append("fence")
+    if _PREAMBLE_RE.match(first):
+        flags.append("preamble")
+    if _TASK_HEADER_RE.match(first):
+        flags.append("task_header")
+    if _META_RE.search(body):
+        flags.append("trailing_meta")
+    en = [x for x in lines if len(x) > 60 and not x.lstrip().startswith("|")
+          and len(_CJK_RE.findall(x)) < len(x) * 0.05]
+    if len(en) >= 3:
+        flags.append("english_block")
+    return flags
+
+
+def _strip_sec_header(body: str) -> str:
+    """去掉开头的模型自写 `# secN` / `## 第N节` 头行。
+
+    只剥**第一个非空行**一处，不动正文中部的标题——剥多了就是
+    在「猜哪段是正文」，那正是被污染的源头。
+    """
+    lines = (body or "").splitlines()
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i < len(lines) and _TASK_HEADER_RE.match(lines[i].strip()):
+        del lines[i]
+    return "\n".join(lines)
+
+
+def _clean_fallback(text: str, covers: list[str]) -> tuple[dict, str | None]:
+    """没交卷时的自由文本通道：只做无歧义的机械清洗，碰到污染整体判失败。
+
+    三步：剥整包围栏（`_unwrap_fence`）→ 去开头的 `# secN` 头 → 污染检测。
+    **有任何标记就判失败**返回 `({}, "未交卷且文本被污染：…")`，
+    走既有 failed→降级路径——不做「猜哪段是正文」的清洗，
+    v13 的教训是猜出来的正文比缺一节更糟。
+    """
+    body = _strip_sec_header(_unwrap_fence(text or ""))
+    flags = _contamination(body)
+    if flags:
+        return {}, f"未交卷且文本被污染：{'、'.join(flags)}"
+    # fallback 通道本就不可信：真实验收抓到过一个 30 字符的「正文」
+    # 全部标记都没命中、被当合法小节收进来。最短正文给 200——
+    # 真实小节没有比这更短的合理产出。
+    # ⚠️ 只加在这里，不进 `_contamination`：merge 保护也调它，
+    # 那里的长度判断归 40% 条款（跟旧稿比，比绝对阈值准）。
+    n = len(body.strip())
+    if n < 200:
+        return {}, f"未交卷且文本过短（{n} 字符）"
+    return _split_sections(body, covers)
+
+
+def _record_submit(state: WriteState, task_id: str, via: str, notes: str) -> None:
+    """记账：正文从哪条通道拿到的 + 模型 notes，进 write_trace stats。
+
+    best-effort，同 `_record_tool_use`：记不进去不该拖垮写作。
+    `via=="fallback"` 时 `unstructured` 计数——它是「结构化通道没兜住」
+    的直接量度，真实跑完要能一眼看到发生了几次。
+    """
+    if via in ("fallback", "forced_retry"):
+        # 这两条路都意味着「正常通道出过事」，终端要看得见（带 task id，
+        # 一场十几个任务时没 id 根本没法对号）。
+        print(f"⚠️  [{task_id}] submit_section 走了 {via} 通道", flush=True)
+    sid = state.get("session_id")
+    if not sid:
+        return
+    try:
+        from ...db.repo import get_repo
+        repo = get_repo()
+        tr = repo.write_trace(sid).get("stats") or {}
+        v = tr.setdefault("submit_via", {})
+        v[via or "unknown"] = v.get(via or "unknown", 0) + 1
+        if notes:
+            tr.setdefault("section_notes", {})[task_id] = str(notes)[:600]
+        if via == "fallback":
+            tr["unstructured"] = int(tr.get("unstructured") or 0) + 1
+        repo.save_write_trace(sid, stats=tr)
+    except Exception:
+        pass
+
+
 def _spec_for_task(spec: dict, covers: list[str]) -> dict:
     """裁掉与本任务无关的小节明细，只留自己那节的完整要求。
 
@@ -519,10 +727,10 @@ def _run_task(state: WriteState, task: dict, revise: dict | None) -> tuple[dict,
     )
     if len(covers) > 1:
         head += (
-            f"**你负责 {len(covers)} 个小节，每一节都要单独成段输出，"
-            f"用 `<!-- section:小节id -->` 开头标明这是哪一节。**\n"
+            f"**你负责 {len(covers)} 个小节，交卷时 `submit_section` 的 "
+            f"`sections` 里每节单独一项，`id` 填小节 id。**\n"
             f"小节 id：{'、'.join(covers)}。\n"
-            f"不要在一个标记里混写两节，也不要把同一段内容复制给两节。\n\n")
+            f"不要把两节混写在一项里，也不要把同一段内容复制给两节。\n\n")
     listing = _dumps([
         {"段号": g.get("ref"), "这段在讲": g.get("summary"),
          "token": g.get("token_count")}
@@ -543,16 +751,35 @@ def _run_task(state: WriteState, task: dict, revise: dict | None) -> tuple[dict,
         from ...db.repo import get_repo
         from ...tools.evidence import EvidenceTools
         tools = EvidenceTools(get_repo(), sid)
+        meta: dict = {}
         try:
-            text, _, log = run_tool_loop(LLM, stage, prompts.WRITE_RULES,
-                                        messages, tools, max_rounds=2)
+            # `final_tool=SUBMIT_SECTION`：正文走工具参数而不是对话文本，
+            # 否则最后一轮的 text 块会把前言/英文推理/伪工具调用一起当正文
+            # （v13 实测四类污染，见 SUBMIT_SECTION 的注释与坑 75）。
+            text, _, log = run_tool_loop(
+                LLM, stage, prompts.WRITE_RULES, messages, tools,
+                max_rounds=2, final_tool=SUBMIT_SECTION, meta=meta)
             _record_tool_use(state, task["id"], log)
-            return _split_sections(text, covers)
+            via = meta.get("via") or "fallback"
+            if via != "fallback":
+                secs, note, notes = _parse_submission(text, covers)
+                _record_submit(state, task["id"], via, notes)
+                return secs, note
+            # 没拿到交卷：text 是自由文本，按污染通道处理——
+            # 只剥无歧义的机械层（围栏/#secN 头），有污染标记就整段拒收。
+            secs, err = _clean_fallback(text, covers)
+            _record_submit(state, task["id"], "fallback", err or "")
+            return secs, err
         except Exception as e:
             print(f"⚠️  工具循环失败，退回单次调用: {e}", flush=True)
     try:
-        return _split_sections(
-            LLM.complete(stage, head + tail, system=prompts.WRITE_RULES), covers)
+        # 单次调用没有交卷通道，text 同样是自由文本，走同一套清洗。
+        secs, err = _clean_fallback(
+            LLM.complete(stage, head + tail, system=prompts.WRITE_RULES),
+            covers)
+        if sid:
+            _record_submit(state, task["id"], "fallback", err or "")
+        return secs, err
     except Exception as e:
         print(f"⚠️  小节「{(covers or ['?'])[0]}」写入失败: {e}", flush=True)
         return {}, f"调用失败：{str(e)[:180]}"
@@ -1253,8 +1480,12 @@ def node_revise(state: WriteState) -> dict:
         return tid, new, err
 
     t0 = _now()
+    # 被 merge 保护拦下的节：新稿可疑而保留了旧稿，必须进事件可查——
+    # 不然「返修跑了但正文没动」看起来会像静默 bug（坑 75）。
+    rejected: list[dict] = []
     tid, new, _err = _one(order[0])
-    drafts[tid] = _merge_sections(drafts.get(tid), new, by_task[tid])
+    drafts[tid] = _merge_sections(drafts.get(tid), new, by_task[tid],
+                                  rejected=rejected)
     first_cost = round(_now() - t0, 1)
 
     rest = order[1:]
@@ -1267,7 +1498,8 @@ def node_revise(state: WriteState) -> dict:
             if not r:
                 continue
             tid, new, _err = r
-            drafts[tid] = _merge_sections(drafts.get(tid), new, by_task[tid])
+            drafts[tid] = _merge_sections(drafts.get(tid), new, by_task[tid],
+                                          rejected=rejected)
 
     return {
         "drafts": drafts,
@@ -1276,6 +1508,7 @@ def node_revise(state: WriteState) -> dict:
         "events": [{"kind": "write_revise",
                     "tasks": order,
                     "targets": [f"{t['task']}→{t.get('section')}" for t in targets],
+                    "kept_old": rejected,
                     "first_serial_s": first_cost,
                     "round": state.get("rework_rounds", 0) + 1}],
     }
@@ -1288,12 +1521,23 @@ def _section_map(draft: Any) -> dict:
     return {"": draft} if isinstance(draft, str) and draft else {}
 
 
-def _merge_sections(old: Any, new: dict, targets: list[dict] | None = None) -> dict:
+def _merge_sections(old: Any, new: dict, targets: list[dict] | None = None,
+                    rejected: list | None = None) -> dict:
     """把返修结果并回草稿。
 
     只有**被点名的小节**才用新稿覆盖；没被点名的小节原样保留。
     返修写崩（新稿为空）时整体保留原稿，不拿空串覆盖——
     宁可留着有瑕疵的版本，也不要凭空少一节。
+
+    `rejected`（2026-10-19 加，坑 75）：新稿本身可疑时**保留旧稿**并记一条
+    `{"section": sec, "reason": ...}`。两条判据，满足任一即拒收：
+      (a) 新稿命中 STRONG 污染标记（伪工具调用/英文整块/空）——
+          v13 实测返修输出过一整段英文推理，一覆盖旧稿就没了；
+      (b) 旧稿干净（自身无 STRONG）且 `len(新稿) < 0.4 * len(旧稿)`——
+          返修是「改」，砍掉六成的多半是换成了说明性文字。
+          阈值 0.4 是**经验值不是实测**，过严会误杀「确实该大删」的返修。
+    旧稿自己已经带 STRONG 标记时它是垃圾，新稿只要自己不触发 (a)
+    就接受——不然垃圾旧稿会永远挡住任何修复。
     """
     prev = _section_map(old)
     if not new:
@@ -1301,10 +1545,27 @@ def _merge_sections(old: Any, new: dict, targets: list[dict] | None = None) -> d
     wanted = {s.get("section") for s in (targets or []) if s.get("section")}
     if not wanted:
         wanted = set(new)                  # 审查没给小节时，以新稿的键为准
+
+    def _reject(sec: str, reason: str) -> None:
+        if rejected is not None:
+            rejected.append({"section": sec, "reason": reason})
+
     merged = dict(prev)
     for sec, body in new.items():
-        if sec in wanted and (body or "").strip():
-            merged[sec] = body
+        if sec not in wanted or not (body or "").strip():
+            continue
+        flags = set(_contamination(body))
+        if flags & STRONG:
+            _reject(sec, f"新稿污染：{'、'.join(sorted(flags & STRONG))}")
+            continue
+        old_body = (prev.get(sec) or "").strip()
+        if (old_body
+                and not (set(_contamination(old_body)) & STRONG)
+                and len(body.strip()) < 0.4 * len(old_body)):
+            _reject(sec, f"新稿缩水至旧稿的 "
+                         f"{len(body.strip())}/{len(old_body)} 字")
+            continue
+        merged[sec] = body
     return merged or prev
 
 
