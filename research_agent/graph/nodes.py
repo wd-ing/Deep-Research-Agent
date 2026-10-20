@@ -1374,6 +1374,91 @@ def node_write(state: ResearchState) -> dict:
 
 # ================================================================ 收尾
 
+_RETRY_WAIT_RE = re.compile(r"\| wait ([\d.]+)s")
+
+
+def _run_health(repo, sid: str, state: ResearchState) -> dict:
+    """会话末运行健康度盘点（2026-10-20 加，平台拥堵期的可见性要求）。
+
+    给开发者看的，不进报告。全部从 DB 现查（llm_call/chunk/source），
+    不依赖内存状态——重放/续跑结果一致；`save_run_trace` 的主键
+    (session_id, round, kind) upsert 使重入不产生重复行。
+
+    `status='retry'` 行是 provider 层过载重试记账（token 0），
+    单列 retries/retry_wait_s_total，不计入 calls_ok 也不计入 errors。
+    """
+    ev: dict = {"kind": "run_health"}
+
+    by_stage: dict[str, dict] = {}
+    for r in repo.q(
+            "SELECT stage, status, error FROM llm_call WHERE session_id=?",
+            (sid,)):
+        st = by_stage.setdefault(
+            r["stage"], {"calls_ok": 0, "errors": 0,
+                         "retries": 0, "retry_wait_s_total": 0.0})
+        if r["status"] == "retry":
+            st["retries"] += 1
+            m = _RETRY_WAIT_RE.search(r["error"] or "")
+            if m:
+                st["retry_wait_s_total"] += float(m.group(1))
+        elif r["status"] == "error":
+            st["errors"] += 1
+        else:
+            st["calls_ok"] += 1
+    for st in by_stage.values():
+        st["retry_wait_s_total"] = round(st["retry_wait_s_total"], 1)
+    ev["llm_by_stage"] = by_stage
+
+    nosum = repo.q1(
+        "SELECT COUNT(*) n, COUNT(DISTINCT source_id) s FROM chunk "
+        "WHERE session_id=? AND on_topic=1 "
+        "AND (summary IS NULL OR summary='')", (sid,))
+    total_on = repo.q1(
+        "SELECT COUNT(*) n FROM chunk WHERE session_id=? AND on_topic=1",
+        (sid,))
+    ev["unsummarized_on_topic_chunks"] = {
+        "missing": nosum["n"], "total": total_on["n"],
+        "sources": nosum["s"]}
+    ev["gate_degraded_chunks"] = repo.q1(
+        "SELECT COUNT(*) n FROM chunk WHERE session_id=? "
+        "AND gate_method LIKE '%degraded%'", (sid,))["n"]
+    ev["unjudged_sources"] = repo.q1(
+        "SELECT COUNT(*) n FROM source WHERE session_id=? "
+        "AND (source_nature IS NULL OR source_nature='')", (sid,))["n"]
+
+    # 写作失败任务：ResearchState 不直接带 WriteState.failed，从已累积的
+    # 事件里取最后一条 kind='write' 的 `failed` 数（它来自子图收尾态，
+    # 是 revise 清理之后的终值）。
+    failed_tasks = 0
+    for e in reversed(state.get("events") or []):
+        if e.get("kind") == "write" and "failed" in e:
+            failed_tasks = e["failed"] or 0
+            break
+    ev["failed_tasks"] = failed_tasks
+
+    try:
+        repo.save_run_trace(sid, int(state.get("round", 0) or 0),
+                            "run_health", ev)
+    except Exception:
+        pass
+
+    retries = sum(s["retries"] for s in by_stage.values())
+    wait_total = round(sum(s["retry_wait_s_total"]
+                           for s in by_stage.values()), 1)
+    errors = sum(s["errors"] for s in by_stage.values())
+    degraded_bits = (nosum["n"] + ev["gate_degraded_chunks"]
+                     + ev["unjudged_sources"] + failed_tasks)
+    if retries or errors or degraded_bits:
+        print(f"⚠️  [run_health] 过载重试 {retries} 次（等 {wait_total}s）· "
+              f"失败 {errors} 次 · 无概括段 {nosum['n']}/{total_on['n']} · "
+              f"闸门降级 {ev['gate_degraded_chunks']} · "
+              f"未判来源 {ev['unjudged_sources']} · "
+              f"失败任务 {failed_tasks}", flush=True)
+    else:
+        print("✅ [run_health] 全部指标干净", flush=True)
+    return ev
+
+
 @scoped
 @_timed_node("finalize")
 def node_finalize(state: ResearchState) -> dict:
@@ -1384,9 +1469,11 @@ def node_finalize(state: ResearchState) -> dict:
     """
     repo = get_repo()
     sid = state["session_id"]
+    health = _run_health(repo, sid, state)
     rep = repo.q1("SELECT id FROM report WHERE session_id=?", (sid,))
     if not rep:
-        return {"events": [{"kind": "finalize", "skipped": "no report"}]}
+        return {"events": [health,
+                           {"kind": "finalize", "skipped": "no report"}]}
 
     chunks = repo.q(
         "SELECT c.id, c.summary FROM chunk c "
@@ -1394,7 +1481,9 @@ def node_finalize(state: ResearchState) -> dict:
         (sid,),
     )
     if not chunks:
-        return {"events": [{"kind": "finalize", "skipped": "no pending chunks"}]}
+        return {"events": [health,
+                           {"kind": "finalize",
+                            "skipped": "no pending chunks"}]}
 
     # ---- 1. 段落收尾 ----
     # 概括句已经不在这里生成了：它从 node_finalize 搬到 node_extract。
@@ -1420,7 +1509,7 @@ def node_finalize(state: ResearchState) -> dict:
     remaining = len(chunks) - len(updates) - no_sum
     return {
         "cost_tokens": cost,
-        "events": [{
+        "events": [health, {
             "kind": "finalize", "chunks": len(chunks), "finalized": len(updates),
             "no_summary": no_sum, "remaining_pending": max(0, remaining),
             "cost_tokens": cost,

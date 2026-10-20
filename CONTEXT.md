@@ -1,7 +1,7 @@
 # CONTEXT · 交接文档
 
 > 这份文档的定位：**接手这个项目前必须先读的东西**。
-> 架构、仍然有效的决策、踩过的坑（83 条）、工作约定、已知缺口。
+> 架构、仍然有效的决策、踩过的坑（84 条）、工作约定、已知缺口。
 >
 > 工程层面**已经知道、但有意押后**的欠账另记在 [`TECH_DEBT.md`](TECH_DEBT.md)
 > （`checkpoints.db` 无清理机制、守门测试污染默认库等）。本文第十节记的是
@@ -283,7 +283,7 @@ server 不是**。要么 `set -a; . ./.env; set +a`，要么给 uvicorn 装
 
 ---
 
-## 八、踩过的坑（83 条 · 只留会再踩的）
+## 八、踩过的坑（84 条 · 只留会再踩的）
 
 
 ### 1. 避坑注释写在别处 ≠ 那个坑被填上了
@@ -2083,6 +2083,14 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
 **新观察到的错误形态**：write_audit 流式收到 `MiniMax 流式错误: {'type':'api_error','message':'unknown error, 722 (1000)'}`，原先被判不可重试 → 整轮审查/返修被跳过。已把「流式 api_error」归入瞬时类（`_retry.py` 的 `_TRANSIENT_RE`），**未真实复现验证**，只有离线判据检查。
 **未验证**：多节大纲 + 深读成功 + 种子注入同时发生时的规划质量；迁移后写作/审查的终稿质量与 v16 的系统对比。
 
+### 84. 平台拥堵期：统一过载重试、无概括段兜底、run_health（2026-10-20）
+**背景**：MiniMax 官方确认近几天不限额导致 M3/M3.1 都拥堵，预计持续 4-5 天。v17 里 137 次 M3 调用 36 次 529（M3.1 只有 10 次、0 次 529、1 次流式 722，样本太小）。
+**查清的事实**：`_minimax`（complete_json 路径）遇 529 只用 `retry_on_transport`（默认 2）、等 3/6 秒；**`_minimax_tools`（complete_json_forced 与工具循环底层）零重试**，第一次 529 就抛。summarize 的 `SUMM_RETRY=1` 是立刻重发。结果 5 个概括批次整批失败，44/162（27%）相关段落没概括——`_brief` 只列有概括的段，这些段分不到任务、写手看不到，报告照出、无降级标记。relevance 耗尽后逐段补判再放行，不丢证据（v17 有 13 段 `llm_degraded` 放行）。
+**修法**：① `provider.py::_minimax_send` 统一入口，`_minimax`/`_minimax_tools` 都走它；只重试 5xx 过载与流式 `api_error`，独立额度（`defaults.overload_retry`，5 次，10/20/40/60/60s ±25%，env `RA_OVERLOAD_RETRIES`/`RA_OVERLOAD_BASE_S` 可覆盖）；429/4xx/内容过滤/seat_quota 不在此层重试；`_minimax` 里 5xx 不再吃 net_left，避免两层各重试。错误前缀不变，`_retry.py` 任务级判据照旧；叠加后单次调用最坏 ≈ timeout_s + 190s，任务级再 ×3。`_openai_compat*`（xj189/opencode，非现役）**未接入**。② 每次重试在 `llm_call` 记一行 `status='retry'`（token 0，`error` 固定格式 `MiniMax 529 ... | attempt k/5 | wait Ns`），`cache_stats.calls` 排除 retry 行并单列 `retries`。③ `write.py::_seg_summary`：无概括时用「[无概括·取原文开头] + 80 字」，规划清单、写手清单、补丁清单都用；规划事件带 `fallback_summary_segments`。④ `node_finalize` 开头产出 `run_health` 事件（落 run_trace、重入幂等）：按环节的 ok/errors/retries/等待秒数、无概括段数/相关段总数/涉及来源、闸门降级段数、未判来源数、失败任务数；有非零项就打一行 ⚠️。前端对未知 kind 容忍（`workflow.ts` default 返回 null）。
+**一个差点漏掉的 bug**：助手把 `_overload_retry` 函数插在 `ModelRegistry` 的方法之间，导致 `session_header` 变成函数内部的死代码（离线测试全过，因为 opencode 不是现役 provider）。review 时发现，已移到类外。教训：往类中间插东西后要核对类的方法集合。
+**真实冒烟**：`complete_json("relevance")` 真实撞 529 → 6 次请求、5 条 retry 行，等 9/25/34/69/63s，最终抛 `MiniMax 529`；`complete_json_forced("summarize")` 第 1 次 EmptyOutput（模型回文本不调工具）、第 2 次成功。
+**未验证**：完整端到端下 run_health 的真实输出；重试后真实能恢复多少批次（冒烟里 relevance 5 次重试全败，拥堵期恢复率未知）；summarize 的 EmptyOutput（文本冒充工具结果）在拥堵期发生率可能升高，`complete_json_forced` 目前没有空载重试。
+
 ---
 
 1. **测试范围**：改了哪块只测哪块，**用现有 session 续跑**而不是重跑全流程
@@ -2094,7 +2102,7 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
    引导性规则优于硬约束，硬约束只用于合规性与底层限制
 5. **结构性修改一律先说方案再改**
 6. **每个决定记进 `CONTEXT.md`**（原 `DECISIONS.md` 已删）
-7. **自己判断错了要当场纠正并说明** —— 下面 83 条里至少有 6 条是我猜错之后
+7. **自己判断错了要当场纠正并说明** —— 下面 84 条里至少有 6 条是我猜错之后
    被自己的实验推翻才写进去的
 
 ---
@@ -2119,7 +2127,7 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
 ## 十一、要改代码前先确认的清单
 
 - 加 state 字段 → **必须在 `ResearchState` / `WriteState` 里声明**，否则 LangGraph 静默丢弃
-- 改 provider → 读第六节（83 条坑）+ 「切换时必须一起改的东西」
+- 改 provider → 读第六节（84 条坑）+ 「切换时必须一起改的东西」
 - 写/改守门测试 → provider **钉死**，不许跟着 `defaults` 漂；桩要接在**正确的层**上
 - 加一条新的发请求路径 → **数一遍同类路径有几条**（这轮栽了三次：空 tools 400、流式分支、截断检测）
 - 断 provider 协议形状 → **逐个字段核对** usage / stop_reason / tools / tool_choice，

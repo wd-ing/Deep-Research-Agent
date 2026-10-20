@@ -267,6 +267,13 @@ defaults:
   # 断连全部集中在这两个 effort:high 的阶段，write_section/write_revise
   # （effort:low，均 17–26 秒）几乎不超时——这正说明它是超时不是抖动。
   timeout_s: 300
+  # MiniMax 平台过载（HTTP 5xx / 流式 api_error）的统一重试参数
+  # （2026-10-20，拥堵期加；实现见 provider.py::_minimax_send）。
+  # 独立额度，不占 guard.retry_on_transport：5 次重试、
+  # 退避 10/20/40/60/60s ×(1±jitter)，单次调用总等待上限约 190s。
+  # stage 级写同名字典可覆盖单项；环境变量
+  # RA_OVERLOAD_RETRIES / RA_OVERLOAD_BASE_S 再覆盖（测试压 0 用）。
+  overload_retry: { max_retries: 5, base_s: 10, cap_s: 60, jitter: 0.25 }
 
 # ── 思考分档（2026-10-09，全切 xj189 之后）─────────────────────────
 #

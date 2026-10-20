@@ -534,18 +534,25 @@ class Repo:
         )
 
     def cache_stats(self, session_id: str) -> dict:
-        """一次研究的缓存命中情况。测试期最常查的一行。"""
+        """一次研究的缓存命中情况。测试期最常查的一行。
+
+        `status='retry'` 行（2026-10-20 过载重试记账）不是完成的调用——
+        它的 token 全是 0，但 `calls` 若把它数进去，「平均每条调用
+        的输出 token」这类派生量会被摊薄。单列 `retries`。
+        """
         r = self.q1(
             "SELECT COUNT(*) n, "
+            "  SUM(CASE WHEN status='retry' THEN 1 ELSE 0 END) retries, "
             "  COALESCE(SUM(cache_read_tokens),0) read_tok, "
             "  COALESCE(SUM(cache_creation_tokens),0) create_tok, "
             "  COALESCE(SUM(input_tokens),0) uncached_in, "
             "  COALESCE(SUM(est_input_tokens),0) est_in "
             "FROM llm_call WHERE session_id=?", (session_id,))
-        n = r["n"] or 0
+        n = (r["n"] or 0) - (r["retries"] or 0)
         read, create = r["read_tok"] or 0, r["create_tok"] or 0
         total = read + create + r["uncached_in"] or 0
-        return {"calls": n, "cache_read_tokens": read,
+        return {"calls": n, "retries": r["retries"] or 0,
+                "cache_read_tokens": read,
                 "cache_creation_tokens": create, "uncached_input_tokens": r["uncached_in"],
                 "cache_hit_ratio": round(read / total, 4) if total else 0.0}
 

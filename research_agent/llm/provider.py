@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -448,6 +449,39 @@ class GuardPolicy:
 
 
 @dataclass
+class OverloadRetry:
+    """MiniMax 平台过载（HTTP 5xx / 流式 api_error）的统一重试参数。
+
+    与 `GuardPolicy.retry_on_transport` **独立**（2026-10-20，平台持续
+    拥堵期加）：那一对额度管的是连接中断/空返回这类抖动，而过载是
+    服务端明说「请稍后重试」、需要更长退避（10/20/40/60/60s）的
+    另一类故障。混在一个额度里，一次过载就把抖动额度烧光。
+
+    `wait_s(attempt)`（attempt 从 1 起）：base×2^(n-1) 封顶 cap，
+    再乘 (1±jitter) 均匀抖动。jitter=0.25 时各档区间不重叠
+    （cap 内 1.25 < 2×0.75），等待序列仍单调不减——测试可以断言。
+    """
+    max_retries: int = 5
+    base_s: float = 10.0
+    cap_s: float = 60.0
+    jitter: float = 0.25
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "OverloadRetry":
+        d = d or {}
+        return cls(
+            max_retries=int(d.get("max_retries", 5)),
+            base_s=float(d.get("base_s", 10)),
+            cap_s=float(d.get("cap_s", 60)),
+            jitter=float(d.get("jitter", 0.25)),
+        )
+
+    def wait_s(self, attempt: int) -> float:
+        base = min(self.base_s * (2 ** (attempt - 1)), self.cap_s)
+        return base * (1 + self.jitter * (random.random() * 2 - 1))
+
+
+@dataclass
 class StageConfig:
     stage: str
     provider: str
@@ -484,6 +518,8 @@ class StageConfig:
     # P2 实测 t7 8/8、t5r 8/8、长度中位数不降，属预期。
     round_max_tokens: int | None = None
     guard: GuardPolicy = field(default_factory=GuardPolicy)
+    # 过载重试参数（defaults.overload_retry 给值，stage 可覆盖，env 再覆盖）。
+    overload_retry: OverloadRetry = field(default_factory=OverloadRetry)
 
     def validate(self) -> None:
         if self.stage in NEEDS_GUARD and self.guard.retry_on_empty < 1:
@@ -670,6 +706,7 @@ class ModelRegistry:
             batch_size=int(s.get("batch_size", 20)),
             stream=bool(s.get("stream", d.get("stream", False))),
             guard=GuardPolicy.from_dict(s.get("guard")),
+            overload_retry=_overload_retry(s, d),
         )
         cfg.validate()
         self._cache[name] = cfg
@@ -691,6 +728,23 @@ class ModelRegistry:
     def session_header(self) -> str:
         """OpenCode 要求带 session 头把同一会话路由到同一上游以保住 prompt 缓存。"""
         return uuid.uuid4().hex
+
+
+def _overload_retry(stage_cfg: dict, defaults: dict) -> OverloadRetry:
+    """resolve `overload_retry`：defaults ← stage 覆盖 ← 环境变量覆盖。
+
+    stage 级只需写要改的那一项（如 `overload_retry: {max_retries: 2}`），
+    其余字段从 defaults 继承；`RA_OVERLOAD_RETRIES` / `RA_OVERLOAD_BASE_S`
+    供测试把等待压到 0，不改配置。
+    """
+    merged = {**(defaults.get("overload_retry") or {}),
+              **(stage_cfg.get("overload_retry") or {})}
+    ovr = OverloadRetry.from_dict(merged)
+    if os.environ.get("RA_OVERLOAD_RETRIES"):
+        ovr.max_retries = int(os.environ["RA_OVERLOAD_RETRIES"])
+    if os.environ.get("RA_OVERLOAD_BASE_S"):
+        ovr.base_s = float(os.environ["RA_OVERLOAD_BASE_S"])
+    return ovr
 
 
 def to_openai_tools(tools: list[dict]) -> list[dict]:
@@ -1531,6 +1585,36 @@ class LLMClient:
         except Exception:
             pass  # 记账失败不影响主流程
 
+    def _record_retry(self, cfg: StageConfig, prompt: str,
+                      attempt: int, max_retries: int, wait_s: float,
+                      cause: str, ms: int) -> None:
+        """记一次**过载重试**（2026-10-20，平台拥堵期加）。
+
+        `status='retry'` 与 `ok`/`error` 区分：它不是一次完成的调用
+        （不计入调用数、成本、耗时占比——token 与延迟口径都在
+        `cache_stats`/run_health 里单独收口），也不是最终失败。
+        `error` 字段用固定格式，run_health 靠它汇总等待时长：
+
+            MiniMax 529 overloaded | attempt 2/5 | wait 20s
+        """
+        try:
+            from ..db.repo import get_repo
+
+            get_repo().log_llm_call(
+                session_id=_CURRENT_SESSION.get(),
+                stage=cfg.stage,
+                model=f"{cfg.provider}/{cfg.model}",
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=ms,
+                est_input_tokens=_rough_tokens(prompt),
+                status="retry",
+                error=f"{cause} | attempt {attempt}/{max_retries} "
+                      f"| wait {wait_s:.0f}s"[:500],
+            )
+        except Exception:
+            pass  # 记账失败不影响主流程
+
     def _record(self, cfg: StageConfig, prompt: str, out: str,
                 usage: dict | None = None) -> None:
         """记一次调用。usage 是 API 报上来的真实值，缺失时退回本地估算。
@@ -1853,6 +1937,70 @@ class LLMClient:
                          "stop_reason": acc.stop_reason,
                          "usage": acc.usage}
 
+    def _minimax_send(self, cfg: StageConfig, url: str, headers: dict,
+                      payload: dict, prompt: str = "") -> tuple[int, str, dict | None]:
+        """MiniMax 发送入口：**平台过载类瞬时故障在这里统一重试**（2026-10-20，
+        平台持续拥堵期加）。
+
+        `_minimax` 与 `_minimax_tools` 两条路都走它——以前 `_minimax_tools`
+        拿到非 200 直接 raise，529 一次都不重试，v17 实测 5 个概括批次
+        整批报废（44/162 段没概括）。
+
+        只重试两类，其余原样放行（各调用方的语义不变）：
+          · HTTP 非 200 且 `_retryable_http` 判可重试
+            （529/overloaded、502/503/504 网关抖动；
+             seat_quota、敏感/内容过滤、429、其他 4xx 都在此层**不**重试）；
+          · `RuntimeError("MiniMax 流式错误…")` 且含 `api_error`
+            且不含内容过滤字样（722 那种服务端内部故障）。
+        `httpx.TransportError` 不在此列——`_minimax` 外层有
+        `retry_on_transport` 额度管连接中断，两层各管各的，不叠加。
+
+        额度取 `cfg.overload_retry`（默认 5 次，退避 10/20/40/60/60s
+        ±抖动）；每次重试前记一行 `llm_call status='retry'`（token 0），
+        最终仍失败照旧：HTTP 类由调用方 raise `MiniMax {status}: …`
+        （前缀不变，`_retry.py` 的 `_transient_http` 判据照样命中），
+        流式类原样 raise `MiniMax 流式错误: …`。
+
+        ⚠️ 最坏耗时：5 次重试全用上约 +190s 等待，叠在上层
+        `_retry.py` 的任务级重试（write_audit/probe_outline 的 20s×3）
+        之下——一次「调用」最坏 ≈ timeout_s + 190s，再上任务级 3 次
+        尝试约 ×3 + 40s。
+        """
+        ovr = cfg.overload_retry
+        for attempt in range(ovr.max_retries + 1):
+            t0 = time.time()
+            stream_err: RuntimeError | None = None
+            try:
+                status, body, parsed = self._minimax_once(
+                    cfg, url, headers, payload)
+            except RuntimeError as e:
+                if not _retryable_stream_error(e):
+                    raise
+                stream_err, status, body, parsed = e, -1, str(e), None
+            if status == 200:
+                return status, body, parsed
+            # 只有 5xx 交给过载额度；429 归 `_minimax` 的 net_left
+            # （频率限制等法不同），4xx 一律原样上交。
+            retry, why = ((True, "流式 api_error") if status == -1
+                          else (_retryable_http(status, body)
+                                if status >= 500 else (False, "")))
+            if not retry or attempt >= ovr.max_retries:
+                if stream_err is not None:
+                    raise stream_err    # 保持 `MiniMax 流式错误:` 前缀
+                return status, body, parsed
+            wait = ovr.wait_s(attempt + 1)
+            ms = int((time.time() - t0) * 1000)
+            cause = ("MiniMax 流式错误 api_error" if status == -1
+                     else f"MiniMax {status} {why}")
+            self._record_retry(cfg, prompt, attempt + 1, ovr.max_retries,
+                               wait, cause, ms)
+            msg_w = (f"[{cfg.stage}] 服务过载（{cause}），"
+                     f"{wait:.0f}s 后重试（第 {attempt + 1}/{ovr.max_retries} 次）")
+            self.warnings.append(msg_w)
+            print(f"⚠️  {msg_w}", flush=True)
+            _sleep(wait)
+        return status, body, parsed
+
     def _minimax(
         self, cfg: StageConfig, prompt: str, system: str | None, json_mode: bool
     ) -> tuple[str, dict]:
@@ -1929,8 +2077,8 @@ class LLMClient:
 
             t0 = time.time()
             try:
-                status, body, parsed = self._minimax_once(
-                    cfg, url, headers, payload)
+                status, body, parsed = self._minimax_send(
+                    cfg, url, headers, payload, prompt)
             except httpx.TransportError as e:
                 # 吸收偶发抖动，不解决长生成的确定性失败。理由见 _opencode 同一处。
                 drops += 1
@@ -1953,8 +2101,13 @@ class LLMClient:
                 print(f"✅ [{cfg.stage}] 第 {attempt+1} 次重试成功"
                       f"（此前中断 {drops} 次）", flush=True)
             if status != 200:
+                # ⚠️ 过载类（5xx/流式 api_error）已在 `_minimax_send` 里
+                # 按 overload_retry 额度重试过——能走到这的只剩它判
+                # 不重试的（seat_quota/敏感词/4xx）或额度用尽的，
+                # **不能再吃 net_left**，否则两层各重试一遍。
+                # 只有 429 仍按老规矩走 net_left 的短退避（频率限制）。
                 retry, why = _retryable_http(status, body)
-                if retry and net_left > 0:
+                if status == 429 and retry and net_left > 0:
                     net_left -= 1
                     self.warnings.append(
                         f"[{cfg.stage}] HTTP {status} {why}，退避重试（额度剩 {net_left}）")
@@ -2113,8 +2266,12 @@ class LLMClient:
             payload["stream"] = True
         t0 = time.time()
         # 与 `_minimax` 共用同一个发送入口 —— 这两条路以前各写各的，
-        # 流式支持只补一边的话，工具那一半会继续静默走非流式
-        status, body, parsed = self._minimax_once(cfg, url, headers, payload)
+        # 流式支持只补一边的话，工具那一半会继续静默走非流式。
+        # 2026-10-20 起还共用**过载重试**（_minimax_send）：
+        # 原来这里拿到非 200 直接 raise，529 零重试——v17 实测
+        # summarize 5 个批次整批失败、44/162 段没概括。
+        status, body, parsed = self._minimax_send(
+            cfg, url, headers, payload, _msgs_chars(messages))
         if status != 200:
             raise RuntimeError(f"MiniMax {status}: {body[:300]}")
         usage = (parsed or {}).get("usage") or {}
@@ -2491,6 +2648,23 @@ def classify_limit(body: str, headers: dict | None = None) -> tuple[str, float]:
             or "rate limit" in low:
         return "rate", max(ra, 5.0)
     return "", ra
+
+
+# 退避等待走可 patch 的模块级别名——测试桩掉它，别让用例真睡几分钟。
+_sleep = time.sleep
+
+
+def _retryable_stream_error(e: BaseException) -> bool:
+    """流式 `event: error` 里的 `api_error`（如 `unknown error, 722`）
+    是服务端内部故障，可重试；内容过滤类不是，重发必然还撞。
+    （判据与 `_retryable_http` 对 500 的排除同一套字样。）"""
+    msg = str(e)
+    if not msg.startswith("MiniMax 流式错误"):
+        return False
+    low = msg.lower()
+    if "new_sensitive" in low or "content_filter" in low or "sensitive" in low:
+        return False
+    return "api_error" in low
 
 
 def _retryable_http(status: int, body: str,

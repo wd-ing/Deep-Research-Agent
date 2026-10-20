@@ -268,6 +268,9 @@ def node_plan_spec(state: WriteState) -> dict:
                         "thesis": (spec.get("thesis") or "")[:120],
                         "glossary": len(spec.get("glossary") or []),
                         "cautions": len(spec.get("cautions") or []),
+                        "fallback_summary_segments": _seg_fallback_count(
+                            state.get("on_topic")
+                            or state.get("segments") or []),
                         "spec_uncertainty": (spec.get("spec_uncertainty") or "")[:200]}]}
 
 
@@ -299,8 +302,15 @@ def node_plan_tasks(state: WriteState) -> dict:
     """
     spec = state.get("spec") or {}
     outline = state.get("outline") or []
-    known = {g.get("ref") for g in (state.get("on_topic") or [])}
+    segs_all = state.get("on_topic") or state.get("segments") or []
+    known = {g.get("ref") for g in segs_all}
     known.discard(None)
+    # 无概括段落靠原文开头顶替（_seg_summary），不再被滤掉——
+    # 但数量要显式记出来，否则「规划只看到了残料」还是没人知道。
+    n_fb = _seg_fallback_count(segs_all)
+    if n_fb:
+        print(f"⚠️  {n_fb}/{len(segs_all)} 个段落没有概括，"
+              f"规划材料里用原文开头替代（需要时用工具读全文）", flush=True)
     prompt = _dumps({"研究问题": state.get("question", ""),
                      "写作规约（你上一轮定的，必须遵守）": spec,
                      "框架与轮廓": _brief(state)})
@@ -406,6 +416,7 @@ def node_plan_tasks(state: WriteState) -> dict:
                   "segments_available": len(known),
                   "plan_tool_reads": sum(len(r) for r in log),
                   "plan_retried": plan_retried,
+                  "fallback_summary_segments": n_fb,
                   "uncovered_sections": uncovered})
     return {
         "spec": spec, "tasks": tasks,
@@ -415,8 +426,32 @@ def node_plan_tasks(state: WriteState) -> dict:
                     "segments_available": len(known),
                     "tool_reads": sum(len(r) for r in log),
                     "plan_retried": plan_retried,
+                    "fallback_summary_segments": n_fb,
                     "uncovered_sections": uncovered}],
     }
+
+
+def _seg_summary(g: dict) -> str:
+    """段落概括；没有概括时拿原文开头顶上，不再让这段无声消失。
+
+    2026-10-20：MiniMax 529 过载期 summarize 批次整批失败，`_brief`
+    原来的 `if summary.strip()` 把 44/162 个相关段落从规划材料里
+    滤掉——它们分不到任务、写手永远看不到。无概括时给原文前 80 字
+    （去换行），原文也拿不到只给标题；`[无概括` 前缀让模型知道这段
+    要 `read_segments` 读全文才敢引。
+    """
+    s = (g.get("summary") or "").strip()
+    if s:
+        return s
+    body = " ".join((g.get("content") or "").split())
+    if body:
+        return f"[无概括·取原文开头] {body[:80]}"
+    return f"[无概括] {g.get('heading_path') or ''}"
+
+
+def _seg_fallback_count(segs: list) -> int:
+    """没有概括、靠原文开头/标题顶替的段数（run_health/事件口径）。"""
+    return sum(1 for g in segs if not (g.get("summary") or "").strip())
 
 
 def _brief(state: WriteState) -> dict:
@@ -433,10 +468,12 @@ def _brief(state: WriteState) -> dict:
                        for s in (state.get("outline") or [])],
         "探针轮廓": state.get("signals") or {},
         "来源清单": state.get("src_lines") or [],
+        "证据段落说明": "带「无概括」前缀的段只有原文开头，"
+                      "要用它做依据先调 read_segments 看全文",
         "证据段落": [
             {"段号": g.get("ref"), "标题": g.get("heading_path") or "",
-             "这段在讲": g.get("summary"), "token": g.get("token_count")}
-            for g in segs if (g.get("summary") or "").strip()],
+             "这段在讲": _seg_summary(g), "token": g.get("token_count")}
+            for g in segs],
     }
 
 
@@ -944,7 +981,7 @@ def _run_task(state: WriteState, task: dict, revise: dict | None) -> tuple[dict,
             f"小节 id：{'、'.join(covers)}。\n"
             f"不要把两节混写在一项里，也不要把同一段内容复制给两节。\n\n")
     listing = _dumps([
-        {"段号": g.get("ref"), "这段在讲": g.get("summary"),
+        {"段号": g.get("ref"), "这段在讲": _seg_summary(g),
          "token": g.get("token_count")}
         for g in segs])
     tail = (f"【你的证据段落（只有概括，不足以判断就调工具看全文）】\n{listing}\n")
@@ -2299,7 +2336,7 @@ def _patch_prompt(state: WriteState, tid: str, items: list[dict],
                         "整段上下文": _para_of(body, it.get("quote") or "")})
     payload = {
         "修订项": entries,
-        "可引用的证据段": [{"段号": g.get("ref"), "这段在讲": g.get("summary")}
+        "可引用的证据段": [{"段号": g.get("ref"), "这段在讲": _seg_summary(g)}
                            for g in segs],
     }
     allowed = set(_task_segments_refs(state, tid))
