@@ -346,8 +346,9 @@ export default function App() {
                 {d.status === 'running' ? '进行中' : d.status === 'done' ? '已完成' : d.status}
               </span>
                 {d.degraded && (
+                  // 降级=告警，朱红归这个语义（和侧栏会话行的 seal 同款）
                   <span
-                    className="rounded bg-amber-100 px-1.5 py-0.5 text-2xs text-amber-800"
+                    className="seal"
                     title={d.degraded}
                   >降级产出</span>
                 )}
@@ -669,7 +670,7 @@ export default function App() {
           aria-live="polite"
           className={[
             'fixed bottom-5 left-1/2 z-50 flex max-w-[min(600px,calc(100vw-32px))]',
-            '-translate-x-1/2 items-start gap-2 rounded-md border bg-white',
+            '-translate-x-1/2 items-start gap-2 rounded-xl border bg-white',
             'px-3.5 py-2.5 shadow-lg print:hidden',
             s.notice.kind === 'err' ? 'border-red-200' : 'border-line',
           ].join(' ')}

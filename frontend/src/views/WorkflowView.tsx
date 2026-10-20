@@ -665,7 +665,8 @@ export function WorkflowView({
       <PageHead running={running} flow={flow} question={question} onOpenReport={onOpenReport} />
 
       {/* L0 刻度轨：sticky——长流程往下滚也要一眼看到走到哪了 */}
-      <div className="sticky top-0 z-20 -mx-2 bg-white/95 px-2 pb-3 pt-1 backdrop-blur">
+      {/* 底色跟页面 paper 走：纯白会浮出一条和底 #FBFAF9 有色差的带子 */}
+      <div className="sticky top-0 z-20 -mx-2 bg-paper/95 px-2 pb-3 pt-1 backdrop-blur">
         <TrackRail
           phases={phases}
           activeIdx={activeIdx}

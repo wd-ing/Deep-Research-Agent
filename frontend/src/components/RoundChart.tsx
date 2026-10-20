@@ -29,7 +29,9 @@ const PLOT_H = H - PAD.t - PAD.b
 
 const C_HIT = '#A8B8E8'
 const C_ACCEPT = '#2E50C8'
-const C_TOTAL = '#f59e0b'
+// 第三条系列需要既不同于蓝又不像「告警」：取稿子里 tg4 的紫
+// （来源构成色带的机构色），琥珀是旧暖色残留，已收编。
+const C_TOTAL = '#7B5EA7'
 
 function fmt(n: number): string {
   return n >= 10000 ? `${(n / 1000).toFixed(0)}k` : String(n)
@@ -90,7 +92,7 @@ const Chart = ({ rounds }: { rounds: TraceRound[] }) => {
         <line
           key={gy}
           x1={PAD.l} x2={W - PAD.r} y1={gy} y2={gy}
-          stroke="#E6E1D7" strokeWidth={1}
+          stroke="rgb(0 0 0 / .08)" strokeWidth={1}
           strokeDasharray={i === 0 ? undefined : '2 3'}
         />
       ))}

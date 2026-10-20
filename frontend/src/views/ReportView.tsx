@@ -190,7 +190,7 @@ function RefChip({
             <p className="mt-1 line-clamp-3 text-xs leading-5 text-muted">{seg.摘录}</p>
           )}
           {seg.已排除 && (
-            <div className="mt-1.5 rounded bg-amber-50 px-1.5 py-1 text-2xs leading-4 text-amber-800">
+            <div className="mt-1.5 rounded bg-seal/10 px-1.5 py-1 text-2xs leading-4 text-seal">
               <Icon name="alert" size={10} className="mb-px mr-0.5 inline-block" />这个来源已被你标记为无用
             </div>
           )}
@@ -525,9 +525,10 @@ function IgnoredBanner({
 }) {
   if (!items.length) return null
   const total = items.reduce((a, x) => a + x.citations, 0)
+  // 已排除来源提示 = 需要复核的告警，朱红一族（seal），不再用琥珀
   return (
-    <div className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3.5 py-2.5">
-      <div className="text-xs font-medium leading-relaxed text-amber-900">
+    <div className="mb-2 rounded-md border border-seal/35 bg-seal/5 px-3.5 py-2.5">
+      <div className="text-xs font-medium leading-relaxed text-seal">
         <Icon name="alert" size={12} className="mb-px mr-1 inline-block" />本报告引用了 {items.length} 个已排除的来源
         <span className="font-normal">（共 {total} 处引用）：</span>
         {items.map((it, i) => (
@@ -536,19 +537,19 @@ function IgnoredBanner({
             <button
               onClick={() => onOpenSource(it.id)}
               title={it.reason ? `排除原因：${it.reason}` : '在来源库中查看'}
-              className="underline decoration-dotted underline-offset-2 hover:text-amber-700"
+              className="underline decoration-dotted underline-offset-2 hover:text-seal"
             >
               {it.domain || '(无域名)'}
             </button>
           </span>
         ))}
       </div>
-      <p className="mt-1 text-2xs leading-relaxed text-amber-800">
+      <p className="mt-1 text-2xs leading-relaxed text-seal/80">
         排除发生在报告写完之后，<b>报告不会被改写</b>。这些材料你后来标为不可信，
         引用处的结论请自行复核；点来源名可直接查看。
       </p>
       {items.some((x) => x.reason) && (
-        <ul className="mt-1 space-y-0.5 text-2xs text-amber-700">
+        <ul className="mt-1 space-y-0.5 text-2xs text-seal/70">
           {items.filter((x) => x.reason).map((x) => (
             <li key={x.id}>· {x.domain}：{x.reason}</li>
           ))}
@@ -951,11 +952,13 @@ export function ReportView({
           </article>
 
           {parts.doubt && (
-            <section className="mt-10 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
-              <div className="mb-2 text-xs font-medium text-amber-900">
+            // 存疑段 = 系统自报的不可信区，朱红一族（seal）框起来，
+            // 和正文的可信度在视觉上就区分开——不再用琥珀。
+            <section className="mt-10 rounded-lg border border-seal/35 bg-seal/5 px-4 py-3">
+              <div className="mb-2 text-xs font-medium text-seal">
                 以下是系统自己声明的存疑与未完成，和上面的正文可信度不同
               </div>
-              <article className="text-sm leading-6 text-amber-950">
+              <article className="text-sm leading-6 text-seal/90">
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={doubtMd}>
                   {parts.doubt}
                 </ReactMarkdown>
@@ -1005,7 +1008,7 @@ export function ReportView({
                 </p>
                 {hoverCard.seg.摘录 && <p className="mt-1">{hoverCard.seg.摘录}</p>}
                 {hoverCard.seg.已排除 && (
-                  <p className="mt-1 text-amber-700">· 该来源已被标记为无用</p>
+                  <p className="mt-1 text-seal">· 该来源已被标记为无用</p>
                 )}
                 <div className="src">
                   {[hoverCard.seg.域名, hoverCard.seg.名称]

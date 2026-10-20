@@ -142,9 +142,10 @@ function SessionRow({
               ))}
               {(s.summary.gaps ?? []).length > 0 && (
                 <div className="mt-1.5 border-t border-line pt-1">
-                  <div className="mb-0.5 text-2xs text-gray-400">没答上的</div>
+                  <div className="mb-0.5 text-2xs text-faint">没答上的</div>
                   {(s.summary.gaps ?? []).map((g, i) => (
-                    <div key={i} className="flex gap-1 text-amber-700">
+                    // 缺口=需要复核的告警，朱红归这个语义
+                    <div key={i} className="flex gap-1 text-seal">
                       <span className="shrink-0">?</span>
                       <span className="min-w-0">{g}</span>
                     </div>
@@ -506,7 +507,7 @@ export function Sidebar({
                 </div>
               </div>
             ))}
-            {!shown.length && <div className="px-1 py-3 text-xs text-muted">回收站是空的</div>}
+            {!shown.length && <Empty icon="check" text="回收站是空的" />}
           </>
         ) : (
           <>

@@ -90,18 +90,23 @@ export function SourceList({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="space-y-2 p-3 pb-2">
-        <input
-          value={q}
-          onChange={(e) => onQuery(e.target.value)}
-          placeholder="搜索标题 / 域名…"
-          className="w-full rounded-md border border-line bg-white px-2.5 py-1.5 text-sm outline-none focus:border-accent"
-        />
+        {/* 和会话列表同一个搜索框语言：圆角 + 左侧放大镜 */}
+        <div className="relative">
+          <Icon name="search" size={13}
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
+          <input
+            value={q}
+            onChange={(e) => onQuery(e.target.value)}
+            placeholder="搜索标题 / 域名…"
+            className="w-full rounded-[10px] border border-line bg-white py-[7px] pl-8 pr-2.5 text-[13px] outline-none placeholder:text-faint focus:border-accent"
+          />
+        </div>
         <div className="flex gap-2 text-2xs text-muted">
           <span>{lib.total} 个来源</span>
           <span>{lib.segments} 段</span>
           <span>{lib.citations} 处引用</span>
-          {/* 没有就完全不出现——`⚠ 只在需要用户判断时出现` */}
-          {nIgnored > 0 && <span className="text-amber-600">{nIgnored} 个已排除</span>}
+          {/* 没有就完全不出现——`⚠ 只在需要用户判断时出现`；朱红归告警 */}
+          {nIgnored > 0 && <span className="text-seal">{nIgnored} 个已排除</span>}
         </div>
       </div>
 
@@ -126,11 +131,12 @@ export function SourceList({
                     它是最跳的元素，可它只标着「研究」两个字。
                     改成同色系的小圆点：颜色还在（还能一眼分辨性质），
                     但让位给下面的来源。颜色取自 NATURE_META，和详情页一致。 */}
-                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${natureMeta(g.nature).dot}`} />
-                <span className="min-w-0 flex-1 truncate text-2xs font-medium text-muted">
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{ background: natureMeta(g.nature).dot }} />
+                <span className="min-w-0 flex-1 truncate text-2xs font-medium tracking-[.04em] text-faint">
                   {g.label}
                 </span>
-                <span className="shrink-0 text-2xs tabular-nums text-muted/70">
+                <span className="shrink-0 text-2xs tabular-nums text-faint">
                   {g.items.length}
                 </span>
               </button>
@@ -150,12 +156,8 @@ export function SourceList({
                     onClick={() => onPick(s.id)}
                     className="block w-full px-2 py-1.5 pr-7 text-left"
                   >
-                    {/* 日期放标题行右侧，且只到月：侧栏正文只有 227px，
-                        四项（域名/日期/段数/引用）全塞第二行时中位总宽 236px
-                        ——**按现在的排法就装不下**，实测 54% 的行会掉到第二行，
-                        行高在 61/79px 之间跳，列表看着是花的。
-                        年月挪上来后第二行能给域名留 142px，只有 7% 的域名会截断。
-                        完整日期（到日）在右侧详情页有，这里丢掉不算丢信息。 */}
+                    {/* 引用数放标题行右侧：它是这行里唯一的「重要性」信号，
+                        和稿子来源行的右列对齐；可点/被引用语义归 accent。 */}
                     <div className="flex items-start gap-2">
                       <div
                         className="line-clamp-2 min-w-0 flex-1 text-xs leading-snug text-ink"
@@ -163,25 +165,23 @@ export function SourceList({
                       >
                         {s.title || '(无标题)'}
                       </div>
-                      {s.source_date && (
-                        <span className="shrink-0 pt-px text-2xs tabular-nums text-muted/70">
-                          {s.source_date.slice(0, 7)}
-                        </span>
-                      )}
+                      {s.citations > 0
+                        ? <span className="shrink-0 pt-px font-mono text-2xs tabular-nums text-accent">{s.citations} 引</span>
+                        : <span className="shrink-0 pt-px text-2xs text-faint">未引</span>}
                     </div>
-                    <div className="mt-0.5 flex items-center gap-2 text-2xs text-muted">
+                    {/* 元信息走 mono 小字：域名/日期/段数是「数据」不是句子。
+                        日期只到月——侧栏正文 227px，四项全塞会折行跳行高；
+                        完整日期在右侧详情页有。 */}
+                    <div className="mt-0.5 flex items-center gap-1.5 font-mono text-2xs text-muted">
                       <span className="min-w-0 flex-1 truncate" title={s.domain ?? undefined}>
-                        {s.domain}
+                        {s.domain}{s.source_date ? ` · ${s.source_date.slice(0, 7)}` : ''}
                       </span>
                       <span className="shrink-0 tabular-nums">{s.segments} 段</span>
-                      {s.citations > 0
-                        ? <span className="shrink-0 tabular-nums text-accent">{s.citations} 处引用</span>
-                        : <span className="shrink-0 text-gray-400">未被引用</span>}
                     </div>
                     {/* 已排除要说清**为什么**，以及排除到底意味着什么——
                         否则用户以为「标记一下报告里的它就没了」 */}
                     {s.ignored && (
-                      <div className="mt-0.5 text-2xs text-amber-700">
+                      <div className="mt-0.5 text-2xs text-seal">
                         ⊘ 已排除{s.ignore_reason ? `：${s.ignore_reason}` : ''}
                         {s.citations > 0 && '（报告已引用，不会被改写）'}
                       </div>
@@ -189,7 +189,7 @@ export function SourceList({
                     {/* 不在题的来源要标出来——它留了库但没进报告，
                         「为什么列表里有它却没被引用」这个疑问得有个答案 */}
                     {!s.on_topic && !s.ignored && (
-                      <div className="mt-0.5 text-2xs text-amber-600">
+                      <div className="mt-0.5 text-2xs text-seal">
                         <Icon name="alert" size={10} className="mb-px mr-0.5 inline-block" />相关性判定为不在题，未参与报告
                       </div>
                     )}

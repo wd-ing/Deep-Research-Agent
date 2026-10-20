@@ -1,4 +1,5 @@
 import type { ApprovalPayload } from '../types'
+import { Icon } from '../components/Icon'
 
 /** 框架可信度是用户批准与否的唯一硬依据，必须比什么都显眼。
  *  satisfied = 材料撑得住；其它 = 撞了上限，只是尽力而为。 */
@@ -7,14 +8,18 @@ function Credibility({ a }: { a: ApprovalPayload }) {
   if (!c) return null
   const ok = c.种类 === 'satisfied'
   return (
-    <div className={[
-      'rounded-lg border px-4 py-3',
-      ok ? 'border-green-200 bg-green-50' : 'border-amber-300 bg-amber-50',
-    ].join(' ')}>
-      <div className={['text-sm font-medium', ok ? 'text-green-900' : 'text-amber-900'].join(' ')}>
-        {ok ? '材料已经够了' : '材料未必够 —— 这份框架只是尽力而为'}
+    <div className="card px-4 py-3.5">
+      <div className="flex items-center gap-2">
+        {/* 够了 = 进行中语义的绿点；撞上限 = 需要判断的告警 → 朱红 seal。
+            全屏只有这一处大结论，胶囊比整卡染色安静也够醒目。 */}
+        {ok
+          ? <span className="pill"><span className="dot live" />材料已经够了</span>
+          : <span className="seal"><Icon name="alert" size={11} />材料未必够</span>}
+        {!ok && (
+          <span className="text-sm font-medium text-ink">这份框架只是尽力而为</span>
+        )}
       </div>
-      <div className="mt-1 text-xs text-muted">
+      <div className="mt-1.5 text-xs leading-relaxed text-muted">
         {c.说明}
         {c.停止原因 ? `（停止原因：${c.停止原因}）` : ''}
       </div>
@@ -40,28 +45,35 @@ export function ApprovalView({
       <div className="mt-4"><Credibility a={a} /></div>
 
       {mat && (
-        <div className="mt-3 flex gap-6 text-xs text-muted">
-          <span>来源 {mat.来源数}</span>
-          <span>段落 {mat.段落数}</span>
-          {mat.已抽取段数 ? <span>已抽取 {mat.已抽取段数}</span> : null}
+        <div className="mt-3 flex gap-2">
+          <span className="pill font-mono">来源 {mat.来源数}</span>
+          <span className="pill font-mono">段落 {mat.段落数}</span>
+          {mat.已抽取段数 ? <span className="pill font-mono">已抽取 {mat.已抽取段数}</span> : null}
           {a.已修订 && a.修订记录?.length ? (
-            <span>已校准 {a.修订记录.length} 处</span>
+            <span className="pill font-mono">已校准 {a.修订记录.length} 处</span>
           ) : null}
         </div>
       )}
 
-      <div className="mt-6 space-y-3">
-        {a.outline.map((s) => (
-          <div key={s.id} className="rounded-lg border border-line bg-white px-4 py-3">
-            <div className="text-sm font-medium text-ink">{s.title}</div>
-            {s.question && (
-              <div className="mt-1 text-xs text-muted">要回答：{s.question}</div>
-            )}
-            {s.修订说明 && (
-              <div className="mt-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-900">
-                <span className="font-medium">按材料校准：</span>{s.修订说明}
-              </div>
-            )}
+      <div className="mt-6 space-y-2.5">
+        {a.outline.map((s, i) => (
+          <div key={s.id} className="card flex gap-3 px-4 py-3.5">
+            <span className="shrink-0 pt-0.5 font-mono text-xs text-faint">
+              {String(i + 1).padStart(2, '0')}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-ink">{s.title}</div>
+              {s.question && (
+                <div className="mt-1 text-xs leading-relaxed text-muted">要回答：{s.question}</div>
+              )}
+              {s.修订说明 && (
+                /* 「按材料校准」是说明性注记不是告警——灰底注记 + 墨色标签，
+                   朱红只留给需要复核的事（撞上限那条在顶上）。 */
+                <div className="mt-2 rounded-lg bg-black/[.04] px-2.5 py-1.5 text-xs leading-relaxed text-muted">
+                  <span className="font-medium text-ink">按材料校准：</span>{s.修订说明}
+                </div>
+              )}
+            </div>
           </div>
         ))}
       </div>

@@ -9,6 +9,19 @@ interface ConfigResp {
   restart_required: boolean
 }
 
+/** 「这个环节是不是换了模型」的判定依据：
+ *  stages 里没有写自己的 provider 的环节继承 `defaults.provider`，
+ *  模型 = providers 档案里的那条 `model:`。从 yaml 原文里把默认模型
+ *  抠出来——它比「多数票」可靠：多数环节同时钉到别的档时默认模型
+ *  反而会变成少数。两处任一处抠不出来就返回 null，一个不标，
+ *  比一个标错强。 */
+function defaultModel(yamlText: string): string | null {
+  const defProvider = yamlText.match(/^defaults:\s*\n(?:\s{2,}[^\n]*\n)*?\s{2,}provider:\s*(\S+)/m)?.[1]
+  if (!defProvider) return null
+  const re = new RegExp(`^\\s{2}${defProvider.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*\\n(?:\\s{4,}[^\\n]*\\n)*?\\s{4,}model:\\s*(\\S+)`, 'm')
+  return yamlText.match(re)?.[1] ?? null
+}
+
 /** 设置页（D1）：查看 + 编辑 models.yaml。
  *
  *  ⚠️ **不做运行时热切换**——LLMClient/ModelRegistry 都是进程级单例，
@@ -43,11 +56,15 @@ export function SettingsView({ onNotify }: { onNotify: (m: string, kind?: 'err' 
       .finally(() => setSaving(false))
   }
 
+  // 生效表是后端按**加载时那份**解析的，判定默认模型也必须看同一份
+  // （cfg.content），不能用用户正在改、还没存的 text。
+  const def = cfg ? defaultModel(cfg.content) : null
+
   return (
     <div className="mx-auto w-full max-w-3xl px-6 py-8">
       <h2 className="text-lg font-medium text-ink">设置</h2>
       <p className="mt-1 text-sm text-muted">
-        模型与环节的映射来自 <code className="text-xs">{cfg?.path ?? 'config/models.yaml'}</code>。
+        模型与环节的映射来自 <code className="font-mono text-xs">{cfg?.path ?? 'config/models.yaml'}</code>。
         改动保存后<b>重启后端服务才生效</b>——进程里的配置是启动时读的那一份。
       </p>
 
@@ -59,38 +76,49 @@ export function SettingsView({ onNotify }: { onNotify: (m: string, kind?: 'err' 
 
       {cfg && (
         <>
-          <div className="mt-5 rounded-lg border border-line bg-white">
-            <div className="border-b border-line px-4 py-2 text-xs font-medium text-muted">
+          <div className="card mt-5">
+            <div className="border-b border-line px-4 py-2.5 text-xs font-medium text-muted">
               当前生效的环节 → 模型
             </div>
             <table className="w-full text-xs">
               <tbody>
-                {Object.entries(cfg.stages).map(([stage, model]) => (
-                  <tr key={stage} className="border-b border-line/60 last:border-0">
-                    <td className="px-4 py-1.5 text-ink">{stage}</td>
-                    <td className="px-4 py-1.5 text-right text-muted">{model}</td>
-                  </tr>
-                ))}
+                {Object.entries(cfg.stages).map(([stage, model]) => {
+                  // 「换了模型」= 解析出的模型名跟 defaults 档案的模型不一样。
+                  // def 抠不出来就一个都不标（比标错强）。
+                  const m = model.split(' / ').pop() ?? model
+                  const pinned = def !== null && m !== def
+                  return (
+                    <tr key={stage} className="border-b border-line last:border-0">
+                      <td className="px-4 py-2 font-mono text-[11px] text-ink">{stage}</td>
+                      <td className="px-4 py-2 text-right text-muted">
+                        {model}
+                        {pinned && (
+                          <span className="pill ml-2 !h-[18px] px-[7px]" title={`defaults 档案是 ${def}`}>非默认</span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
 
-          <div className="mt-5 rounded-lg border border-line bg-white">
-            <div className="flex items-center justify-between border-b border-line px-4 py-2">
+          <div className="card mt-5">
+            <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
               <span className="text-xs font-medium text-muted">models.yaml 原文</span>
-              <span className="text-2xs text-muted/70">编辑的是磁盘上的文件本身</span>
+              <span className="text-2xs text-faint">编辑的是磁盘上的文件本身</span>
             </div>
             <textarea
               value={text}
               onChange={(e) => { setText(e.target.value); setSavedAt(null) }}
               spellCheck={false}
-              className="h-[420px] w-full resize-y rounded-b-lg bg-white px-4 py-3 font-mono text-xs leading-5 text-ink outline-none"
+              className="h-[420px] w-full resize-y rounded-b-2xl bg-white px-4 py-3 font-mono text-xs leading-5 text-ink outline-none"
             />
           </div>
 
           <div className="mt-3 flex items-center justify-end gap-2">
             {savedAt && (
-              <span className="mr-auto rounded bg-amber-50 px-2 py-1 text-2xs text-amber-800">
+              <span className="pill mr-auto">
                 已保存。重启后端服务后生效。
               </span>
             )}

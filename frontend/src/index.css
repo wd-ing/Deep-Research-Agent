@@ -210,6 +210,22 @@ body { @apply bg-paper text-ink antialiased; }
          border-seal/45 px-[7px] text-2xs font-semibold tracking-[.06em] text-seal;
 }
 
+/* 小节标签行（稿子 .lbl）：「最近」「一手 144」这类列表分组的头。
+   全项目统一用这一个类，不再各处现写 text-2xs text-faint。 */
+.lbl {
+  @apply flex items-baseline justify-between px-2 pb-1.5 pt-3
+         text-2xs tracking-[.04em] text-faint;
+}
+
+/* 来源性质 tag（稿子 .tg1–.tg5）：五个固定色——绿=一手、蓝=媒体、
+   灰=未判/聚合、紫=研究、赭=社区。NatureBadge 与来源构成色带同源，
+   别各自调色，否则会漂成两种紫。 */
+.tg1 { background: rgba(62,143,79,.1);  color: #2f7440; }
+.tg2 { background: rgba(46,80,200,.09); color: #2E50C8; }
+.tg3 { background: rgba(0,0,0,.06);     color: rgb(0 0 0 / .42); }
+.tg4 { background: rgba(123,94,167,.1); color: #6a4c96; }
+.tg5 { background: rgba(194,138,43,.12);color: #9a6a17; }
+
 /* ---------- 报告页第 2 轮（2026-10-20 稿子 report.html）---------- */
 
 /* 运行状况条：几项大数字竖线分隔。只做「快读」——
@@ -340,7 +356,9 @@ textarea:focus-visible {
   position: sticky;
   top: 89px;   /* 实测刻度轨 sticky 块高 89px */
   z-index: 10;
-  background: rgba(255,255,255,.92);
+  /* 底色要跟着页面 paper 走：纯白在半透明模糊下会浮出一条
+     和页面底 #FBFAF9 色差可见的带子 */
+  background: rgba(251,250,249,.92);
   backdrop-filter: saturate(180%) blur(8px);
 }
 
