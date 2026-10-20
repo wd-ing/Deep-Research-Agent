@@ -1,13 +1,19 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { IgnoredCitation, SegPreview, SegPreviews } from '../types'
+import type { IgnoredCitation, ReviewPatch, ReviewResp, SegPreview, SegPreviews, SourceRow } from '../types'
 import { NatureBadge } from '../components/SegDrawer'
 import { ProgressBar, TocBar, scanHeadings, type TocItem } from '../components/Toc'
 import { Icon } from '../components/Icon'
 
 const REF_RE = /\[(S\d+·\d+)\]/g
+
+// 修订痕迹的字符串哨兵（私用区字符）：markdown 解析器把它们当普通
+// 文本原样穿过，又绝不会和真实报告内容撞车。del/ins 的标记区间
+// 在 `withRefs` 里转成元素，引用 chip 的切分不受影响。
+const M_DEL = '\uE000', M_INS = '\uE001', M_END = '\uE002', M_SEP = '\uE003'
+const MARK_RE = /\uE000(\d+)\uE003([\s\S]*?)\uE002|\uE001(\d+)\uE003([\s\S]*?)\uE002/g
 
 /** 气泡多久之后出现。鼠标扫过一段文字会连着划过好几个引用，
  *  即时弹出就是一串闪烁的方块——等一小会儿，只为「停下来看」的意图服务。 */
@@ -66,9 +72,9 @@ function refCounts(markdown: string): Map<string, number> {
  *  之前 162 处全是同一种蓝底虚线，等于完全没有信息：
  *  一句话是靠一堆材料堆出来的、还是孤证，全看不出来。 */
 function tierClass(n: number): string {
-  if (n >= 4) return 'bg-blue-100 font-medium text-blue-900 underline decoration-solid decoration-blue-400 hover:bg-blue-200'
-  if (n >= 2) return 'bg-blue-50 text-accent underline decoration-dotted hover:bg-blue-100'
-  return 'text-accent underline decoration-dotted hover:bg-blue-50'
+  if (n >= 4) return 'cite t3'
+  if (n >= 2) return 'cite t2'
+  return 'cite'
 }
 
 
@@ -86,13 +92,18 @@ function tierClass(n: number): string {
  *  等于给同一句话两个提示，其中一个还要等一秒。
  */
 function RefChip({
-  ref: segRef, seg, count, onClick,
+  ref: segRef, seg, count, onClick, rail, onRail, onRailLeave,
 }: {
   ref: string
   seg: SegPreview | undefined
   /** 本报告引用这一段的次数。用来分档 + 在气泡里说明。 */
   count: number
   onClick: () => void
+  /** rail 显示时（主区够宽）悬停预览不进浮层，改投到右侧栏。
+   *  窄屏 rail 不存在 → 两个回调为空，走原来的气泡。 */
+  rail?: boolean
+  onRail?: (rect: DOMRect, seg: SegPreview, ref: string) => void
+  onRailLeave?: () => void
 }) {
   const [show, setShow] = useState(false)
   const [pos, setPos] = useState({ left: 0, top: 0, below: true })
@@ -102,6 +113,11 @@ function RefChip({
   //  `onFocus` 也要算同一个位置，`FocusEvent` 同样有 `currentTarget`。
   const open = (e: React.SyntheticEvent, delay = HOVER_DELAY) => {
     const r = e.currentTarget.getBoundingClientRect()
+    // rail 模式：延迟一样保留（扫过一排引用不该闪卡），只是终点不同
+    if (rail && seg && onRail) {
+      timer.current = window.setTimeout(() => onRail(r, seg, segRef), delay)
+      return
+    }
     // 高度先按估算给（3 行文字 + 头部），真放不下就翻到上方
     const h = seg?.概括 ? 190 : 150
     const below = window.innerHeight - r.bottom > h + 12
@@ -115,6 +131,7 @@ function RefChip({
   const close = () => {
     if (timer.current) { clearTimeout(timer.current); timer.current = null }
     setShow(false)
+    if (rail) onRailLeave?.()
   }
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current)
@@ -145,7 +162,7 @@ function RefChip({
         aria-label={ariaLabel}
         // 报告里经常出现 `[S2·1][S21·1]` 这种相邻引用，
         // 不留左右间距会粘成一串 `S2·1S21·1`，看着像乱码。
-        className={`mx-[1px] rounded px-1 text-[0.85em] ${tierClass(count)}`}
+        className={tierClass(count)}
       >{segRef}</button>
       {show && seg && createPortal(
         <div
@@ -189,29 +206,68 @@ function RefChip({
   )
 }
 
+/** 修订痕迹标记的上下文。rail 显示时 ins 不用 title 兜底
+ *  （问题写在朱批卡里）；窄屏没有 rail → title=problem。 */
+interface ChipCtx {
+  rail: boolean
+  problems: string[]
+  onRail?: (rect: DOMRect, seg: SegPreview, ref: string) => void
+  onRailLeave?: () => void
+}
+
+/** 一段纯文本 → [文字, RefChip, …]。抽出是因为正文和 del/ins 里
+ *  的哨兵内容都要走同一套切分（del 里旧句的 [S..] 也保留引用语义）。 */
+function refSplit(
+  s: string, keyBase: string, onRef: (ref: string) => void,
+  previews: SegPreviews, counts: Map<string, number>, chip: ChipCtx,
+): ReactNode[] {
+  const out: ReactNode[] = []
+  let last = 0
+  for (const m of s.matchAll(REF_RE)) {
+    const i = m.index!
+    if (i > last) out.push(s.slice(last, i))
+    const ref = m[1]
+    out.push(
+      <RefChip key={`${keyBase}-${i}`} ref={ref} seg={previews[ref]}
+               count={counts.get(ref) ?? 1} onClick={() => onRef(ref)}
+               rail={chip.rail} onRail={chip.onRail}
+               onRailLeave={chip.onRailLeave} />
+    )
+    last = i + m[0].length
+  }
+  if (last < s.length) out.push(s.slice(last))
+  return out
+}
+
 /** 报告里 `[S1·5]` 是纯文本，要做成可点就得在渲染层拦截。
  *  这里不引 remark 插件——用 components 拦截文本节点自己切，
- *  少一个依赖，也更好控制。 */
+ *  少一个依赖，也更好控制。哨兵（M_DEL/M_INS 区间）同层处理：
+ *  先按哨兵切段，段内再走引用切分。 */
 function withRefs(
   children: ReactNode,
   onRef: (ref: string) => void,
   previews: SegPreviews,
   counts: Map<string, number>,
+  chip: ChipCtx,
 ): ReactNode {
   if (typeof children === 'string') {
+    const s = children
     const out: ReactNode[] = []
     let last = 0
-    for (const m of children.matchAll(REF_RE)) {
+    for (const m of s.matchAll(MARK_RE)) {
       const i = m.index!
-      if (i > last) out.push(children.slice(last, i))
-      const ref = m[1]
-      out.push(
-        <RefChip key={`${ref}-${i}`} ref={ref} seg={previews[ref]}
-                 count={counts.get(ref) ?? 1} onClick={() => onRef(ref)} />
-      )
+      if (i > last) out.push(...refSplit(s.slice(last, i), `t${i}`, onRef, previews, counts, chip))
+      const isDel = m[1] !== undefined
+      const idx = Number(isDel ? m[1] : m[3])
+      const inner = refSplit(isDel ? m[2] : m[4], `m${idx}`, onRef, previews, counts, chip)
+      out.push(isDel
+        ? <del key={`d${i}`} data-mark={idx} className="rpt-del">{inner}</del>
+        // rail 显示时朱批卡写了 problem，title 就只给窄屏兜底
+        : <ins key={`i${i}`} data-mark={idx} className="rpt-ins"
+               title={chip.rail ? undefined : chip.problems[idx]}>{inner}</ins>)
       last = i + m[0].length
     }
-    if (last < children.length) out.push(children.slice(last))
+    if (last < s.length) out.push(...refSplit(s.slice(last), 'e', onRef, previews, counts, chip))
     return out.length ? out : children
   }
   if (Array.isArray(children)) {
@@ -220,12 +276,83 @@ function withRefs(
     // validateDOMNesting。元素原样放行（`withRefs` 对元素直接返回它本身）。
     return children.map((c, i) => {
       if (typeof c === 'string' || typeof c === 'number') {
-        return <span key={i}>{withRefs(c, onRef, previews, counts)}</span>
+        return <span key={i}>{withRefs(c, onRef, previews, counts, chip)}</span>
       }
-      return <Fragment key={i}>{withRefs(c, onRef, previews, counts)}</Fragment>
+      return <Fragment key={i}>{withRefs(c, onRef, previews, counts, chip)}</Fragment>
     })
   }
   return children
+}
+
+/** 把补丁明细变成正文里的哨兵区间。
+ *
+ *  定位优先级：`before+new`（before 是 old 前 40 字，edit 应用后
+ *  `before` 和 `new` 在定稿里是相邻的，组合锚最稳）→ 单独 `new`；
+ *  delete 型在 `before` 锚点之后插 del。找不到就放弃行内标记——
+ *  补丁在 markdown 里失配多半是标题重编号/二次补丁改了上下文，
+ *  硬标会标错位置，不如进 rail 末尾「未能定位」。
+ *  哨兵替换按位置**从后往前**插，索引不会互相错位。
+ *  ⚠️ 哨兵区间里的 old/new 必须 **escape 全部 ASCII 标点**再放进
+ *  markdown——不转义的话，补丁里若含 `**`/`[x](y)`/`` ` `` 之类，
+ *  remark 会把这段拆成多个节点，哨兵首尾落在不同文本节点里，
+ *  MARK_RE 匹配不上 → 标记静默消失（连「未能定位」都不报）。
+ *  转义后区间保证是**一整段字面文本节点**。
+ *  `[S2·1]` 不受影响：`\[` 渲染回字面 `[`，REF_RE 照旧切 chip。
+ *  空白也压成单空格：payload 带 `\n` 时 remark 会生成 break 节点，
+ *  同样把哨兵区间劈开——标记是视觉注释，丢换行无所谓，
+ *  丢标记不行（会变成静默消失的「未能定位」）。 */
+const escPunct = (s: string) =>
+  s.replace(/[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g, '\\$&')
+   .replace(/\s+/g, ' ')
+
+function applyMarks(
+  body: string, patches: ReviewPatch[],
+): { md: string; located: Set<number> } {
+  const ops: { at: number; len: number; text: string }[] = []
+  const located = new Set<number>()
+  patches.forEach((p, i) => {
+    if (p.action === 'delete' || !p.new) {
+      let at = -1
+      if (p.before) {
+        const j = body.indexOf(p.before)
+        if (j >= 0) at = j + p.before.length
+      }
+      // before 丢了就退到 old 原位——delete 的 old 本来就是正文里的文字
+      if (at < 0 && p.old) at = body.indexOf(p.old)
+      if (at >= 0) {
+        ops.push({ at, len: 0, text: `${M_DEL}${i}${M_SEP}${escPunct(p.old)}${M_END}` })
+        located.add(i)
+      }
+    } else {
+      let at = -1
+      if (p.before && p.new) {
+        const j = body.indexOf(p.before + p.new)
+        if (j >= 0) at = j + p.before.length
+      }
+      if (at < 0) at = body.indexOf(p.new)
+      if (at >= 0) {
+        ops.push({
+          at, len: p.new.length,
+          text: `${M_DEL}${i}${M_SEP}${escPunct(p.old)}${M_END}${M_INS}${i}${M_SEP}${escPunct(p.new)}${M_END}`,
+        })
+        located.add(i)
+      }
+    }
+  })
+  // 哨兵插入点落在另一条补丁的替换区间里时，后应用的替换会把它
+  // 整个吞掉（交叉补丁/合成数据才会这样）——把纯插入挪到该区间
+  // 末尾：del 紧挨着宿主 ins 之后，正好是旧文本原本相邻的位置。
+  const repls = ops.filter((o) => o.len > 0)
+  for (const o of ops) {
+    if (o.len === 0) {
+      const host = repls.find((b) => b.at <= o.at && o.at < b.at + b.len)
+      if (host) o.at = host.at + host.len
+    }
+  }
+  ops.sort((a, b) => b.at - a.at)
+  let md = body
+  for (const o of ops) md = md.slice(0, o.at) + o.text + md.slice(o.at + o.len)
+  return { md, located }
 }
 
 /** ReactNode 里所有文字，递归取出来（跳过结构）。
@@ -281,43 +408,47 @@ function mdComponents(
   previews: SegPreviews,
   ids: Map<string, string>,
   counts: Map<string, number>,
+  chip: ChipCtx,
   compact = false,
 ) {
-  const R = (c: ReactNode) => withRefs(c, onRef, previews, counts)
+  const R = (c: ReactNode) => withRefs(c, onRef, previews, counts, chip)
   // 标题 id：目录靠它跳转，所以正文里的 `[S2·1]` 也要去掉再比
   const idOf = (c: ReactNode) =>
     ids.get(textOf(c).replace(/\[S\d+·\d+\]/g, '').trim()) ?? undefined
   return {
     h1: ({ children }: { children?: ReactNode }) => (
-      // 2026-10-20 全站改无衬线：600 字重 + 负字距撑起标题层级
-      <h1 className={compact ? 'mb-2 text-base font-semibold' : 'mb-4 text-2xl font-semibold tracking-[-.01em]'}>
-        {R(children)}
-      </h1>
+      compact ? (
+        <h1 className="mb-2 text-base font-semibold">{R(children)}</h1>
+      ) : (
+        // 稿子的报告题：30px/600/-0.01em + 题下刻度线。
+        // 刻度线跟着 h1 走而不是写死在正文里——报告不一定总以 h1 开头。
+        <div className="mb-6">
+          <h1 className="text-[30px] font-semibold leading-[1.3] tracking-[-.01em]">
+            {R(children)}
+          </h1>
+          <div className="ruler mt-3 w-[200px]" />
+        </div>
+      )
     ),
     h2: ({ children }: { children?: ReactNode }) => (
       <h2 id={idOf(children)} className={
         compact
           ? 'mb-2 mt-3 scroll-mt-24 text-sm font-semibold'
-          // 大环节标题下压一条线：43 个标题滚过去时靠这条线分段。
-          // `scroll-mt-24` 是给顶部常驻区（进度条+目录条）让位——
-          // 不加的话点目录跳过来，标题正好藏在常驻条底下。
-          : 'mb-3 mt-9 scroll-mt-24 border-b border-line pb-1.5 text-xl font-semibold tracking-[-.005em]'
+          // 稿子 h2=21px、无分割线——靠字距和上下空白分段，
+          // 不再用旧式的压线。
+          // `scroll-mt-24` 给顶部常驻区（进度条+目录条）让位。
+          : 'mb-1 mt-[26px] scroll-mt-24 text-[21px] font-semibold tracking-[-.005em]'
       }>{R(children)}</h2>
     ),
-    // ⚠️ **层级原来是倒置的**：正文 16px，而 h3 只有 14px——小节标题
-    // 比它管辖的正文还小。h2 的 16px 又跟正文同号，只靠字重区分，
-    // 43 个标题滚过去全糊成一片。
-    // 现在：h2 = 18px + 下边线，h3 = 16px 半粗 + 左侧色条。
-    // 色条用 `-ml-3 pl-3` **往外借位**——正文左边缘保持对齐，
-    // 只把色条放进 `max-w-3xl px-6` 的内边距里（不会溢出、不用改容器）。
+    // 稿子 h3=16px/600，与 h2 靠尺寸和间距分层，不加左侧色条。
     h3: ({ children }: { children?: ReactNode }) => (
       <h3 id={idOf(children)} className={compact
         ? 'scroll-mt-24 text-sm font-medium'
-        : '-ml-3 mb-2 mt-6 scroll-mt-24 border-l-2 border-ink/30 pl-3 text-base font-semibold'
+        : 'mb-2.5 mt-2 scroll-mt-24 text-base font-semibold'
       }>{R(children)}</h3>
     ),
     p: ({ children }: { children?: ReactNode }) => (
-      <p className={compact ? 'my-2' : 'my-3'}>{R(children)}</p>
+      <p className={compact ? 'my-2' : 'mb-[18px]'}>{R(children)}</p>
     ),
     // `[&::marker]` 把项目符号压到灰：marker 默认继承正文墨色，
     // 一屏 14 个黑点会盖过它们标注的句子。
@@ -335,15 +466,10 @@ function mdComponents(
     ),
     li: ({ children }: { children?: ReactNode }) => <li>{R(children)}</li>,
     // 引用块不是「引别人的话」，是作者自己的主张/前提（v5 里是「本文主张：…」）。
-    // 原来 `border-line + text-muted` 把它压成了脚注，这里给回存在感：
-    // 蓝色左规 + 极淡的底色 + 正文墨色。
-    // 底色用 `bg-accent/5` 而**不是** `bg-accent/[0.035]`——后者 Tailwind
-    // 没生成（任意透明度解析不了带前导零的值），构建不报错、样式直接失效。
+    // 稿子 .lead 的规格就是给它的：2px 墨色竖线 + 18px 内边距，无底色——
+    // 「本文主张」是自己的论点不是引文，底色只会把它压成注释。
     blockquote: ({ children }: { children?: ReactNode }) => (
-      // 暖灰左规 + 纸色底，不用 accent——accent 的语义是「可点」，
-      // 引用块不是链接，蓝色会错误地暗示可点。
-      <blockquote className="my-4 rounded-r-md border-l-2 border-gray-300 bg-paper2/60
-                          py-2.5 pl-4 pr-3 text-ink/90">{children}</blockquote>
+      <blockquote className="my-[26px] border-l-2 border-ink py-0.5 pl-[18px] text-ink">{children}</blockquote>
     ),
     code: ({ children }: { children?: ReactNode }) => (
       <code className="rounded bg-paper2 px-1.5 py-0.5 text-[0.9em] text-ink/85">{children}</code>
@@ -432,8 +558,31 @@ function IgnoredBanner({
   )
 }
 
+/** 「句子带引用」占比的口径（稿子健康条第一项）：
+ *  只数 `parts.body`（已剔除「存疑与未完成」段），再去掉代码围栏、
+ *  标题行、表格行；按 `。！？；` 和换行切句，丢弃 <8 字的碎片
+ *  （节标题残句、断开的小标题之类不是句子）；含 `[S..·..]` 引用
+ *  标记的算「带引用」。分子分母都是确定性纯文本统计，不依赖模型。 */
+function citedPercent(body: string): number | null {
+  const text = body
+    .replace(/```[\s\S]*?```/g, '')
+    .split('\n')
+    .filter((l) => !/^\s*(#{1,6}\s|\|)/.test(l))
+    .join('\n')
+  const sents = text.split(/[。！？；\n]/).map((s) => s.trim()).filter((s) => s.length >= 8)
+  if (!sents.length) return null
+  const cited = sents.filter((s) => /\[S\d+·\d+\]/.test(s)).length
+  return Math.round((cited / sents.length) * 100)
+}
+
+/** 存疑段的条目数：该节是系统自己声明的弱点清单，一项一条 `- ` 列表。 */
+function doubtCount(doubt: string): number {
+  return doubt.split('\n').filter((l) => /^\s*[-*]\s/.test(l)).length
+}
+
 export function ReportView({
   markdown, onRef, ignoredCitations = [], onOpenSource, previews = {}, scrollRef,
+  review, marksOn = false, sources,
 }: {
   markdown: string
   onRef: (ref: string) => void
@@ -444,6 +593,13 @@ export function ReportView({
   /** 外层那个 `overflow-auto` 容器。目录跳转、进度条、当前节高亮
    *  都要拿它算——报告正文不是滚动它自己，是滚动那个容器。 */
   scrollRef: React.RefObject<HTMLDivElement | null>
+  /** `/api/sessions/{sid}/review`：修订痕迹 + 运行状况。null=没数据
+   *  （老会话/请求失败），各 UI 元素静默缺席。 */
+  review?: ReviewResp | null
+  /** 「修订痕迹」开关（顶栏按钮控制，默认关）。 */
+  marksOn?: boolean
+  /** 会话来源列表（健康条的「来源 · 一手」）。 */
+  sources?: SourceRow[]
 }) {
   const parts = useMemo(() => {
     const clean = cleanReportMd(markdown)
@@ -467,10 +623,127 @@ export function ReportView({
   const [activeId, setActiveId] = useState('')
   const [pct, setPct] = useState(0)
 
+  // ---- 右侧批注栏（rail）：主区够宽才有 ----
+  // 量的是滚动容器宽而不是视口——侧栏折叠会改变主区宽度，
+  // 媒体查询看不到这个变化。
+  const [wide, setWide] = useState(false)
+  const [tick, setTick] = useState(0)
+  // ⚠️ 不能用 useLayoutEffect：scrollRef 挂在父 div 上，ref 自底向上
+  //  attach——子的 layout effect 先跑，此时 current 还是 null，
+  //  会提前 return、RO 永远挂不上。useEffect 在整个 commit 之后，
+  //  ref 一定已就位（下面滚动监听也是这个原因用 useEffect）。
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const check = () => setWide(el.clientWidth >= 1000)
+    check()
+    const ro = new ResizeObserver(() => { check(); setTick((t) => t + 1) })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [scrollRef])
+
+  // ---- 修订痕迹：字符串哨兵 → 行内 del/ins + rail 朱批卡 ----
+  const marked = useMemo(
+    () => (marksOn && review?.patches?.length
+      ? applyMarks(parts.body, review.patches) : null),
+    [marksOn, review, parts.body])
+  const bodySource = marked?.md ?? parts.body
+  const problems = useMemo(
+    () => (review?.patches ?? []).map((p) => p.problem), [review])
+
+  const gridRef = useRef<HTMLDivElement>(null)
+  const asideRef = useRef<HTMLElement>(null)
+  const [tops, setTops] = useState<Record<number, number>>({})
+  // 行内标记渲染出来后量它们相对网格的 y——朱批卡对齐的就是这条线。
+  // tick 是 ResizeObserver 给的「宽度变了重算」信号。
+  useLayoutEffect(() => {
+    const g = gridRef.current
+    if (!marked || !g) { setTops({}); return }
+    const gTop = g.getBoundingClientRect().top
+    const t: Record<number, number> = {}
+    for (const i of marked.located) {
+      const el = g.querySelector(`[data-mark="${i}"]`)
+      if (el) t[i] = el.getBoundingClientRect().top - gTop
+    }
+    setTops(t)
+  }, [marked, wide, tick, parts])
+
+  // 朱批卡的最终 y：想落在对应标记的 y 上，但两条补丁挤在
+  // 同一段时卡片会叠住——按标记 y 排序后逐张往下让位；
+  // 「未能定位」的卡排在所有已定位卡之后。卡片高不可测就
+  // 算不了「下一张从哪开始」，所以先渲染（hidden）量高再定位。
+  const [notePos, setNotePos] = useState<Record<number, number>>({})
+  useLayoutEffect(() => {
+    const a = asideRef.current
+    const patches = review?.patches ?? []
+    if (!marked || !a || !patches.length) { setNotePos({}); return }
+    const h: Record<number, number> = {}
+    patches.forEach((_, i) => {
+      h[i] = a.querySelector(`[data-note="${i}"]`)
+        ?.getBoundingClientRect().height ?? 120
+    })
+    const order = patches
+      .map((_, i) => i)
+      .sort((x, y) => (tops[x] ?? Infinity) - (tops[y] ?? Infinity))
+    const res: Record<number, number> = {}
+    let cursor = 0
+    for (const i of order) {
+      const want = tops[i]
+      res[i] = Math.max(want ?? cursor, cursor + (cursor ? 12 : 0))
+      cursor = res[i] + h[i]
+    }
+    setNotePos(res)
+  }, [marked, tops, review])
+
+  // 悬停引用 → rail 来源卡（第 4 项）。chip 报自己的屏幕位置，
+  // 换算成网格内偏移；窄屏 onRail 是 undefined，chip 自己回退气泡。
+  const [hoverCard, setHoverCard] = useState<
+    { seg: SegPreview; ref: string; top: number } | null>(null)
+  const chipCtx = useMemo<ChipCtx>(() => ({
+    rail: wide,
+    problems,
+    onRail: (rect, seg, ref) => {
+      const g = gridRef.current
+      if (!g) return
+      setHoverCard({
+        seg, ref,
+        top: rect.top - g.getBoundingClientRect().top - 6,
+      })
+    },
+    onRailLeave: () => setHoverCard(null),
+  }), [wide, problems])
+
   const bodyMd = useMemo(
-    () => mdComponents(onRef, previews, ids, counts), [onRef, previews, ids, counts])
+    () => mdComponents(onRef, previews, ids, counts, chipCtx),
+    [onRef, previews, ids, counts, chipCtx])
   const doubtMd = useMemo(
-    () => mdComponents(onRef, previews, ids, counts, true), [onRef, previews, ids, counts])
+    () => mdComponents(onRef, previews, ids, counts, chipCtx, true),
+    [onRef, previews, ids, counts, chipCtx])
+
+  // ---- 运行状况条：全部真数，没数据的项直接不渲染 ----
+  const healthItems = useMemo(() => {
+    const out: { k: string; v: string | number; seal?: boolean }[] = []
+    const cPct = citedPercent(parts.body)
+    if (cPct !== null) out.push({ k: '句子带引用', v: `${cPct}%` })
+    if (sources?.length) {
+      const first = sources.filter((x) => x.source_nature === 'first_party').length
+      out.push({ k: first ? `来源 · 一手 ${first}` : '来源', v: sources.length })
+    }
+    const nPatch = review?.patches?.length ?? 0
+    if (nPatch) out.push({ k: '审查修订', v: nPatch })
+    const nDoubt = doubtCount(parts.doubt)
+    if (nDoubt) out.push({ k: '存疑 · 已标注', v: nDoubt, seal: true })
+    const h = review?.health
+    if (h) {
+      const uns = h.unsummarized_on_topic_chunks as
+        { missing?: number } | undefined
+      const degraded = Number(h.gate_degraded_chunks ?? 0)
+        + Number(h.unjudged_sources ?? 0) + Number(h.failed_tasks ?? 0)
+        + Number(uns?.missing ?? 0)
+      out.push({ k: '降级环节', v: degraded, seal: degraded > 0 })
+    }
+    return out
+  }, [parts, sources, review])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -642,30 +915,105 @@ export function ReportView({
         </div>
       )}
 
-      <div ref={contentRef} className="mx-auto max-w-3xl px-6 pb-8 pt-4">
-        {/* 排除提示改成**一次性**：跟着正文流走，滚过去就没了。
-            仍然保留是因为它是唯一一处告诉用户「这份报告引用了你后来
-            标为不可信的材料」的地方，直接删掉等于让不可信结论悄悄留着。 */}
-        <IgnoredBanner items={ignoredCitations} onOpenSource={onOpenSource ?? (() => {})} />
+      {/* 稿子 .doc：640 版心 + 280 批注栏的两列网格。
+          主区 ≥1000px 才排得下两列（ResizeObserver 量容器——侧栏
+          折叠会改变主区宽，媒体查询看不见）；不够宽时 rail 不存在，
+          行内标记和引用气泡照旧。 */}
+      <div ref={gridRef}
+           className={wide
+             ? 'mx-auto grid w-fit grid-cols-[640px_280px] gap-8 px-6 pb-8 pt-4 print:block'
+             : 'mx-auto max-w-[640px] px-6 pb-8 pt-4'}>
+        <div ref={contentRef}>
+          {/* 排除提示改成**一次性**：跟着正文流走，滚过去就没了。
+              仍然保留是因为它是唯一一处告诉用户「这份报告引用了你后来
+              标为不可信的材料」的地方，直接删掉等于让不可信结论悄悄留着。 */}
+          <IgnoredBanner items={ignoredCitations} onOpenSource={onOpenSource ?? (() => {})} />
 
-        {/* ⚠️ 这里原来写的是 `prose-sm`——那个类从未生效，见 mdComponents 的说明 */}
-        <article className="leading-7 text-ink">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={bodyMd}>
-            {parts.body}
-          </ReactMarkdown>
-        </article>
-
-        {parts.doubt && (
-          <section className="mt-10 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
-            <div className="mb-2 text-xs font-medium text-amber-900">
-              以下是系统自己声明的存疑与未完成，和上面的正文可信度不同
+          {/* 运行状况条：真数据才列项，一项都没有整条不渲染。
+              打印不出现——纸质件不需要运行指标。 */}
+          {healthItems.length > 0 && (
+            <div className="health mb-6 overflow-x-auto print:hidden">
+              {healthItems.map((it) => (
+                <div key={it.k} className="whitespace-nowrap">
+                  <b className={it.seal ? 'text-seal' : ''}>{it.v}</b>
+                  <span>{it.k}</span>
+                </div>
+              ))}
             </div>
-            <article className="text-sm leading-6 text-amber-950">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={doubtMd}>
-                {parts.doubt}
-              </ReactMarkdown>
-            </article>
-          </section>
+          )}
+
+          {/* ⚠️ 这里原来写的是 `prose-sm`——那个类从未生效，见 mdComponents 的说明 */}
+          {/* 稿子正文档：15.5px / 1.95 行高 */}
+          <article className="text-[15.5px] leading-[1.95] text-ink">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={bodyMd}>
+              {bodySource}
+            </ReactMarkdown>
+          </article>
+
+          {parts.doubt && (
+            <section className="mt-10 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+              <div className="mb-2 text-xs font-medium text-amber-900">
+                以下是系统自己声明的存疑与未完成，和上面的正文可信度不同
+              </div>
+              <article className="text-sm leading-6 text-amber-950">
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={doubtMd}>
+                  {parts.doubt}
+                </ReactMarkdown>
+              </article>
+            </section>
+          )}
+        </div>
+
+        {wide && (
+          // 右侧批注栏：朱批卡纵向对齐到行内标记的 y。
+          // 卡片全部绝对定位，最终 y 在测量过后写进 notePos——
+          // 两条补丁挤在同一段时，后面的卡要往下让，不能叠住。
+          <aside ref={asideRef} className="relative print:hidden">
+            {marked && review?.patches.map((p, i) => (
+              <div key={i} data-note={i}
+                   className={`note red absolute inset-x-0 ${tops[i] === undefined ? 'border-dashed' : ''}`}
+                   style={{
+                     top: notePos[i] ?? -9999,
+                     visibility: notePos[i] === undefined ? 'hidden' : 'visible',
+                   }}>
+                <div className="h">
+                  <Icon name="pen" size={11} className="text-seal" />
+                  <b>朱批 · 已修订</b>
+                  <span className="seal ml-auto">改</span>
+                </div>
+                <p className="text-ink/85">{p.problem || '（无问题说明）'}</p>
+                <div className="src">
+                  {p.section_title || p.section || p.task} · 第 {p.round ?? '?'} 轮
+                  {tops[i] === undefined && ' · 未能定位'}
+                </div>
+              </div>
+            ))}
+            {/* 悬停引用 → 来源卡（同 .note 语言）。浮在朱批卡之上：
+                悬停是瞬时的，不该推开已固定的批注卡。 */}
+            {hoverCard && (
+              <div className="note absolute inset-x-0 z-10 shadow-md"
+                   style={{ top: hoverCard.top }}>
+                <div className="h">
+                  <span className="cite">{hoverCard.ref}</span>
+                  <NatureBadge nature={hoverCard.seg.性质 || null} />
+                  <span className="ml-auto tabular-nums text-faint">
+                    {hoverCard.seg.token} token
+                  </span>
+                </div>
+                <p className="text-ink/85">
+                  {hoverCard.seg.标题 || hoverCard.seg.名称 || hoverCard.ref}
+                </p>
+                {hoverCard.seg.摘录 && <p className="mt-1">{hoverCard.seg.摘录}</p>}
+                {hoverCard.seg.已排除 && (
+                  <p className="mt-1 text-amber-700">· 该来源已被标记为无用</p>
+                )}
+                <div className="src">
+                  {[hoverCard.seg.域名, hoverCard.seg.名称]
+                    .filter(Boolean).join(' · ')}
+                </div>
+              </div>
+            )}
+          </aside>
         )}
       </div>
 

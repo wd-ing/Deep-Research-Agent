@@ -209,6 +209,58 @@ body { @apply bg-paper text-ink antialiased; }
   @apply inline-flex h-5 items-center gap-[5px] rounded-[5px] border
          border-seal/45 px-[7px] text-2xs font-semibold tracking-[.06em] text-seal;
 }
+
+/* ---------- 报告页第 2 轮（2026-10-20 稿子 report.html）---------- */
+
+/* 运行状况条：几项大数字竖线分隔。只做「快读」——
+   真细看的人往下翻正文和存疑节。 */
+.health { @apply flex; }
+.health > div { @apply border-l border-line px-[22px] py-0.5; }
+.health > div:first-child { @apply border-l-0 pl-0; }
+.health b { @apply block text-[22px] font-medium leading-[1.15] tracking-[-.02em]; }
+.health span { @apply text-[11.5px] text-faint; }
+
+/* 引用 chip（稿子 .cite）：mono 小号 + accent 浅底，悬停实底白字。
+   比正文小一号——它是引文标记不是正文，不能抢读。 */
+.cite {
+  @apply mx-px cursor-pointer rounded-[5px] bg-[rgba(46,80,200,.08)]
+         px-[5px] py-px font-mono text-[11px] leading-[1.5] text-accent
+         transition-colors;
+}
+.cite:hover, .cite:focus-visible { @apply bg-accent text-white; }
+/* 复用次数只调底深：被反复引用的段是承重墙，值得跳出来；
+   但不动字色/下划线——那已经是「可点」语义的边界了。 */
+.cite.t2 { background: rgba(46,80,200,.16); }
+.cite.t3 { background: rgba(46,80,200,.24); font-weight: 500; }
+
+/* 修订痕迹：del 划掉旧句、ins 高亮新句（稿子 del/ins）。
+   打印时只留定稿文本——纸质件不该出现「曾经写错过什么」。 */
+.rpt-del {
+  @apply text-seal line-through opacity-[.85] decoration-1;
+}
+.rpt-ins {
+  color: inherit;
+  background: rgba(196,65,47,.1);
+  border-bottom: 1.5px solid #C4412F;
+  /* UA 默认给 <ins> 黑色下划线——稿子的标记线是朱红 border-bottom，
+     两道线叠在一起看着像普通链接 */
+  text-decoration: none;
+}
+@media print {
+  .rpt-del { display: none; }
+  .rpt-ins { background: none; border-bottom: none; }
+}
+
+/* 右侧批注卡（稿子 .note）：窄文本卡片，朱批用 .red 变体。 */
+.note {
+  @apply mb-2.5 rounded-xl border border-line bg-white px-[13px] py-[11px]
+         text-xs leading-[1.55] text-muted;
+}
+.note .h { @apply mb-[5px] flex items-center gap-1.5; }
+.note .h b { @apply text-xs font-medium text-ink; }
+.note .src { @apply mt-1.5 font-mono text-[11px] text-faint; }
+.note.red { border-color: rgba(196,65,47,.35); background: rgba(196,65,47,.05); }
+.note.red .h b { @apply text-seal; }
 }
 /* 键盘可达性的底线：Tab 过来要看得见焦点在哪 */
 .btn:focus-visible,

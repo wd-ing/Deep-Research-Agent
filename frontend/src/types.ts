@@ -193,6 +193,28 @@ export interface SegPreview {
 
 export type SegPreviews = Record<string, SegPreview>
 
+/** `GET /api/sessions/{id}/review` —— 报告页「修订痕迹」与运行状况条的供数。
+ *
+ *  字段与后端 `_apply_patches` 的 applied_items 一致：old/new 是**实际替换**
+ *  的文本（patch 本来就是报告正文的子串），before 是 old 前 40 字锚点
+ *  （delete 型 new="" 时靠它定位）。老会话没有 applied_items → patches=[];
+ *  回放/无 run_health 会话 health=null。 */
+export interface ReviewPatch {
+  task: string
+  section: string
+  section_title: string
+  action: string
+  problem: string
+  old: string
+  new: string
+  before: string
+  round: number | null
+}
+export interface ReviewResp {
+  patches: ReviewPatch[]
+  health: Record<string, unknown> | null
+}
+
 /** 报告里被引用、但已被标记排除的来源（`GET /api/sessions/{id}`）。
  *  报告写完之后才排除，报告不会被改写——靠这条提示兜底。 */
 export interface IgnoredCitation {

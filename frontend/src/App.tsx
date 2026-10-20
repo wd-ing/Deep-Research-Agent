@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSession, api } from './useSession'
 import { nav, useRoute } from './router'
-import type { Folder, SessionSummary, SourceLibrary, SourceDetailRow, SegPreviews } from './types'
+import type { Folder, SessionSummary, SourceLibrary, SourceDetailRow, SegPreviews, ReviewResp } from './types'
 import { ApprovalView } from './views/ApprovalView'
 import { ReportView } from './views/ReportView'
 import { WorkflowView } from './views/WorkflowView'
@@ -41,6 +41,12 @@ export default function App() {
   // ⚠️ state 声明可以放前面，**取数的 effect 必须放在 `const d = s.detail` 之后**——
   // `d` 在下面才声明，提前引用会踩到暂时性死区（tsc 查不出来，它不报 TDZ）。
   const [previews, setPreviews] = useState<SegPreviews>({})
+
+  // ---- 修订痕迹（/api/sessions/{sid}/review）----
+  // 补丁明细 + run_health：报告页「朱批」开关和运行状况条的供数。
+  // 老会话接口返回 patches:[]，不是错误——review 为 null 一律静默缺席。
+  const [review, setReview] = useState<ReviewResp | null>(null)
+  const [marksOn, setMarksOn] = useState(false)
 
   // ---- 新建研究对话框（替掉原生 prompt）----
   const [newOpen, setNewOpen] = useState(false)
@@ -265,6 +271,19 @@ export default function App() {
     return () => { alive = false }
   }, [sid, d?.report])
 
+  /** 修订痕迹数据。和预览同节奏取：换会话先清空再重新拉——
+   *  否则旧会话的朱批会短暂盖到新报告的标题下。
+   *  marksOn 也一起复位：开关是「这份报告的」状态。 */
+  useEffect(() => {
+    setReview(null); setMarksOn(false)
+    if (!sid || !d?.report) return
+    let alive = true
+    api.jget<ReviewResp>(`/api/sessions/${sid}/review`)
+      .then((r) => { if (alive) setReview(r) })
+      .catch(() => { if (alive) setReview(null) })
+    return () => { alive = false }
+  }, [sid, d?.report])
+
   return (
     <div className="flex h-screen text-ink">
       <Sidebar
@@ -350,6 +369,17 @@ export default function App() {
                 <button className="btn-ghost" onClick={() => s.setView('flow')}>
                   <Icon name="history" size={13} />回看流程
                 </button>
+                {/* 有补丁明细才给开关——没有修订痕迹的会话
+                    这个按钮点了也没东西可看，不如不出现。打印时隐藏。 */}
+                {(review?.patches.length ?? 0) > 0 && (
+                  <button
+                    className={`btn-ghost print:hidden ${marksOn ? 'sel' : ''}`}
+                    onClick={() => setMarksOn((v) => !v)}
+                    title="显示/隐藏审查修订痕迹（朱批）"
+                  >
+                    <Icon name="pen" size={13} />修订痕迹
+                  </button>
+                )}
                 {/* C1 导出：复制 / 下载 / 打印（打印即 PDF）。
                     clipboard 需要 secure context——localhost 与 https 都是，
                     file:// 直开才会落空，落空就明说。 */}
@@ -568,6 +598,9 @@ export default function App() {
               ignoredCitations={d?.ignored_citations ?? []}
               onOpenSource={openSourceFromReport}
               onRef={(r) => { void s.openSeg(sid ?? '', r) }}
+              review={review}
+              marksOn={marksOn}
+              sources={d?.sources}
             />
           </div>
         )}
