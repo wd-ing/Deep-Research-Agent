@@ -32,6 +32,8 @@ os.environ.setdefault("MINIMAX_API_KEY", "stub-not-used")
 
 from research_agent.llm import provider as P            # noqa: E402
 from research_agent.graph.subgraphs import write as W   # noqa: E402
+# 重试判据 2026-10-20 抽到共享模块，等待常量的 patch 目标跟着搬过去。
+from research_agent.graph.subgraphs import _retry as R   # noqa: E402
 from research_agent.graph import prompts                 # noqa: E402
 
 FAILED: list[str] = []
@@ -211,9 +213,9 @@ def t_node_audit():
     # (f) MiniMax 529 过载 → 瞬时错误：等 _TRANSIENT_WAIT_S 后重试。
     #     （真实跑里二轮审查撞 529 被判不重试直接兜底、返修稿没复审
     #     就收工——服务端明说「请稍后重试」。）离线把等待置 0、sleep 桩掉。
-    o_wait, o_sleep = W._TRANSIENT_WAIT_S, W.time.sleep
+    o_wait, o_sleep = R._TRANSIENT_WAIT_S, W.time.sleep
     slept: list[float] = []
-    W._TRANSIENT_WAIT_S = 0
+    R._TRANSIENT_WAIT_S = 0
     W.time.sleep = lambda s: slept.append(s)
     try:
         stub, out = _run_audit([RuntimeError("MiniMax 529: overloaded_error"),
@@ -235,7 +237,7 @@ def t_node_audit():
               and "3" in str(ev.get("error")) and slept == [0, 0],
               f"{len(stub.seen)} {str(ev.get('error'))[:60]} slept={slept}")
     finally:
-        W._TRANSIENT_WAIT_S = o_wait
+        R._TRANSIENT_WAIT_S = o_wait
         W.time.sleep = o_sleep
 
 

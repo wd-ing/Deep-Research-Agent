@@ -1,7 +1,7 @@
 # CONTEXT · 交接文档
 
 > 这份文档的定位：**接手这个项目前必须先读的东西**。
-> 架构、仍然有效的决策、踩过的坑（82 条）、工作约定、已知缺口。
+> 架构、仍然有效的决策、踩过的坑（83 条）、工作约定、已知缺口。
 >
 > 工程层面**已经知道、但有意押后**的欠账另记在 [`TECH_DEBT.md`](TECH_DEBT.md)
 > （`checkpoints.db` 无清理机制、守门测试污染默认库等）。本文第十节记的是
@@ -283,7 +283,7 @@ server 不是**。要么 `set -a; . ./.env; set +a`，要么给 uvicorn 装
 
 ---
 
-## 八、踩过的坑（82 条 · 只留会再踩的）
+## 八、踩过的坑（83 条 · 只留会再踩的）
 
 
 ### 1. 避坑注释写在别处 ≠ 那个坑被填上了
@@ -2073,7 +2073,15 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
 **真正属于模型的小错误只有三处**：探针给 711 Wh/kg 凭空加了「2024 年」；t3 把 0.1 Ah/100 Ah 对比挂上 `[S31·1][S38·1]`（这两段全文里没有）；1300 项被改写成「业内普遍引用」。
 **原生修法（a0c1812）**：`node_retrieve` 第 1 轮把 `probe.deep_urls_read` 作为种子命中放在最前，走现有抓取/去重/分段/extract/gate，不绕任何环节；事件和 run_trace 带 `seeded_from_probe`。测试 `tests/test_probe_seed.py`。
 **真实验证（n=2，全新会话，同题）**：v15 `s_a12bd249a605`、v16 `s_4eb82376b337`，两次深读页都 2/2 落库、`on_topic=1`、过闸门并出段落概括，终稿里 711 Wh/kg 现在引用 `S2·7`（工程院论文）。v15 用 ground_scan 扫：437 个里 13 处找不到数字串，逐个对证据原文核对，12 个是单位换算（$830M→8.3 亿美元、$13.5 billion→135 亿美元、1970s→1970 年代等），仅「领先约 22%—32%」未能核实；规划产物里同时出现的只有 2 处。⚠️ 两次的大纲都退化成 1 节（见下），所以这只验证了「泄漏被堵上」，不代表多节大纲下的规划质量。
-**顺带暴露的独立问题**：`probe_outline` 是手写长 JSON，**解析失败没有任何重试**（`complete_json` 不重试，`node_probe_outline` 的 except 直接降级，`guard.retry_on_empty` 只管空输出）→ 退化成 1 节大纲。全库 ~23 个会话里 3 次（v9、v15、v16），v15/v16 连续两次是同输入；n=6 重放 0 失败，生产失败原文没落库，只知道是中段 `Expecting ',' delimiter`（未转义引号或漏逗号），具体子类未能确认。`complete_json_forced`（强制工具）早就存在。待办，尚未修。
+**顺带暴露的独立问题**：`probe_outline` 是手写长 JSON，**解析失败没有任何重试**（`complete_json` 不重试，`node_probe_outline` 的 except 直接降级，`guard.retry_on_empty` 只管空输出）→ 退化成 1 节大纲。全库 ~23 个会话里 3 次（v9、v15、v16），v15/v16 连续两次是同输入；n=6 重放 0 失败，生产失败原文没落库，只知道是中段 `Expecting ',' delimiter`（未转义引号或漏逗号），具体子类未能确认。`complete_json_forced`（强制工具）早就存在。**已修，见坑 83。**
+
+### 83. 模型迁移（plan_spec/plan_tasks/assess → M3.1-Flash low）与 probe_outline 强制交卷（2026-10-20）
+**依据**：`tests/exp_model_ab.py`，v14 真实输入，M3 vs M3.1-Flash low 每格 n=3，12 次全成功（原始数据 /tmp/exp_model_ab/）。`write_plan_tasks` 输出 16–38k→6–10k token，耗时 140–424s→34–62s；`assess` 3.0–7.0k→2.3–2.4k token，24–56s→18–20s；`write_plan_spec` **没有 token/耗时收益**（5.3–7.4k→6.3k，48–65s→55–59s），M3.1 的规约约长 35%（cautions/术语表约两倍，读过内容站得住）——因用户决定一并迁，不是因为有收益。规划里无出处数字占比 A 30%/B 18%，但 B_1 只有 11 个数，n 太小，不当结论。
+**配置**：三环节 `provider: minimax31` + `reasoning_effort: low` + `thinking_effort: low`，不带 `forced_thinking`（M3.1 关不掉思考，validate() 会拦）；max_output_tokens 32768/24576/16384，plan_* 超时 420s。`write_section/revise/patch` 仍是 M3 + forced_thinking disabled。退路：把 `provider` 改回 defaults 的老配置。守门测试 `tests/test_stage_migration.py`。
+**真实跑（v17，`s_f8be467ec99a`，同题，23.4 分钟，全程 MiniMax 529 过载）**：plan_tasks 5 轮工具循环 0 错、14 任务全覆盖、tool_reads=6；plan_spec 19 cautions/19 术语；assess 3 次，思考 1969 字符触发「偏高」警告（未处理）。这是单次样本。
+**probe_outline 改强制工具 `submit_outline`**（`probe.py` `OUTLINE_SCHEMA`/`_normalize_outline_input`，最多 2 次尝试，判据与 write_audit 同一套，抽到 `subgraphs/_retry.py`），stage 模型仍是 M3 high。v17 一次成功、8 条 subtopics、结构齐全；**但 v17 的 probe_light 两次 529 → 没判级 → 没深读，所以 `seeded_from_probe=0`，本次没能再测种子注入**（v15/v16 已测过）。「手写 JSON 解析失败」这一条在 v17 没有复发，但样本只有 1 次，不等于已证明根治。
+**新观察到的错误形态**：write_audit 流式收到 `MiniMax 流式错误: {'type':'api_error','message':'unknown error, 722 (1000)'}`，原先被判不可重试 → 整轮审查/返修被跳过。已把「流式 api_error」归入瞬时类（`_retry.py` 的 `_TRANSIENT_RE`），**未真实复现验证**，只有离线判据检查。
+**未验证**：多节大纲 + 深读成功 + 种子注入同时发生时的规划质量；迁移后写作/审查的终稿质量与 v16 的系统对比。
 
 ---
 
@@ -2086,7 +2094,7 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
    引导性规则优于硬约束，硬约束只用于合规性与底层限制
 5. **结构性修改一律先说方案再改**
 6. **每个决定记进 `CONTEXT.md`**（原 `DECISIONS.md` 已删）
-7. **自己判断错了要当场纠正并说明** —— 下面 82 条里至少有 6 条是我猜错之后
+7. **自己判断错了要当场纠正并说明** —— 下面 83 条里至少有 6 条是我猜错之后
    被自己的实验推翻才写进去的
 
 ---
@@ -2111,7 +2119,7 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
 ## 十一、要改代码前先确认的清单
 
 - 加 state 字段 → **必须在 `ResearchState` / `WriteState` 里声明**，否则 LangGraph 静默丢弃
-- 改 provider → 读第六节（82 条坑）+ 「切换时必须一起改的东西」
+- 改 provider → 读第六节（83 条坑）+ 「切换时必须一起改的东西」
 - 写/改守门测试 → provider **钉死**，不许跟着 `defaults` 漂；桩要接在**正确的层**上
 - 加一条新的发请求路径 → **数一遍同类路径有几条**（这轮栽了三次：空 tools 400、流式分支、截断检测）
 - 断 provider 协议形状 → **逐个字段核对** usage / stop_reason / tools / tool_choice，

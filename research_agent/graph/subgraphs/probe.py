@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
@@ -21,6 +22,9 @@ from ...search.searxng import SearXNGProvider
 from ...search.tavily import TavilyProvider
 from .. import prompts
 from ..state import ProbeState
+# 与 write.py 共用同一套重试判据/入参归一（2026-10-20 抽出，见 _retry.py）。
+from ._retry import (_norm_audit_list, _audit_retryable,
+                     _transient_http, _wait_transient)
 
 MAX_ATTEMPTS = 2          # 换词重试上限
 LIGHT_PER_LANG = 3        # 轻扫每种语言几条宽查询
@@ -259,6 +263,91 @@ class _BareFetcher(Fetcher):  # 探针阶段可能还没初始化 DB
 
 # ---------------------------------------------------------------- 轮廓
 
+# probe_outline 的强制交卷 schema（2026-10-20）：原来走 complete_json
+# 手写长 JSON，中段写崩（未转义引号/漏逗号）没有任何重试、except 直接
+# 降级 → 连续两个真实会话（v15/v16）大纲退化成 1 节。历史 3/23 同型
+# 失败（v9 也有）。改成强制工具 `submit_outline`——模型只填
+# `arguments` 对象，平台在解码层面保证它是合法 JSON（同 write_audit
+# 的修法，坑 77/82）。
+# 字段与 prompts.PROBE_OUTLINE 要求的输出一一对应；required 只列
+# 真正缺了就没法用的三项，其余字段缺席不判失败。
+OUTLINE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "subtopics": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "name": {"type": "string"}, "what": {"type": "string"},
+                "evidence_urls": {"type": "array",
+                                  "items": {"type": "string"}}}}},
+        "entities": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "name": {"type": "string"},
+                "type": {"type": "string",
+                         "enum": ["person", "org", "product", "method",
+                                  "place"]}}}},
+        "jargon": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "term": {"type": "string"},
+                "en_equivalent": {"type": ["string", "null"]},
+                "meaning": {"type": "string"}}}},
+        "controversies": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "topic": {"type": "string"}, "position_a": {"type": "string"},
+                "position_b": {"type": "string"},
+                "evidence_urls": {"type": "array",
+                                  "items": {"type": "string"}}}}},
+        "common_questions": {"type": "array", "items": {"type": "string"}},
+        "info_quality": {"type": "string", "enum": ["high", "medium", "low"]},
+        "one_line": {"type": "string"},
+    },
+    "required": ["subtopics", "info_quality", "one_line"],
+}
+
+_OUTLINE_KEYS = ("subtopics", "entities", "jargon", "controversies",
+                 "common_questions", "info_quality", "one_line")
+
+
+def _normalize_outline_input(raw) -> dict | None:
+    """把 `submit_outline` 的工具入参归一成下游读的 dict；归一不了返回 None。
+
+    容忍的漂移与 `_normalize_audit_input` 同款（M3.1/M3 实测形态）：
+    外层单键 dict 包装（最多解两层）、数组包成 `{"item": [...]}`、
+    数组回成 JSON 字符串。**严格**：`info_quality` 非法值不静默回落，
+    `subtopics` 为空且 `one_line` 也为空视为没交出轮廓——都判无效，
+    让上层重试，而不是拿半残结构往下游走。
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if not isinstance(raw, dict):
+        return None
+    d = raw
+    for _ in range(2):
+        if any(k in d for k in _OUTLINE_KEYS):
+            break
+        dict_vals = [v for v in d.values() if isinstance(v, dict)]
+        if len(dict_vals) == 1:
+            d = dict_vals[0]
+        else:
+            break
+    iq = d.get("info_quality")
+    if iq not in ("high", "medium", "low"):
+        return None
+    out = dict(d)
+    for k in ("subtopics", "entities", "jargon", "controversies",
+              "common_questions"):
+        out[k] = _norm_audit_list(out.get(k))
+    if not isinstance(out.get("one_line"), str):
+        out["one_line"] = ("" if out.get("one_line") is None
+                           else str(out["one_line"]))
+    if not out["subtopics"] and not out["one_line"].strip():
+        return None
+    out["info_quality"] = iq
+    return out
+
+
 def node_probe_outline(state: ProbeState) -> dict:
     """生成领域轮廓。
 
@@ -297,17 +386,50 @@ def node_probe_outline(state: ProbeState) -> dict:
                 "events": [{"kind": "probe_outline", "degraded": True,
                             "note": "既无深读页也无轻扫结果"}]}
 
-    try:
-        data = LLM.complete_json(
-            "probe_outline",
-            f"研究对象：{state['question']}\n"
-            + (f"用户已澄清指向：{state.get('user_choice')}\n" if state.get("user_choice") else "")
-            + src,
-            system=prompts.PROBE_OUTLINE,
-        )
-    except Exception as e:
+    # 2026-10-20 起结论走强制工具 `submit_outline`（坑 82：手写长 JSON
+    # 中段解析失败无重试 → 连续两个真实会话大纲退化成 1 节）。工具
+    # 入参仍可能偏离 schema → `_normalize_outline_input` 归一，归一
+    # 不了当失败重试一次（429/额度/ConfigError 不重试，与 write_audit
+    # 同一套判据）。点名工具的话术与 submit_audit 同款。
+    prompt = (f"研究对象：{state['question']}\n"
+              + (f"用户已澄清指向：{state.get('user_choice')}\n"
+                 if state.get("user_choice") else "")
+              + src
+              + "\n\n读完后**调用 `submit_outline` 工具**提交结论，"
+                "结论只放在工具参数里，不要在对话文本里写 JSON。")
+    data: dict | None = None
+    err: object = ""
+    attempts = 0
+    for _attempt in (1, 2):
+        attempts = _attempt
+        try:
+            raw = LLM.complete_json_forced(
+                "probe_outline", prompt, "submit_outline", OUTLINE_SCHEMA,
+                system=prompts.PROBE_OUTLINE)
+        except Exception as e:
+            err = e
+            if _audit_retryable(e) and _attempt < 2:
+                if _transient_http(e):
+                    _wait_transient("probe_outline", e)
+                else:
+                    print(f"⚠️  [probe_outline] 调用失败"
+                          f"（{type(e).__name__}: {str(e)[:80]}），重试一次",
+                          flush=True)
+                continue
+            break
+        data = _normalize_outline_input(raw)
+        if data is None:
+            err = "submit_outline 入参偏离 schema，无法归一化"
+            if _attempt < 2:
+                print("⚠️  [probe_outline] 返回结构无法归一化，重试一次",
+                      flush=True)
+                continue
+        break
+
+    if data is None:
         return {"degraded": True,
-                "events": [{"kind": "probe_outline", "error": str(e)[:200],
+                "events": [{"kind": "probe_outline", "error": str(err)[:200],
+                            "attempts": attempts,
                             "fallback_to_titles": fallback_used}],
                 "quality": "thin"}
 

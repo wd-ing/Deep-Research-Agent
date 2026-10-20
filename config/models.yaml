@@ -14,6 +14,12 @@
 # `forced_thinking: disabled` + `round_max_tokens` 吃饭，
 # 而 M3.1 关不掉思考（disabled → 400）。
 #
+# 现状再订正（2026-10-20）：`assess` / `write_plan_spec` /
+# `write_plan_tasks` 也迁到 M3.1-Flash low——v14 检查点 A/B 回放
+# （/tmp/exp_model_ab/summary.txt）显示分派输出降 ~4 倍、耗时降
+# ~6 倍且小节覆盖不变。write_section / write_revise / write_patch
+# **仍必须留 M3**（forced_thinking 依赖同上）。
+#
 # ⚠️ 不要再用 thinking.budget_tokens
 # 那是 Anthropic 扩展思考的字段，MiniMax 不认。它的 thinking.type 合法值只有
 # adaptive 与 disabled，没有 enabled。那个字段不报 400、只是被静默忽略，于是
@@ -397,11 +403,21 @@ stages:
   # （同一天的全量跑日志：`[assess] 空返回 1 次`），只是没让整篇失败
   # 所以没人注意。**和 write_plan 是同一个病。**
   assess:
+    # 2026-10-20 迁到 M3.1-Flash low（钉死档案，不跟 defaults 走）。
+    # 依据 /tmp/exp_model_ab/summary.txt（M3 vs M3.1 low，每格 n=3，
+    # 同一份 v14 检查点回放）：
+    #   assess 输出 3.0~7.0k → 2.3~2.4k token，耗时 24~56s → 18~20s，
+    #   gaps/has_enough 结构一致。**退路：出问题把 provider 改回
+    #   defaults 的老配置（删 provider/reasoning/thinking 三行即回 M3）。**
+    provider: minimax31
+    reasoning_effort: low
+    thinking_effort: low
     # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
     stream: true
-    reasoning_effort: low
     temperature: 0.0
-    max_output_tokens: 8192
+    # 16384 ≈ M3.1 low 实测最大输出（~2.4k）的 6 倍富余；
+    # 与 guard 同值只为满足 NEEDS_GUARD 显式配置要求（同 write_audit）。
+    max_output_tokens: 16384
     # 兜底天花板，不是常规路径。
     guard: { max_reasoning_ratio: 0.6, retry_on_empty: 1, max_output_tokens: 16384 }
 
@@ -470,8 +486,16 @@ stages:
 
   # 主 agent 规约：thesis + 术语表 + 注意事项 + 小节。
   write_plan_spec:
+    # 2026-10-20 迁到 M3.1-Flash low（钉死档案，不跟 defaults 走）。
+    # 依据 /tmp/exp_model_ab/summary.txt（M3 vs M3.1 low，每格 n=3，
+    # 同一份 v14 检查点回放）：spec 无 token/耗时收益
+    # （5.3~7.4k / 48~65s ↔ 6.3k / 54~59s），但规约 cautions 更细、
+    # 规约文本约长 35%——按用户决定一并迁。
+    # **退路：删 provider/reasoning/thinking 三行即回 M3 high 老配置。**
+    provider: minimax31
+    reasoning_effort: low
+    thinking_effort: low
     stream: true
-    reasoning_effort: high
     temperature: 0.0
     # ⚠️ 2026-10-17 实测定死（`tests/probe_plan_spec.py`，真实数据回放 n=3：
     # 109 段 / 3 节 / 提示词 19,185 字符）：
@@ -480,20 +504,26 @@ stages:
     # ⇒ 它**远没有分派那么费思考**，32,768 有 4.8 倍余量。
     #   （分派实测思考到 26,002、耗时 292.8 秒 —— 差一个量级，
     #     这正是「必须拆开」的实证。）
-    max_output_tokens: 32768
-    # 预算抬大必然拉长单次耗时，**超时必须跟着抬**，否则只是换个失败形态。
-    # 2026-10-17 按吞吐实测定：单次调用最慢 62 token/s（8 次实测，见
-    # `tests/probe_plan_tasks_forced.py` 的逐轮 completion/耗时），
-    # 32768 跑满需 529 秒 —— 原来的 600 只剩 13% 余量。
-    timeout_s: 900
-    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 65536 }
+    # 24576 ≈ M3.1 low 实测最大输出（~6.5k）的 3.7 倍富余；
+    # 与 guard 同值只为满足 NEEDS_GUARD 显式配置要求（同 write_audit）。
+    max_output_tokens: 24576
+    # M3.1 low 实测单次最长 ~60s，420 与 write_audit 一致、约 7 倍富余。
+    timeout_s: 420
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 24576 }
 
   # 主 agent 分派：产出任务列表。这是整条链上**唯一持有全局视图**的决策点。
   write_plan_tasks:
+    # 2026-10-20 迁到 M3.1-Flash low（钉死档案，不跟 defaults 走）。
+    # 依据 /tmp/exp_model_ab/summary.txt（同一份 v14 检查点，每格 n=3）：
+    #   输出 16~38k → 6~10k token，耗时 140~424s → 34~62s，
+    #   uncovered=[]、n_claim 相当。**退路：删 provider/reasoning/
+    #   thinking 三行即回 M3 high（65536/1200s）老配置。**
+    provider: minimax31
+    reasoning_effort: low
+    thinking_effort: low
     stream: true
-    reasoning_effort: high
     temperature: 0.0
-    # ⚠️ **4,096 → 16,384 → 65,536，前两次都是错的修法。**
+    # ⚠️ **4,096 → 16,384 → 65,536，前两次都是错的修法（M3 时代）。**
     #
     # `max_tokens` 是思考和正文的**共享天花板**，思考吃满 ⇒ 正文必然 0
     # （实测 @16,384 时 reasoning_tokens 恰好 16,384、正文 0 字）。
@@ -509,16 +539,12 @@ stages:
     #   `reasoning_effort: low` + `max_output_tokens: 16384`
     #   （实测 3/3、耗时中位 65.6s、思考最大 6,886）。
     #   代价是**推理深度下降，质量未验证**，不是等价替换。
-    max_output_tokens: 65536
-    # 实测耗时 38.5 / 288.7 / 292.8 秒（预算 16,384 那轮），
-    # 抬到 65,536 之后在线上又测到 **580.3 秒**——原来是 600 秒上限的 97%。
-    #
-    # 2026-10-17 按吞吐重算：单次调用最慢 **62 token/s**（8 次实测），
-    # 65536 跑满需 **1,057 秒**。也就是说 600 秒的墙**比满预算还近**：
-    # 一旦真的把预算用光，必然从「截断」变成「超时」，只是换个失败形态。
-    # ⇒ 抬到 1200 秒（约 1.14 倍跑满耗时）。
-    timeout_s: 1200
-    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 65536 }
+    # 32768 ≈ M3.1 low 实测最大输出（~10k）的 3 倍富余；
+    # 与 guard 同值只为满足 NEEDS_GUARD 显式配置要求（同 write_audit）。
+    max_output_tokens: 32768
+    # M3.1 low 实测单次最长 ~62s，420 与 write_audit 一致、约 7 倍富余。
+    timeout_s: 420
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 32768 }
 
   # 判定依据见 DESIGN_R6_REVIEW.md 2.2 与 DECISIONS.md。
   write_audit:
@@ -661,6 +687,9 @@ alternatives:
       T1 low 档思考 337 到 828 字符、正文稳定；T2 high 档思考 6,743 字符。
       8/8 环节的 JSON 均可解析（走 _parse_json 兜底），字段齐全。
       Anthropic 端点没有 response_format，严格 JSON 靠提示词约束。
+      2026-10-19/20：现役形态是 `MiniMax-M3.1-Flash`（minimax31 档案）
+      + effort low——write_audit、assess、write_plan_spec、
+      write_plan_tasks 四个环节钉死在它上面（思考关不掉，只能 low）。
 
   - id: MiniMax-M2.7-highspeed
     status: rejected

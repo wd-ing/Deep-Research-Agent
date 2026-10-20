@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from research_agent.graph.subgraphs import write as W   # noqa: E402
+# 重试判据 2026-10-20 抽到共享模块，等待常量的 patch 目标跟着搬过去。
+from research_agent.graph.subgraphs import _retry as R   # noqa: E402
 
 FAILED: list[str] = []
 
@@ -268,8 +270,8 @@ def t_call_failures():
 
     # MiniMax 529 过载是瞬时错误（服务端明说「请稍后重试」）——
     # 等 _TRANSIENT_WAIT_S 后再发。离线把等待置 0。
-    o_wait = W._TRANSIENT_WAIT_S
-    W._TRANSIENT_WAIT_S = 0
+    o_wait = R._TRANSIENT_WAIT_S
+    R._TRANSIENT_WAIT_S = 0
     try:
         st = _state([_task("t1")], drafts={"t1": {"sec1": body}},
                     audit={"targets": [tgt]})
@@ -295,7 +297,7 @@ def t_call_failures():
               len([c for c in llm.calls if c["stage"] == "write_patch"]) == 3
               and len(run.calls) == 1, str(run.calls))
     finally:
-        W._TRANSIENT_WAIT_S = o_wait
+        R._TRANSIENT_WAIT_S = o_wait
 
 
 # --------------------------------------------------- ⑦ 混合任务
