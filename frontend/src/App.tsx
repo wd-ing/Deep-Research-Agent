@@ -13,6 +13,7 @@ import { Sidebar, type Pane } from './components/Sidebar'
 import { SourceDetail } from './components/SourceDetail'
 import { SettingsView } from './views/SettingsView'
 import { NewResearchDialog } from './components/NewResearchDialog'
+import { Menu, MenuItem, MenuSep } from './components/Menu'
 import { Icon } from './components/Icon'
 import { ago, tokens } from './lib/format'
 
@@ -50,6 +51,9 @@ export default function App() {
 
   // ---- 新建研究对话框（替掉原生 prompt）----
   const [newOpen, setNewOpen] = useState(false)
+  // 导出菜单锚点 + Word 生成中（docx 打包有几百 ms，要有个看得见的反馈）
+  const [exportAt, setExportAt] = useState<HTMLElement | null>(null)
+  const [docxBusy, setDocxBusy] = useState(false)
   // 侧栏折叠（E2 专注阅读）：内存态即可——不进 URL，
   // 「我暂时想宽点看报告」不该变成分享链接的一部分。
   const [sideCollapsed, setSideCollapsed] = useState(false)
@@ -381,46 +385,71 @@ export default function App() {
                     <Icon name="pen" size={13} />修订痕迹
                   </button>
                 )}
-                {/* C1 导出：复制 / 下载 / 打印（打印即 PDF）。
-                    clipboard 需要 secure context——localhost 与 https 都是，
-                    file:// 直开才会落空，落空就明说。 */}
+                {/* C1 导出：复制 / .md / PDF(打印) / Word 全收进一个菜单。
+                    「归档」挪进了会话行右键菜单——顶栏不重复占一个位。 */}
                 <button
-                  onClick={() => void navigator.clipboard.writeText(report)
-                    .then(() => s.notify('已复制报告 Markdown', 'ok'))
-                    .catch(() => s.notify('复制失败：浏览器没给剪贴板权限'))}
+                  onClick={(e) => setExportAt(exportAt ? null : e.currentTarget)}
                   className="btn-ghost"
+                  aria-haspopup="menu"
+                  aria-expanded={!!exportAt}
                 >
-                  <Icon name="copy" size={13} />复制 MD
+                  <Icon name="download" size={13} />导出
+                  <Icon name="chevron-down" size={11} className="-ml-0.5 text-faint" />
                 </button>
-                <button
+              </>
+            )}
+            {exportAt && (
+              <Menu anchor={exportAt} align="right" onClose={() => setExportAt(null)}>
+                <MenuItem icon="file-text" hint=".md"
                   onClick={() => {
-                    const name = `${(d.title || '报告').replace(/[\\/:*?"<>|]/g, '')}.md`
+                    const name = `${(d?.title || '报告').replace(/[\\/:*?"<>|]/g, '')}.md`
                     const url = URL.createObjectURL(
                       new Blob([report], { type: 'text/markdown;charset=utf-8' }))
                     const a = document.createElement('a')
                     a.href = url; a.download = name; a.click()
                     URL.revokeObjectURL(url)
-                  }}
-                  className="btn-ghost"
-                >
-                  <Icon name="download" size={13} />下载 .md
-                </button>
-                <button
-                  onClick={() => window.print()}
-                  className="btn-ghost"
-                >
-                  <Icon name="printer" size={13} />打印 / PDF
-                </button>
-              </>
-            )}
-            {d && !d.archived_at && d.status === 'done' && (
-              <button
-                onClick={() => void s.archive(d.id).then(refresh).catch(
-                    (e: unknown) => s.notify(`归档失败：${(e as Error).message}`))}
-                className="btn-ghost"
-              >
-                归档（不出现在默认列表）
-              </button>
+                    setExportAt(null)
+                  }}>
+                  Markdown
+                </MenuItem>
+                {/* PDF 走浏览器打印——不做服务端渲染，
+                    打印隐藏逻辑（rail/状况条/修订标记不进纸面）已在。 */}
+                <MenuItem icon="file-type" hint="打印 / 另存为 PDF"
+                  onClick={() => { window.print(); setExportAt(null) }}>
+                  PDF
+                </MenuItem>
+                <MenuItem icon="file-text" hint=".docx" disabled={docxBusy}
+                  onClick={() => {
+                    // docx 库按需加载——只在真导出时才把几百 kB 拉下来
+                    setDocxBusy(true)
+                    void import('./lib/exportDocx')
+                      .then((m) => m.reportToDocx(report, d?.title || '报告'))
+                      .then((blob) => {
+                        const name = `${(d?.title || '报告').replace(/[\\/:*?"<>|]/g, '')}.docx`
+                        const url = URL.createObjectURL(blob)
+                        const a = document.createElement('a')
+                        a.href = url; a.download = name; a.click()
+                        URL.revokeObjectURL(url)
+                        s.notify('已导出 Word 文档', 'ok')
+                      })
+                      .catch((e: unknown) => s.notify(`导出 Word 失败：${(e as Error).message}`))
+                      .finally(() => { setDocxBusy(false); setExportAt(null) })
+                  }}>
+                  Word{docxBusy ? '（生成中…）' : ''}
+                </MenuItem>
+                <MenuSep />
+                <MenuItem icon="copy"
+                  onClick={() => {
+                    // clipboard 需要 secure context——localhost 与 https 都是，
+                    // file:// 直开才会落空，落空就明说。
+                    void navigator.clipboard.writeText(report)
+                      .then(() => s.notify('已复制报告 Markdown', 'ok'))
+                      .catch(() => s.notify('复制失败：浏览器没给剪贴板权限'))
+                    setExportAt(null)
+                  }}>
+                  复制 Markdown
+                </MenuItem>
+              </Menu>
             )}
           </div>
         </header>

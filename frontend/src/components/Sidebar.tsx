@@ -3,7 +3,7 @@ import { api } from '../useSession'
 import type { Folder, SearchHit, SessionSummary, SourceLibrary } from '../types'
 import { FolderTree, buildTree, findNodeById, subtreeIds, folderChoices } from './FolderTree'
 import { ago, tokens } from '../lib/format'
-import { Menu, MenuItem } from './Menu'
+import { Menu, MenuItem, MenuSep } from './Menu'
 import { ConfirmDialog } from './ConfirmDialog'
 import { SourceList } from './SourceList'
 import { Icon } from './Icon'
@@ -50,7 +50,12 @@ function SessionRow({
   useTick()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(s.title ?? '')
-  const [moveAt, setMoveAt] = useState<HTMLElement | null>(null)
+  // 会话行操作菜单：右键（point 定位）和 ⋯ 按钮（anchor 定位）打开的是
+  // **同一个**菜单；menuView 在「主菜单/选文件夹」两个视图间切。
+  const [menuAt, setMenuAt] = useState<
+    { anchor: HTMLElement | null; point: { x: number; y: number } | null } | null
+  >(null)
+  const [menuView, setMenuView] = useState<'main' | 'folder'>('main')
   /** 摘要的要点/缺口是否展开。默认收起——列表要能扫。 */
   const [showSum, setShowSum] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -67,6 +72,14 @@ function SessionRow({
 
   return (
     <div
+      onContextMenu={(e) => {
+        // 编辑态下右键是输入框自己的事（撤销/复制），不抢。
+        // 键盘的菜单键 / Shift+F10 走的也是这个事件，天然免费可达。
+        if (editing) return
+        e.preventDefault()
+        setMenuView('main')
+        setMenuAt({ anchor: null, point: { x: e.clientX, y: e.clientY } })
+      }}
       className={[
         'group relative mb-0.5 rounded-[10px] border px-2.5 py-2 transition-colors',
         // 选中=白底+1px 线（.sel 的 inset 圈），未选中=透明描边占位、
@@ -157,46 +170,69 @@ function SessionRow({
         </div>
       )}
 
-      {/* 操作按钮：hover / 聚焦时才出现，键盘用户用 focus-within 也能拿到 */}
+      {/* 操作入口只剩一个极淡的 ⋯——四个动作全进了右键/此菜单，
+          列表平时不需要看到四个按钮抢标题。键盘用 focus-within 同样可达。 */}
       {!editing && (
-        <div className="absolute right-1.5 top-1.5 hidden gap-0.5 group-hover:flex group-focus-within:flex">
-          <button
-            title="重命名"
-            onClick={() => { setDraft(s.title ?? ''); setEditing(true) }}
-            className="rounded px-1 text-xs text-muted hover:bg-gray-100 hover:text-ink"
-          >✏️</button>
-          <button
-            title="移到文件夹"
-            onClick={(e) => setMoveAt(moveAt ? null : e.currentTarget)}
-            className="flex items-center rounded px-1 py-0.5 text-muted hover:bg-gray-100 hover:text-ink"
-          ><Icon name="folder" size={13} /></button>
-          <button
-            title={s.archived_at ? '取消归档' : '归档（值得留，不出现在默认列表）'}
-            onClick={() => onArchive(!s.archived_at)}
-            className="rounded px-1 text-xs text-muted hover:bg-gray-100 hover:text-ink"
-          >{s.archived_at ? '📌' : '📥'}</button>
-          <button
-            title="移到回收站"
-            onClick={onDelete}
-            className="rounded px-1 text-xs text-muted hover:bg-red-50 hover:text-red-600"
-          >🗑</button>
-        </div>
+        <button
+          title="更多操作"
+          aria-label={`会话操作：${s.title || s.question}`}
+          onClick={(e) => {
+            setMenuView('main')
+            setMenuAt({ anchor: e.currentTarget, point: null })
+          }}
+          className="absolute right-1.5 top-1.5 hidden rounded px-1 text-muted hover:bg-gray-100 hover:text-ink group-hover:block group-focus-within:block"
+        ><Icon name="ellipsis" size={15} /></button>
       )}
 
-      {moveAt && (
-        <Menu anchor={moveAt} align="right" onClose={() => setMoveAt(null)}>
-          {choices.map((c) => (
-            <MenuItem key={c.id ?? 'none'} active={c.id === (s.folder_id ?? null)}
-              onClick={() => { onMove(c.id); setMoveAt(null) }}>
-              <span style={{ paddingLeft: c.depth * 10 }}>
-                {c.depth > 0 ? '└ ' : ''}{c.label}
-              </span>
-            </MenuItem>
-          ))}
-          {!choices.length && (
-            <div className="px-2.5 py-1.5 text-2xs text-muted">
-              还没有文件夹，在左下角「+ 新建」建一个。
-            </div>
+      {menuAt && (
+        <Menu
+          anchor={menuAt.anchor}
+          point={menuAt.point}
+          align="right"
+          onClose={() => setMenuAt(null)}
+        >
+          {menuView === 'main' ? (
+            <>
+              <MenuItem icon="pen"
+                onClick={() => { setDraft(s.title ?? ''); setEditing(true); setMenuAt(null) }}>
+                重命名
+              </MenuItem>
+              {/* 不套二级浮层：同一个菜单切到文件夹视图，
+                  「‹ 返回」回到主菜单——层级浅，键盘也不用学新按键 */}
+              <MenuItem icon="folder" hint={<Icon name="chevron-right" size={11} />}
+                onClick={() => setMenuView('folder')}>
+                移到文件夹
+              </MenuItem>
+              <MenuItem icon={s.archived_at ? 'archive-restore' : 'archive'}
+                onClick={() => { onArchive(!s.archived_at); setMenuAt(null) }}>
+                {s.archived_at ? '取消归档' : '归档（值得留，不出现在默认列表）'}
+              </MenuItem>
+              <MenuSep />
+              <MenuItem icon="trash" danger
+                onClick={() => { onDelete(); setMenuAt(null) }}>
+                移到回收站
+              </MenuItem>
+            </>
+          ) : (
+            <>
+              <MenuItem onClick={() => setMenuView('main')}>
+                ‹ 返回
+              </MenuItem>
+              <MenuSep />
+              {choices.map((c) => (
+                <MenuItem key={c.id ?? 'none'} active={c.id === (s.folder_id ?? null)}
+                  onClick={() => { onMove(c.id); setMenuAt(null) }}>
+                  <span style={{ paddingLeft: c.depth * 10 }}>
+                    {c.depth > 0 ? '└ ' : ''}{c.label}
+                  </span>
+                </MenuItem>
+              ))}
+              {!choices.length && (
+                <div className="px-2.5 py-1.5 text-2xs text-muted">
+                  还没有文件夹，在左下角「+ 新建」建一个。
+                </div>
+              )}
+            </>
           )}
         </Menu>
       )}

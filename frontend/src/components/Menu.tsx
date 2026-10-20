@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Icon } from './Icon'
+import { Icon, type IconName } from './Icon'
 
 /** 菜单里的可聚焦项。`disabled` 的 button 本来就不可聚焦，不用另外过滤。 */
 function items(box: HTMLDivElement | null): HTMLButtonElement[] {
@@ -19,10 +19,13 @@ function items(box: HTMLDivElement | null): HTMLButtonElement[] {
  *  不走 state：方向键只改焦点、不改渲染，用 state 只会让每次移动都触发重渲染。
  */
 export function Menu({
-  anchor, onClose, children, align = 'left',
+  anchor, point, onClose, children, align = 'left',
 }: {
-  /** 相对定位锚点。菜单用 fixed 定位，滚出视口也不需要跟着重算。 */
-  anchor: HTMLElement | null
+  /** 相对定位锚点。菜单用 fixed 定位，滚出视口也不需要跟着重算。
+   *  与 `point` 二选一：右键菜单没有「锚点元素」只有鼠标坐标。 */
+  anchor?: HTMLElement | null
+  /** 屏幕坐标定位（contextmenu 的 clientX/Y）。给了就忽略 anchor。 */
+  point?: { x: number; y: number } | null
   onClose: () => void
   children: React.ReactNode
   align?: 'left' | 'right'
@@ -116,9 +119,12 @@ export function Menu({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anchor])
 
-  // ⚠️ 锚点没量到之前**先不渲染**，否则会以 (0,0) 闪一下
-  if (!anchor) return null
-  const r = anchor.getBoundingClientRect()
+  // ⚠️ 锚点/坐标没量到之前**先不渲染**，否则会以 (0,0) 闪一下
+  if (!anchor && !point) return null
+  // point 时把坐标看成 0 尺寸的 rect，翻折/夹紧逻辑与 anchor 完全同源
+  const r = point
+    ? { left: point.x, right: point.x, top: point.y, bottom: point.y }
+    : anchor!.getBoundingClientRect()
   const left = align === 'right' ? r.right : r.left
   // 底部空间不够就翻到上方——文件夹树通常靠下，翻转比被裁掉好
   const below = window.innerHeight - r.bottom
@@ -143,7 +149,7 @@ export function Menu({
 }
 
 export function MenuItem({
-  onClick, children, active, disabled, danger,
+  onClick, children, active, disabled, danger, icon, hint,
 }: {
   onClick: () => void
   children: React.ReactNode
@@ -151,6 +157,11 @@ export function MenuItem({
   active?: boolean
   disabled?: boolean
   danger?: boolean
+  /** 左侧图标。与打勾槽互斥：打勾只出现在「要选」的视图（文件夹列表），
+   *  图标出现在动作项上——两种场景不会撞车，复用同一个槽位。 */
+  icon?: IconName
+  /** 右侧灰字小注（如文件扩展名、子菜单箭头），不占左侧槽位。 */
+  hint?: React.ReactNode
 }) {
   return (
     <button
@@ -168,8 +179,15 @@ export function MenuItem({
             : 'text-ink hover:bg-gray-100',
       ].join(' ')}
     >
-      <span className="w-3 shrink-0 text-2xs">{active ? <Icon name="check" size={11} strokeWidth={2.5} /> : ''}</span>
+      <span className="flex w-3 shrink-0 items-center justify-center text-muted">
+        {icon
+          ? <Icon name={icon} size={13} />
+          : active ? <Icon name="check" size={11} strokeWidth={2.5} /> : ''}
+      </span>
       <span className="min-w-0 flex-1 truncate">{children}</span>
+      {hint != null && (
+        <span className="ml-2 shrink-0 text-2xs text-faint">{hint}</span>
+      )}
     </button>
   )
 }
