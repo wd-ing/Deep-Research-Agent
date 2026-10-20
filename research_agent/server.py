@@ -668,6 +668,64 @@ def session_trace(sid: str) -> dict:
     return {"rounds": [by_round[k] for k in sorted(by_round)]}
 
 
+@app.get("/api/sessions/{sid}/review")
+def session_review(sid: str) -> dict:
+    """修订痕迹视图供数：已应用补丁的逐条明细 + 运行健康度。
+
+    数据全从落库读——`/trace` 端点注释里那条教训同样适用：
+    已完成的会话前端不开 EventSource，内存态拿不到。
+
+    `patches` 按 sse_event.id 升序聚合所有 write_revise 事件的
+    `patch.applied_items`；`old` 是应用前文本、`before` 是其前 40 字
+    （delete 型靠它定位）。同一补丁在多轮返修里可能被重复打上，
+    按 (task, section, old, new) 去重。老会话/没走补丁的会话
+    没有 applied_items——patches 就是空数组，这不是错误。
+    """
+    repo = get_repo()
+    if not repo.q1("SELECT 1 FROM session WHERE id=?", (sid,)):
+        raise HTTPException(404, "会话不存在")
+
+    patches: list[dict] = []
+    seen: set = set()
+    for r in repo.q(
+            "SELECT event_json FROM sse_event "
+            "WHERE session_id=? AND kind='progress' ORDER BY id", (sid,)):
+        try:
+            ev = json.loads(r["event_json"] or "{}")
+        except (ValueError, TypeError):
+            continue                    # 损坏行跳过：日志表不该让整个端点 500
+        inner = ev.get("event") if isinstance(ev.get("event"), dict) else ev
+        if not isinstance(inner, dict) or inner.get("kind") != "write_revise":
+            continue
+        rnd = inner.get("round")
+        for it in ((inner.get("patch") or {}).get("applied_items") or []):
+            if not isinstance(it, dict):
+                continue
+            key = (it.get("task"), it.get("section"),
+                   it.get("old"), it.get("new"))
+            if key in seen:
+                continue
+            seen.add(key)
+            patches.append({**it, "round": rnd})
+
+    # run_trace 的 run_health 按 (session_id, round, kind) upsert，
+    # 多轮 finalize 取 round 最大的那行；老会话没有这条，health 给 null。
+    hr = repo.q1(
+        "SELECT detail_json FROM run_trace "
+        "WHERE session_id=? AND kind='run_health' "
+        "ORDER BY round DESC LIMIT 1", (sid,))
+    health = None
+    if hr:
+        try:
+            d = json.loads(hr["detail_json"] or "{}")
+            if isinstance(d, dict):
+                health = d
+        except (ValueError, TypeError):
+            pass
+
+    return {"patches": patches, "health": health}
+
+
 @app.get("/api/sessions/{sid}/approval")
 def approval(sid: str) -> dict:
     """当前待审批的框架（没有就返回 waiting=False）。

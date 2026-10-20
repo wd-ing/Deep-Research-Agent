@@ -2370,12 +2370,18 @@ def _patch_prompt(state: WriteState, tid: str, items: list[dict],
 def _apply_patches(state: WriteState, tid: str, items: list[dict],
                    result: dict, drafts: dict,
                    rejected: list, unresolved_out: list,
-                   fallback_secs: set) -> int:
+                   fallback_secs: set,
+                   applied_out: list | None = None) -> int:
     """逐条校验并应用补丁到 drafts[tid]。返回应用成功的条数。
 
     应用顺序 = 修订项顺序，作用在各小节**应用前序补丁后的最新文本**上。
     校验不过的 item 其所在小节整体回退整节重写；`unresolved` 里的 item
-    不进回退，留给 `revise_unresolved` → 报告存疑节。"""
+    不进回退，留给 `revise_unresolved` → 报告存疑节。
+
+    `applied_out`（给了就收）：每条**成功应用**的补丁一份明细——
+    old/new 是实际替换用的 `use`/`fixed`（auto_fix 之后），
+    `before` 是替换片段前 40 字（delete 型在前端的定位锚点）。
+    被拒的不进：被拒路径的信息在 `rejected` 里。"""
     task = next((t for t in state.get("tasks") or [] if t.get("id") == tid), {})
     allowed = set(task.get("segments") or [])
     sec_titles = {o["id"]: o["title"] for o in state.get("outline") or []
@@ -2432,6 +2438,16 @@ def _apply_patches(state: WriteState, tid: str, items: list[dict],
         if new and set(_contamination(fixed)) & STRONG:
             _reject(it, "污染输出")
             continue
+        if applied_out is not None:
+            at = body.index(use)
+            act = it.get("action") or "edit"
+            applied_out.append({
+                "task": tid, "section": sec,
+                "section_title": sec_titles.get(sec) or "",
+                "action": act if act in ("edit", "delete") else "edit",
+                "problem": _clip_sentence(str(it.get("problem") or ""), 200),
+                "old": use[:400], "new": fixed[:400],
+                "before": body[max(0, at - 40):at]})
         bodies[sec] = body.replace(use, fixed, 1)
         applied += 1
     if applied:
@@ -2549,6 +2565,7 @@ def node_revise(state: WriteState) -> dict:
     applied = 0
     patch_rejected: list[dict] = []
     revise_unresolved: list[dict] = []
+    applied_items: list[dict] = []
     for tid in porder:
         res = patch_results.get(tid)
         secs = fallback_targets.get(tid)
@@ -2566,7 +2583,8 @@ def node_revise(state: WriteState) -> dict:
                                            "reason": f"补丁调用失败：{reason}"})
             continue
         applied += _apply_patches(state, tid, patch_items[tid], res, drafts,
-                                  patch_rejected, revise_unresolved, fb_secs)
+                                  patch_rejected, revise_unresolved, fb_secs,
+                                  applied_items)
         for it in patch_items[tid]:
             if it["section"] in fb_secs and it not in secs:
                 secs.append(it)
@@ -2675,6 +2693,12 @@ def node_revise(state: WriteState) -> dict:
                     "patch": {"items": sum(len(v) for v in patch_items.values()),
                               "patch_calls": patch_calls,
                               "applied": applied,
+                              # 逐条明细：前端「修订痕迹」视图的供数。
+                              # 截 60 条封顶——sse_event 是日志表，
+                              # 一次返修上百条时不能让单行事件无限长。
+                              "applied_items": applied_items[:60],
+                              "applied_truncated":
+                                  max(0, len(applied_items) - 60),
                               "rejected": patch_rejected[:10],
                               "unresolved": len(revise_unresolved),
                               "fallback_sections":
