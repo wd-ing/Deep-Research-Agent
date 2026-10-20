@@ -47,6 +47,9 @@ export default function App() {
   // 侧栏折叠（E2 专注阅读）：内存态即可——不进 URL，
   // 「我暂时想宽点看报告」不该变成分享链接的一部分。
   const [sideCollapsed, setSideCollapsed] = useState(false)
+  // 首页输入卡的草稿——和 NewResearchDialog 分开存，
+  // 首页直接内联提问不再需要先开对话框。
+  const [homeQ, setHomeQ] = useState('')
   // 回放模式探测：/api/replay/state 只在回放服务器上存在。
   // null=还没探完/真后端（按钮不显示）；false=探测失败。
   const [replayOn, setReplayOn] = useState(false)
@@ -191,6 +194,16 @@ export default function App() {
       s.notify(`会话已建好，但启动失败：${(e as Error).message}`))
   }
 
+  /** 首页输入卡提交：和对话框走同一个 `start`——只是入口不同。 */
+  const submitHome = () => {
+    const q = homeQ.trim()
+    if (!q || s.busy) return
+    setHomeQ('')
+    void start(q)
+  }
+  /** 首页统计/卡片的口径：归档的不算「在做的研究」。 */
+  const liveList = list.filter((x) => !x.archived_at)
+
   const d = s.detail
   const report = d?.report ?? ''
 
@@ -300,22 +313,18 @@ export default function App() {
         </main>
       ) : (
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-line bg-white px-6 py-3 shadow-[0_1px_2px_rgba(0,0,0,0.03)] print:hidden">
+        <header className="flex items-center justify-between border-b border-line2 bg-white px-7 py-3 print:hidden">
           <div className="min-w-0">
             <div className={[
-              'truncate text-sm font-medium',
-              report && s.view === 'done' ? 'font-serif text-base' : '',
+              'truncate text-[13.5px] font-medium tracking-[-.005em]',
             ].join(' ')}>
               {d?.title || d?.question || '深度研究'}
             </div>
             {d && (
               <div className="mt-0.5 text-xs text-muted">
                 <span className="inline-flex items-center gap-1.5">
-                <span className={[
-                  'inline-block h-1.5 w-1.5 rounded-full',
-                  d.status === 'running' ? 'wf-running-dot bg-live' : 'bg-gray-300',
-                ].join(' ')} />
-                {d.status}
+                <span className={['dot', d.status === 'running' ? 'live' : ''].join(' ')} />
+                {d.status === 'running' ? '进行中' : d.status === 'done' ? '已完成' : d.status}
               </span>
                 {d.degraded && (
                   <span
@@ -329,11 +338,17 @@ export default function App() {
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {/* 首页无会话时的环境指示：稿子的「本地 · 就绪」胶囊 */}
+            {!d && (
+              <span className="pill">
+                <span className="dot live" />本地 · 就绪
+              </span>
+            )}
             {d && s.view === 'done' && report && (
               <>
                 {/* 报告是终点不是终点——流程还在后面一页能回看 */}
                 <button className="btn-ghost" onClick={() => s.setView('flow')}>
-                  <Icon name="chevrons-left" size={13} />回看流程
+                  <Icon name="history" size={13} />回看流程
                 </button>
                 {/* C1 导出：复制 / 下载 / 打印（打印即 PDF）。
                     clipboard 需要 secure context——localhost 与 https 都是，
@@ -386,45 +401,110 @@ export default function App() {
           <RoundChart sid={sid} refreshKey={s.progress.length} />
         )}
 
-        {/* 欢迎面板（E3）：首屏不该只有一行提示。
-            三条信息：这是什么、入口在哪、以前在做什么（最近会话卡片）。 */}
+        {/* 首页（2026-10-20 视觉稿落地）：标题+刻度线、问题输入卡、
+            指标条、「继续之前的」卡片网格。
+            ⚠️ 指标只用列表接口里的真实字段（status/cost_tokens/created_at）——
+            稿子的「累计来源/报告字数/引用覆盖/来源构成」没有现成数据，不编。 */}
         {s.view === 'idle' && !sid && (
-          <div className="flex flex-1 items-start justify-center overflow-auto px-6 py-14">
-            <div className="w-full max-w-xl">
-              {/* 衬线标题是「文档感」的签名件——首页先立住这个气质 */}
-              <h1 className="font-serif text-2xl font-medium text-ink">深度研究</h1>
-              <p className="mt-2 max-w-md text-sm leading-6 text-muted">
-                提出一个问题，agent 会做多轮检索和评估，产出带逐句引用的长报告。
-                一场研究约 20–30 分钟，过程中随时可以离开，完成后回来看结果。
+          <div className="flex-1 overflow-auto">
+            <div className="mx-auto max-w-[980px] px-10 py-14">
+              <h1 className="text-[34px] font-semibold leading-[1.2] tracking-[-.01em]">
+                开始一场研究
+              </h1>
+              <div className="ruler mt-3.5 w-[220px]" />
+              <p className="mt-2.5 max-w-[560px] text-sm leading-6 text-muted">
+                提出一个问题，agent 会多轮检索、评估并写出逐句带引用的长报告。
+                一场研究约 20–30 分钟，过程中可随时离开。
               </p>
-              <button
-                onClick={() => setNewOpen(true)}
-                className="btn-primary mt-6 px-4 py-2 text-sm"
-              >
-                <Icon name="plus" size={14} />新建研究
-              </button>
-              {list.filter((x) => !x.archived_at).length > 0 && (
+
+              {/* 问题输入卡：和「新建研究」对话框走同一个 start()，
+                  只是输入框内联在首页而不是弹层里。 */}
+              <div className="card mt-8 px-[18px] pb-3.5 pt-4">
+                <textarea
+                  rows={2}
+                  value={homeQ}
+                  onChange={(e) => setHomeQ(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                      e.preventDefault(); submitHome()
+                    }
+                  }}
+                  placeholder="例如：固态电池各技术路线的产业化进度与分歧点…"
+                  className="w-full resize-none text-[15.5px] leading-6 outline-none placeholder:text-faint"
+                />
+                <div className="mt-3 flex items-center gap-2 border-t border-line2 pt-3">
+                  <span className="flex-1 text-2xs text-faint">⌘ / Ctrl + Enter 开始</span>
+                  <button
+                    onClick={submitHome}
+                    disabled={!homeQ.trim() || s.busy}
+                    className="btn-primary"
+                  ><Icon name="arrow-right" size={13} />开始研究</button>
+                </div>
+              </div>
+
+              {/* 指标条：只用真数（列表接口有的那几列） */}
+              <div className="card mt-4">
+                <div className="metrics">
+                  <div>
+                    <div className="k">研究</div>
+                    <div className="big">{liveList.length}<small>场</small></div>
+                  </div>
+                  <div>
+                    <div className="k">进行中</div>
+                    <div className="big">{liveList.filter((x) => x.status === 'running').length}<small>场</small></div>
+                  </div>
+                  <div>
+                    <div className="k">已完成</div>
+                    <div className="big">{liveList.filter((x) => x.status === 'done').length}<small>场</small></div>
+                  </div>
+                  <div>
+                    <div className="k">累计消耗</div>
+                    <div className="big">{tokens(liveList.reduce((n, x) => n + x.cost_tokens, 0)) || '0'}<small>token</small></div>
+                  </div>
+                </div>
+              </div>
+
+              {liveList.length > 0 && (
                 <>
-                  <div className="mt-10 text-xs font-medium text-muted">继续之前的</div>
-                  <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {list.filter((x) => !x.archived_at).slice(0, 6).map((x) => (
+                  <div className="mx-0.5 mt-9 flex items-baseline justify-between text-[13px] text-muted">
+                    <span>继续之前的</span>
+                    <span className="text-2xs text-faint">按最近更新</span>
+                  </div>
+                  <div className="mt-3.5 grid grid-cols-2 gap-4">
+                    {liveList.slice(0, 4).map((x) => (
                       <button
                         key={x.id}
                         onClick={() => nav({ name: 'session', sid: x.id })}
-                        className="rounded-md border border-line bg-white px-3 py-2.5 text-left transition-shadow hover:shadow-sm"
+                        className="card flex flex-col justify-start px-[22px] pb-[18px] pt-5 text-left transition-colors hover:border-black/15"
                       >
-                        <div className="truncate text-sm text-ink">
+                        <div className="flex items-center gap-[7px] text-xs text-faint">
+                          <span className={['dot', x.status === 'running' ? 'live' : ''].join(' ')} />
+                          {x.status === 'running' ? '进行中' : x.status === 'done' ? '已完成' : x.status} · {ago(x.created_at)}
+                        </div>
+                        <h3 className="mb-1 mt-3 line-clamp-2 text-[17px] font-semibold leading-[1.35] tracking-[-.005em]">
                           {x.title || x.question}
-                        </div>
-                        <div className="mt-1 flex items-center gap-1.5 text-2xs text-muted">
-                          <span className={[
-                            'inline-block h-1.5 w-1.5 rounded-full',
-                            x.status === 'running' ? 'wf-running-dot bg-live' : 'bg-gray-300',
-                          ].join(' ')} />
-                          <span>{x.status === 'running' ? '进行中' : x.status === 'done' ? '已完成' : x.status}</span>
-                          <span>· {ago(x.created_at)}</span>
-                          {x.cost_tokens > 0 && <span>· {tokens(x.cost_tokens)} token</span>}
-                        </div>
+                        </h3>
+                        <div className="truncate text-[12.5px] text-faint">{x.question}</div>
+                        {/* 指标行只在有真数时渲染——「—」占位会把卡片撑高，
+                            没数据的卡片就保持三行自然收紧 */}
+                        {x.cost_tokens > 0 && (
+                          <div className="mt-5 flex items-end gap-7">
+                            <div>
+                              <b className="block text-2xl font-medium leading-[1.1] tracking-[-.02em]">
+                                {tokens(x.cost_tokens)}
+                              </b>
+                              <span className="text-2xs text-faint">token 消耗</span>
+                            </div>
+                          </div>
+                        )}
+                        {(x.degraded || x.summary?.key_points?.length) && (
+                          <div className="mt-3 flex items-center justify-between text-2xs text-faint">
+                            <span>
+                              {x.degraded && <span className="seal" title={x.degraded}>降级产出</span>}
+                            </span>
+                            <span>{x.summary?.key_points?.length ? `${x.summary.key_points.length} 个要点` : ''}</span>
+                          </div>
+                        )}
                       </button>
                     ))}
                   </div>

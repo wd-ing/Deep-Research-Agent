@@ -68,9 +68,11 @@ function SessionRow({
   return (
     <div
       className={[
-        'group relative mb-1.5 rounded-md border px-3 py-2 transition-colors',
-        // 卡片化：paper2 轨道上的纸卡。选中=白卡+accent 竖条+蓝描边。
-        active ? 'sel border-ink/25 shadow-soft' : 'border-line/70 bg-white/70 hover:border-line hover:bg-white hover:shadow-soft',
+        'group relative mb-0.5 rounded-[10px] border px-2.5 py-2 transition-colors',
+        // 选中=白底+1px 线（.sel 的 inset 圈），未选中=透明描边占位、
+        // hover 才浮成白卡——选中/悬停都不跳位。
+        active ? 'sel border-transparent'
+               : 'border-transparent hover:border-line hover:bg-white',
       ].join(' ')}
     >
       {editing ? (
@@ -88,26 +90,27 @@ function SessionRow({
       ) : (
         <button onClick={onOpen} className="block w-full text-left">
           <div className="flex items-start gap-1.5">
-            {s.status === 'running' && (
-              <span className="wf-running-dot mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-live" />
-            )}
             {s.archived_at && (
               <span className="mt-0.5 shrink-0 text-2xs text-muted">📌</span>
             )}
-            <span className="min-w-0 flex-1 truncate text-sm text-ink">
+            <span className="min-w-0 flex-1 truncate text-[13px] leading-[1.35] text-ink">
               {s.title || s.question}
             </span>
           </div>
-          <div className="mt-0.5 flex items-center gap-2 pl-3 text-2xs text-muted">
+          {/* 稿子的元信息行：状态点 + 「已完成 · 1 天前」。
+              绿呼吸点归「在跑」，灰点归静止——同一套 dot 语言。 */}
+          <div className="mt-1 flex items-center gap-1.5 text-2xs text-faint">
+            <span className={['dot', s.status === 'running' ? 'live' : ''].join(' ')} />
+            <span>{s.status === 'running' ? '进行中' : s.status === 'done' ? '已完成' : s.status}</span>
+            {s.archived_at && <span>· 已归档</span>}
+            {s.cost_tokens > 0 && <span>· {tokens(s.cost_tokens)}</span>}
+            <span>· {ago(s.created_at)}</span>
             {s.degraded && (
               <span
-                className="rounded bg-amber-100 px-1 text-amber-800"
+                className="seal"
                 title={s.degraded}
-              >降级产出</span>
+              >降级</span>
             )}
-            {s.status !== 'done' && <span>{s.status}</span>}
-            {s.cost_tokens > 0 && <span>{tokens(s.cost_tokens)} token</span>}
-            <span>{ago(s.created_at)}</span>
           </div>
         </button>
       )}
@@ -164,8 +167,8 @@ function SessionRow({
           <button
             title="移到文件夹"
             onClick={(e) => setMoveAt(moveAt ? null : e.currentTarget)}
-            className="rounded px-1 text-xs text-muted hover:bg-gray-100 hover:text-ink"
-          >📁</button>
+            className="flex items-center rounded px-1 py-0.5 text-muted hover:bg-gray-100 hover:text-ink"
+          ><Icon name="folder" size={13} /></button>
           <button
             title={s.archived_at ? '取消归档' : '归档（值得留，不出现在默认列表）'}
             onClick={() => onArchive(!s.archived_at)}
@@ -341,7 +344,7 @@ export function Sidebar({
         <button
           onClick={onNew}
           title="新建研究"
-          className="mt-1 flex h-8 w-8 items-center justify-center rounded text-sm text-accent transition-colors hover:bg-white"
+          className="mt-1 flex h-8 w-8 items-center justify-center rounded text-sm text-ink transition-colors hover:bg-black/5"
         ><Icon name="plus" size={16} /></button>
         <div className="mt-auto" />
         {onReplay && (
@@ -361,27 +364,30 @@ export function Sidebar({
   }
 
   return (
-    <nav className="flex w-72 shrink-0 flex-col border-r border-line bg-paper2 print:hidden">
-      {/* 会话 / 来源 两个视图。同一批数据两种组织方式：
-          会话按时间流找「上周那场」，来源按性质找「哪些材料值得信」。 */}
-      <div className="border-b border-line p-2">
-        {/* 段落控件：激活态用墨色填充（和新建研究的墨色主按钮同一语言），
-            不走 .sel 左竖条——那是列表选中态，用在开关上是误用。 */}
-        <div className="flex gap-0.5 rounded-lg bg-black/[.045] p-1">
-          {([['session', '对话'], ['source', '来源库']] as const).map(([k, label]) => (
-            <button
-              key={k}
-              onClick={() => onPane(k)}
-              // 原来只靠底色表示选中，读屏用户完全听不出当前在哪个视图
-              aria-pressed={pane === k}
-              className={[
-                'flex-1 rounded-md px-2 py-1 text-xs transition-colors',
-                pane === k ? 'bg-ink font-medium text-paper shadow-sm'
-                           : 'text-muted hover:text-ink',
-              ].join(' ')}
-            >{label}</button>
+    <nav className="flex w-[252px] shrink-0 flex-col border-r border-line bg-paper2 px-3 pb-2.5 pt-3.5 print:hidden">
+      {/* 品牌块：黑方块里的竖条 logo——稿子的签名图形。 */}
+      <div className="flex items-center gap-[9px] px-1.5 pb-3.5 text-sm font-semibold tracking-[.01em]">
+        <span className="flex h-[22px] w-[22px] items-end justify-center gap-[2px] rounded-[7px] bg-[#1a1a1a] pb-[5px]">
+          {[5, 9, 5, 12, 5].map((h, i) => (
+            <i key={i} className="block w-[1.5px] bg-white" style={{ height: h }} />
           ))}
-        </div>
+        </span>
+        Deep Research
+      </div>
+
+      {/* 会话 / 来源 两个视图。同一批数据两种组织方式：
+          会话按时间流找「上周那场」，来源按性质找「哪些材料值得信」。
+          胶囊分段控件——开关是状态不是主行动，不用黑填充。 */}
+      <div className="seg">
+        {([['session', '对话'], ['source', '来源库']] as const).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => onPane(k)}
+            // 原来只靠底色表示选中，读屏用户完全听不出当前在哪个视图
+            aria-pressed={pane === k}
+            className={pane === k ? 'on' : ''}
+          >{label}</button>
+        ))}
       </div>
 
       {pane === 'source' ? (
@@ -394,41 +400,39 @@ export function Sidebar({
         />
       ) : (
         <>
-      <div className="space-y-2 p-3">
+      <div className="mt-3 space-y-2.5">
         <button
           onClick={onNew}
-          // 墨色实心——和首页欢迎面板的主按钮、段落控件激活态同一语言。
-          className="btn-primary w-full px-3 py-2 text-sm"
+          // 近黑实心——主行动用黑不用彩，彩留给「可点」。
+          className="btn-primary w-full py-2 text-[13.5px]"
         ><Icon name="plus" size={14} className="-ml-0.5 mr-0.5" />新建研究</button>
         <div className="relative">
           <Icon name="search" size={13}
-            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted/70" />
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="搜索标题、问题、报告正文…"
-            className="w-full rounded-md border border-line bg-white py-1.5 pl-8 pr-2.5 text-sm outline-none focus:border-accent"
+            className="w-full rounded-[10px] border border-line bg-white py-[7px] pl-8 pr-2.5 text-[13px] outline-none placeholder:text-faint focus:border-accent"
           />
         </div>
-        <div className="flex gap-0.5 rounded-lg bg-black/[.045] p-1">
+        {/* 筛选行：同一套 .seg 语言，四档切换。
+            胶囊里 4 段挤得下（每段 ~55px），字号让 .seg 决定。 */}
+        <div className="seg">
           {([['all', '全部'], ['running', '进行中'], ['archived', '已归档'], ['trash', '回收站']] as const)
             .map(([k, label]) => (
               <button
                 key={k}
                 onClick={() => setFilter(k)}
                 aria-pressed={filter === k}
-                className={[
-                  'flex-1 rounded-md px-1 py-1 text-2xs transition-colors',
-                  filter === k ? 'bg-ink font-medium text-paper shadow-sm'
-                               : 'text-muted hover:text-ink',
-                ].join(' ')}
+                className={filter === k ? 'on' : ''}
               >{label}</button>
             ))}
         </div>
       </div>
 
       {/* 文件夹树：选中即筛选（含整棵子树的会话） */}
-      <div className="border-b border-line pb-1">
+      <div className="mt-1 border-b border-line2 pb-1">
         <FolderTree
           folders={folders}
           selected={folderId}
@@ -440,13 +444,13 @@ export function Sidebar({
       )}
 
       {pane === 'session' && (
-      <div className="flex-1 overflow-auto px-2 pb-4">
+      <div className="flex-1 overflow-auto px-0.5 pb-4">
         {hits !== null ? (
           /* 搜索中：服务端命中结果顶替会话列表。
              正文命中带定位片段——「在哪句话里命中的」直接可见。 */
           <>
             {hits.length ? (
-              <div className="px-1 py-1.5 text-2xs text-muted">
+              <div className="px-1 py-1.5 text-2xs text-faint">
                 命中 {hits.length} 场研究
               </div>
             ) : (
@@ -457,10 +461,10 @@ export function Sidebar({
                 key={h.id}
                 onClick={() => onPick(h.id)}
                 className={[
-                  'mb-1.5 w-full rounded-md border px-3 py-2 text-left transition-colors',
+                  'mb-0.5 w-full rounded-[10px] border px-2.5 py-2 text-left transition-colors',
                   h.id === cur
-                    ? 'sel border-ink/25 shadow-soft'
-                    : 'border-line/70 bg-white/70 hover:border-line hover:bg-white hover:shadow-soft',
+                    ? 'sel border-transparent'
+                    : 'border-transparent hover:border-line hover:bg-white',
                 ].join(' ')}
               >
                 <div className="flex items-center gap-1.5">
@@ -482,12 +486,12 @@ export function Sidebar({
           </>
         ) : filter === 'trash' ? (
           <>
-            <div className="px-1 py-1.5 text-2xs text-muted">
+            <div className="px-1 py-1.5 text-2xs text-faint">
               回收站里的会话数据完整保留，可随时恢复。
             </div>
             {shown.map((s) => (
-              <div key={s.id} className="group mb-0.5 rounded-md px-3 py-2 hover:bg-white">
-                <div className="truncate text-sm text-muted line-through">
+              <div key={s.id} className="group mb-0.5 rounded-[10px] px-2.5 py-2 hover:bg-white">
+                <div className="truncate text-[13px] text-muted line-through">
                   {s.title || s.question}
                 </div>
                 <div className="mt-1 flex gap-2">
@@ -506,9 +510,14 @@ export function Sidebar({
           </>
         ) : (
           <>
+            {/* 稿子的「最近 N」小标签行——11px 大写字距。
+                已归档段单独再标一次。 */}
+            <div className="flex items-baseline justify-between px-2 pb-1.5 pt-3 text-2xs tracking-[.04em] text-faint">
+              <span>最近</span><span>{shown.length}</span>
+            </div>
             {archived.length > 0 && (
               <>
-                <div className="px-1 py-1 text-2xs text-muted">已归档</div>
+                <div className="px-2 py-1 text-2xs text-faint">已归档</div>
                 {archived.map((s) => (
                   <SessionRow key={s.id} s={s} active={s.id === cur} choices={choices}
                     onOpen={() => onPick(s.id)}
@@ -559,26 +568,26 @@ export function Sidebar({
 
       {/* 底部工具区：设置（D1）+ 折叠（E2）+ 回放（仅回放服务器可见）。
           不抢主列表的注意力，放最底下 */}
-      <div className="mt-auto flex items-center gap-1 border-t border-line p-2">
+      <div className="mt-auto flex items-center gap-3.5 border-t border-line2 px-2 pb-0.5 pt-2.5">
         <button
           onClick={onSettings}
-          className="flex flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-xs text-muted transition-colors hover:bg-white hover:text-ink"
+          className="flex items-center gap-1.5 rounded py-0.5 text-left text-[12.5px] text-muted transition-colors hover:text-ink"
         >
-          <Icon name="settings" size={13} /> 设置
+          <Icon name="settings" size={14} /> 设置
         </button>
         {onReplay && (
           <button
             onClick={onReplay}
             title="演示回放：放一遍 v13 真跑的事件流（零 token，约 80 秒）"
-            className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-muted transition-colors hover:bg-white hover:text-ink"
+            className="flex items-center gap-1.5 rounded py-0.5 text-[12.5px] text-muted transition-colors hover:text-ink"
           >
-            <Icon name="play" size={12} /> 回放
+            <Icon name="play" size={13} /> 回放
           </button>
         )}
         <button
           onClick={onToggleCollapse}
           title="收起侧栏（专注阅读）"
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted transition-colors hover:bg-white hover:text-ink"
+          className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted transition-colors hover:bg-white hover:text-ink"
         ><Icon name="chevrons-left" size={15} /></button>
       </div>
     </nav>

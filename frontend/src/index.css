@@ -5,8 +5,8 @@
 html, body, #root { height: 100%; margin: 0; }
 body { @apply bg-paper text-ink antialiased; }
 
-/* 选中文字也带纸感——默认蓝底白字和暖纸底打架 */
-::selection { background: #E8DFCB; }
+/* 选中文字：默认蓝底白字和这套中性底打架，用低调的黑 8% 底 */
+::selection { background: rgb(0 0 0 / .08); }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { @apply rounded bg-gray-300; }
@@ -24,14 +24,13 @@ body { @apply bg-paper text-ink antialiased; }
  *  一个视觉手段兼两职，后果是：**三种选中看起来一模一样**，
  * 而且白卡压在 gray-50 上时那点阴影几乎看不见，等于没做。
  *
- *  现在改成「白底 + 左侧 2px 竖条」：竖条是明确的方向性标记，
- * 在灰底上不依赖阴影就能读出来；`shadow-sm` 由此专职浮层。 */
+ *  2026-10-20 改成稿子的「白底 + 1px 线」：用 inset 阴影画线而不是
+ * border——会话行有 border、文件夹行没有，inset 圈对两种都成立，
+ * 不需要为「有没有描边」分两套。 */
 .sel {
-  /* 选中态：暖调深纸色底（比 paper2 深一档）+ 墨色字。
-     不用 accent 蓝竖条——蓝在本设计里只表示「可点链接」，
-     选中是状态不是链接，蓝色竖条和暖纸语言打架。 */
-  background-color: #EFE9DC;
-  color: #26221D;
+  background-color: #fff;
+  color: rgb(0 0 0 / 0.9);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12);
 }
 
 /* **表格**——只用横线，不用竖线。
@@ -71,7 +70,7 @@ body { @apply bg-paper text-ink antialiased; }
 }
 
 /* ============================================================
-   按钮体系（2026-10-18 视觉轮定）
+   按钮体系（2026-10-18 视觉轮定，2026-10-20 对齐 Kimi 稿）
    全项目原来十几处按钮各写各的 `rounded border px-3 py-1`——
    同一个「次要按钮」至少有三种高度/两种字色。收成三档：
    ============================================================ */
@@ -80,24 +79,26 @@ body { @apply bg-paper text-ink antialiased; }
    `px-5` 这类 utilities——`btn-primary px-5` 里 px-5 会变死代码
    （审批页「通过」按钮就踩了这个：看着写了大 padding 实际没生效）。 */
 @layer components {
-/* 基底：所有按钮共用的尺寸与过渡。不用在 className 里再写高度。 */
+/* 基底：所有按钮共用的尺寸与过渡。不用在 className 里再写高度。
+   圆角 11px 对齐稿子 .btn（不是 Tailwind 档，是签名件的值）。 */
 .btn {
-  @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5
+  @apply inline-flex items-center justify-center gap-1.5 rounded-[11px] px-3 py-1.5
          text-xs font-medium transition-all duration-150 select-none
          active:scale-[0.98]
          disabled:cursor-not-allowed disabled:opacity-40;
 }
 /* 主行动：一个屏最多一个（批准研究 / 保存 / 新建）。
-   Things/Craft 签名件：**墨色实心按钮**——纸面上的主行动用墨不用彩，
-   彩留给「可点」语义（链接/焦点）。 */
+   稿子签名件：**近黑实心按钮** #161616——主行动用黑不用彩，
+   彩留给「可点」语义（链接/焦点）。不带阴影：卡片都没阴影了，
+   按钮更不需要。 */
 .btn-primary {
-  @apply btn bg-ink text-paper shadow-sm
-         hover:bg-gray-700 hover:shadow-md active:bg-gray-800;
+  @apply btn bg-[#161616] text-white
+         hover:bg-[#2b2b2b] active:bg-black;
 }
-/* 次要行动：导出、归档、还原——看得见但不抢眼 */
+/* 次要行动：导出、归档、还原——白底浅线，看得见但不抢眼 */
 .btn-ghost {
-  @apply btn border border-line bg-white text-muted
-         hover:border-gray-300 hover:bg-gray-50 hover:text-ink;
+  @apply btn border border-line bg-white text-ink
+         hover:bg-gray-50;
 }
 /* 危险：不可逆操作才用（彻底删除）。红色自带语义，不需要再解释 */
 .btn-danger {
@@ -107,6 +108,106 @@ body { @apply bg-paper text-ink antialiased; }
 /* 对话框里的确认按钮用实心——确认动作是那一屏的主行动 */
 .btn-danger-solid {
   @apply btn bg-red-600 text-white hover:bg-red-700;
+}
+
+/* ---------- 稿子的公共件（2026-10-20）---------- */
+
+/* 卡片：默认**无阴影**——1px 浅线 + 16px 大圆角就是边界，
+   阴影只归浮层（菜单/对话框/抽屉）。 */
+.card {
+  @apply rounded-2xl border border-line bg-white;
+}
+
+/* 分段控件 `.seg`：胶囊形视图开关（对话/来源库、筛选行共用）。
+   选中=白底+线+微影，不走高饱和填充——开关是状态不是主行动，
+   用黑填充会把视线从真正的主按钮上抢走。 */
+.seg {
+  @apply flex gap-0.5 rounded-full bg-black/[.04] p-[3px];
+}
+.seg > * {
+  @apply flex-1 whitespace-nowrap rounded-full px-2.5 py-[5px] text-center
+         text-[12.5px] leading-4 text-muted transition-colors;
+}
+.seg > *:hover { @apply text-ink; }
+.seg > .on {
+  @apply bg-white font-medium text-ink;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / .08), 0 1px 2px rgb(0 0 0 / .04);
+}
+
+/* 签名件：刻度线。标题下的「测量」语言——这个 app 的基调是
+   「拿证据说话」，一条尺比一条分割线更贴题。 */
+.ruler {
+  @apply relative h-2.5;
+}
+.ruler::before,
+.ruler::after {
+  content: "";
+  @apply absolute inset-x-0 bottom-0;
+  -webkit-mask: linear-gradient(90deg, #000 20%, transparent);
+}
+.ruler::before {
+  height: 5px;
+  background: repeating-linear-gradient(
+    90deg, rgb(0 0 0 / .22) 0 1px, transparent 1px 8px);
+}
+.ruler::after {
+  height: 10px;
+  background: repeating-linear-gradient(
+    90deg, rgb(0 0 0 / .34) 0 1px, transparent 1px 40px);
+}
+
+/* 指标条：一行大数字配小单位，列间发丝线。 */
+.metrics {
+  @apply grid grid-flow-col auto-cols-fr;
+}
+.metrics > div {
+  @apply border-l border-line2 px-[22px] py-[18px];
+}
+.metrics > div:first-child { @apply border-l-0; }
+.metrics .k { @apply text-xs text-faint; }
+.big {
+  @apply mt-1.5 text-[38px] font-medium leading-[1.05] tracking-[-.02em];
+}
+.big small {
+  @apply ml-1 text-[13px] font-normal tracking-normal text-faint;
+}
+
+/* 来源构成色带：五种来源性质各占一段。c1–c5 顺序固定，
+   颜色来自稿子（绿=一手、蓝=媒体、灰=未判、紫=机构、黄=商业）。 */
+.mix {
+  @apply flex h-[5px] gap-0.5 overflow-hidden rounded-[3px];
+}
+.mix i { @apply block h-full; }
+.c1 { background: #3E8F4F; }
+.c2 { background: #2E50C8; }
+.c3 { background: #B8B4AC; }
+.c4 { background: #7B5EA7; }
+.c5 { background: #C28A2B; }
+
+/* 状态点：灰=静止；绿呼吸=在跑（全 app 唯一的「在动」信号色） */
+.dot {
+  @apply inline-block h-1.5 w-1.5 rounded-full bg-black/20;
+}
+.dot.live {
+  background: #3E8F4F;
+  animation: br 1.8s infinite;
+}
+@keyframes br {
+  0%, 100% { box-shadow: 0 0 0 3px rgb(62 143 79 / .16); }
+  50%      { box-shadow: 0 0 0 5px rgb(62 143 79 / .05); }
+}
+
+/* 胶囊标签：环境/状态信息（「本地·就绪」「深度·标准」），不是按钮 */
+.pill {
+  @apply inline-flex h-[22px] items-center gap-1.5 rounded-full
+         bg-black/[.04] px-[9px] text-2xs text-muted;
+}
+
+/* 朱批章：存疑/偏薄/告警。边框+朱红文字，不填充——
+   章是盖上去的标记，不是一块色块。 */
+.seal {
+  @apply inline-flex h-5 items-center gap-[5px] rounded-[5px] border
+         border-seal/45 px-[7px] text-2xs font-semibold tracking-[.06em] text-seal;
 }
 }
 /* 键盘可达性的底线：Tab 过来要看得见焦点在哪 */
@@ -176,6 +277,7 @@ textarea:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .wf-step, .wf-detail { animation: none !important; }
   .wf-running-dot { animation: none !important; }
+  .dot.live { animation: none !important; }
   * { transition-duration: .01ms !important; }
 }
 

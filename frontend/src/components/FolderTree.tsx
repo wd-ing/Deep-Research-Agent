@@ -352,7 +352,7 @@ export function FolderTree({
               boxShadow: `inset 0 ${dropHere === 'before' ? '2px' : '-2px'} 0 0 #2E50C8`,
             } : undefined}
             className={[
-              'group/row flex items-center rounded pr-1 transition-colors',
+              'group/row flex items-center rounded-[10px] pr-1 transition-colors',
               isSel ? 'sel' : 'text-muted hover:bg-white',
               !isLoose ? 'cursor-grab active:cursor-grabbing' : '',
               isDragSource ? 'opacity-40' : '',
@@ -377,7 +377,8 @@ export function FolderTree({
               className="flex min-w-0 flex-1 items-center gap-1 py-1 text-left"
               title={isSel ? '取消筛选' : `只看「${n.name}」里的会话（含子文件夹）`}
             >
-              <span className="shrink-0 text-2xs">{isLoose ? '🗂' : '📁'}</span>
+              {/* 文件夹图标统一线性 Icon：emoji 彩块在新中性视觉里太跳 */}
+              <Icon name="folder" size={12} className="shrink-0 text-muted" />
               <span className={[
                 'min-w-0 flex-1 truncate text-xs',
                 isSel ? 'font-medium' : '',
@@ -420,7 +421,7 @@ export function FolderTree({
       <button
         onClick={() => onSelect(undefined)}
         className={[
-          'mb-0.5 block w-full rounded px-2 py-1 text-left text-xs transition-colors',
+          'mb-0.5 block w-full rounded-[10px] px-2 py-1 text-left text-xs transition-colors',
           selected === undefined ? 'sel font-medium' : 'text-muted hover:bg-white',
         ].join(' ')}
       >全部会话</button>
