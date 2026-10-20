@@ -1,18 +1,18 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Phase, Step } from './workflow'
+import type { ProgressEntry } from '../types'
 import { Icon } from '../components/Icon'
 
 /** 状态点的形状：完成=实心圆，进行中=呼吸环，需注意=菱形。
  *  **形状**比颜色更能区分——色弱用户也能读出来。
  *
- *  完成态原来是 `bg-gray-300`，一列 8 个浅灰点看不出「这 8 步确实走完了」。
- *  加深到 `gray-400`（2026-10-14 用户定：保持圆点，只加深，不换成 ✓——
- *  勾会和左侧时间轴的圆点语言打架）。 */
+ *  ⚠️ 告警色从琥珀改成朱红（seal，2026-10-21 第 3 轮视觉稿）：
+ *  「需要人看」在稿子里是朱批章的语义，不是装饰色。 */
 function Dot({ state, warn }: { state?: Step['state']; warn?: boolean }) {
   if (warn) {
     return (
       <span
-        className="mt-1.5 h-2.5 w-2.5 shrink-0 rotate-45 rounded-[2px] bg-amber-400"
+        className="mt-1.5 h-2.5 w-2.5 shrink-0 rotate-45 rounded-[2px] bg-seal/70"
         title="需要注意"
       />
     )
@@ -30,21 +30,16 @@ function Dot({ state, warn }: { state?: Step['state']; warn?: boolean }) {
 /** 粗略字宽：CJK/全角记 1em，其余 0.55em。差一点也不影响，只是列宽略有出入。 */
 function labelEm(t: string): number {
   let w = 0
-  for (const ch of t) w += /[\u2e80-\uffef]/.test(ch) ? 1 : 0.55
+  for (const ch of t) w += /[⺀-﫿]/.test(ch) ? 1 : 0.55
   return w
 }
 
 /** 标签列宽：按**本环节**最长的标签算，让这个环节里所有摘要的左边缘对齐成列。
- *
- *  原来标签是 `shrink-0`，摘要紧跟其后——标签长短不一（`深读` 2 字 vs
- *  `检索（第 1 轮）` 7 字），于是每行摘要的起点都不同，横着扫「命中/采用」
- *  那几列数字时对不齐。
- *
- *  ⚠️ **不用全局固定宽度**：规划环节有 7 字标签，写作环节最长的只有 4 字
- *  （`装配成文`），写死会让写作那边白空一大块。按环节各算各的。 */
+ *  不用全局固定宽度：规划环节有 7 字标签，写作环节最长只有 4 字，
+ *  写死会让写作那边白空一大块。 */
 function labelColWidth(steps: Step[]): string {
   const w = Math.max(0, ...steps.map((s) => labelEm(s.label)))
-  return `${(w + 0.5).toFixed(2)}em`   // 0.5em 余量，别让最长的标签贴着摘要
+  return `${(w + 0.5).toFixed(2)}em`
 }
 
 /** 环节秒表（B2 活性信号）：当前环节跑了几秒，一秒一跳。
@@ -57,11 +52,17 @@ function Elapsed({ since }: { since: number }) {
     return () => window.clearInterval(t)
   }, [])
   const s = Math.max(0, Math.floor((Date.now() - since) / 1000))
-  return (
-    <span className="tabular-nums">
-      {' '}{Math.floor(s / 60)}:{String(s % 60).padStart(2, '0')}
-    </span>
-  )
+  return <span className="tabular-nums">{fmtDur(s)}</span>
+}
+
+/** 分:秒——小时数超了也照样拼（一场研究 20+ 分钟，h:mm 会出现）。 */
+function fmtDur(total: number): string {
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`
 }
 
 /** 流式文字：行**首次挂载**且环节在跑时把摘要逐段打出（~30ms 一跳），
@@ -83,30 +84,30 @@ function useTypewriter(text: string, enabled: boolean): string {
   return enabled && !reduced ? text.slice(0, n) : text
 }
 
-/** 环节组里的一条明细（三级）：比父行轻一档，⚠️ 用琥珀色透出来。 */
+/** 环节组里的一条明细（三级）：比父行轻一档，告警用朱红透出来。 */
 function ChildRow({ c, animate }: { c: Step; animate?: boolean }) {
   const shown = useTypewriter(c.summary, !!animate)
   return (
-    <li className="text-xs leading-5">
+    <li className="text-2xs leading-5">
       <div className="flex items-baseline gap-2">
         <span className={[
-          'shrink-0', c.warn ? 'font-medium text-amber-700' : 'text-muted/80',
+          'shrink-0', c.warn ? 'font-medium text-seal' : 'text-muted/80',
         ].join(' ')}>{c.label}</span>
         <span className={[
           'min-w-0 flex-1 truncate',
-          c.warn ? 'text-amber-700' : 'text-muted',
+          c.warn ? 'text-seal' : 'text-muted',
         ].join(' ')}>{shown}</span>
       </div>
       {c.detail?.map((d, i) => (
-        <div key={i} className="pl-4 text-2xs leading-5 text-muted/80">· {d}</div>
+        <div key={i} className="pl-4 leading-5 text-faint">· {d}</div>
       ))}
     </li>
   )
 }
 
 /** 一个子环节。**运行中不折叠**（正在干，不能藏）；完成后明细可收。
- *  `live` = 本环节组的孩子还在往里流（它是当前阶段的最后一个
- *  非 running 步骤）——此时保持展开看流；不再是最后一个时自动收拢。 */
+ *  `live` = 本环节组的孩子还在往里流——此时保持展开看流；
+ *  不再是最后一个时自动收拢。 */
 function StepRow({
   step, labelW, runningSince, live, animate,
 }: {
@@ -121,8 +122,6 @@ function StepRow({
   const hasDetail = !!step.detail?.length
   const auto = running || (live && hasKids)
   const [open, setOpen] = useState(auto)
-  // 完成一刻自动收拢（live 变 false）；用户之后手动展开不再被顶回去，
-  // 因为 auto 不再变化、effect 不会再触发。
   useEffect(() => { setOpen(auto) }, [auto])
   // ⚠️ 的明细默认展开——那是给用户判断的，不该藏
   const show = hasDetail && (open || step.warn)
@@ -131,14 +130,10 @@ function StepRow({
 
   return (
     <li className="wf-step relative flex gap-3 py-[5px] pl-1">
-      {/* live = 本环节最新产出行：流式期间它就是「当前在跑的点」，
-          给绿呼吸点——原来只有阶段头和收尾合成行是绿的，
-          中途的活跃组全是灰点，看不出在动。 */}
+      {/* live = 本环节最新产出行：流式期间它就是「当前在跑的点」 */}
       <Dot state={running || live ? 'running' : undefined} warn={step.warn || kidWarns > 0} />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          {/* 可收起的行先给一个 chevron——原来只有尾部的「N 条」chip，
-              行首看不出「这行能点开」。 */}
           {collapsible && !running ? (
             <button
               onClick={() => setOpen((o) => !o)}
@@ -155,8 +150,8 @@ function StepRow({
           )}
           <span
             className={[
-              'shrink-0 truncate text-sm',
-              step.warn ? 'font-medium text-amber-700' : 'text-ink',
+              'shrink-0 truncate text-xs',
+              step.warn ? 'font-medium text-seal' : 'text-ink',
               running || live ? 'text-live' : '',
             ].join(' ')}
             style={{ width: labelW }}
@@ -164,7 +159,13 @@ function StepRow({
           >
             {step.label}
           </span>
-          <span className="min-w-0 flex-1 truncate text-xs leading-5 text-muted/90">
+          <span
+            className={[
+              'min-w-0 flex-1 truncate text-2xs leading-5',
+              step.warn ? 'text-seal' : 'text-muted/90',
+            ].join(' ')}
+            title={step.summary}
+          >
             {shownSummary}
           </span>
           {running && (
@@ -177,10 +178,10 @@ function StepRow({
               onClick={() => setOpen((o) => !o)}
               className={[
                 'shrink-0 rounded-full px-1.5 py-px text-2xs transition-colors',
-                open ? 'text-muted hover:bg-gray-100 hover:text-ink'
+                open ? 'text-muted hover:bg-black/[.04] hover:text-ink'
                 : step.warn || kidWarns > 0
-                  ? 'bg-amber-50 text-amber-700 hover:bg-amber-100'
-                  : 'bg-gray-100/80 text-muted hover:bg-gray-200/80 hover:text-ink',
+                  ? 'bg-seal/10 text-seal hover:bg-seal/15'
+                  : 'bg-black/[.04] text-muted hover:bg-black/[.07] hover:text-ink',
               ].join(' ')}
             >
               {open ? '收起' : hasKids ? `${kids.length} 条` : '展开'}
@@ -189,16 +190,18 @@ function StepRow({
           )}
         </div>
         {hasKids && open && (
-          /* L3 明细：缩进 + 左侧引导竖线，明确「属于上一行的环节」。
-             墨系 border-line 不用蓝——层级是结构不是链接。 */
-          <ul className="wf-detail ml-1 mt-1 space-y-1 rounded-r-md border-l-2 border-line bg-gray-50/60 py-1.5 pl-3 pr-2.5">
+          /* L3 明细：缩进 + 左侧引导竖线 */
+          <ul className="wf-detail ml-1 mt-1 space-y-1 rounded-r-md border-l-2 border-line bg-black/[.02] py-1.5 pl-3 pr-2.5">
             {kids.map((c) => <ChildRow key={c.id} c={c} animate={animate} />)}
           </ul>
         )}
         {show && (
-          <ul className="wf-detail ml-1 mt-1 space-y-1 rounded-r-md border-l-2 border-line bg-gray-50/60 py-1.5 pl-3 pr-2.5">
+          <ul className="wf-detail ml-1 mt-1 space-y-1 rounded-r-md border-l-2 border-line bg-black/[.02] py-1.5 pl-3 pr-2.5">
             {step.detail!.map((d, i) => (
-              <li key={i} className="text-xs leading-5 text-muted">· {d}</li>
+              <li key={i} className={[
+                'text-2xs leading-5',
+                step.warn ? 'text-seal/90' : 'text-muted',
+              ].join(' ')}>· {d}</li>
             ))}
           </ul>
         )}
@@ -207,72 +210,225 @@ function StepRow({
   )
 }
 
-/** 四阶段进度轨（E4）：长列表的「一眼定位」——
- *  原来想知道走到哪一步得滚回顶部找吸顶标题。
- *  固定四格（规划→审批→写作→收尾）：跑过的打勾、在跑的呼吸、
- *  没跑的灰着。点击=展开该环节并滚过去。 */
-function PhaseRail({
-  phases, onJump,
+/* ------------------------------------------------------------------ */
+/*  L0 刻度轨 + 指标条 + 小节卡片的数据推导                              */
+/* ------------------------------------------------------------------ */
+
+const ORDER = ['规划', '审批', '写作', '收尾'] as const
+
+function num(e: ProgressEntry, k: string): number | undefined {
+  return typeof e[k] === 'number' ? (e[k] as number) : undefined
+}
+
+/** 从事件流里挖流程页要的派生数据。**全部来自已落库的真实事件**——
+ *  拿不到就不渲染对应 UI，不编。
+ *  `writingNow` = 此刻确实在写作环节（由外部 view/node 判定），
+ *  只用来区分「待写」和「写作中」。 */
+function deriveFlow(progress: ProgressEntry[], writingNow: boolean) {
+  // 最后一次的才有意义：多轮 assess/plan 里只有最新一版在描述现状
+  const last = (kind: string) =>
+    [...progress].reverse().find((e) => e.kind === kind)
+  const plan = last('write_plan_tasks')
+  const assess = last('assess')
+
+  // 已读来源：retrieve 每轮的 accepted=本轮新采用来源数，逐轮累加=总采用。
+  // 没有 retrieve 事件 → null（不显示，不猜）。
+  const retrieves = progress.filter((e) => e.kind === 'retrieve')
+  const sources = retrieves.length
+    ? retrieves.reduce((a, e) => a + (num(e, 'accepted') ?? num(e, 'new_sources') ?? 0), 0)
+    : null
+
+  // 可用段落：最近一次评估的累计段数
+  const segments = assess ? num(assess, 'segments_total') ?? null : null
+
+  // 已写入字数：按 task id 取最后一次 write_task 的 chars 再求和——
+  // 返修（revise:true）是同任务的覆盖写，**不能累加**否则双倍计。
+  const taskChars = new Map<string, number>()
+  for (const e of progress) {
+    if (e.kind !== 'write_task') continue
+    const c = num(e, 'chars')
+    const t = typeof e.task === 'string' ? e.task : ''
+    if (t && c !== undefined) taskChars.set(t, c)
+  }
+  const written = taskChars.size
+    ? [...taskChars.values()].reduce((a, b) => a + b, 0) : null
+
+  // 写作进度：已完成的非返修任务数 / 计划任务数（刻度轨与小节卡共用）
+  const doneTasks = new Set(
+    progress.filter((e) => e.kind === 'write_task' && e.ok === true && e.revise !== true)
+      .map((e) => String(e.task)))
+  const planTasks = plan ? num(plan, 'tasks') ?? null : null
+
+  // 小节卡片：只有 plan 事件带齐两份新字段才画——老会话没有就整块不出现
+  const segs = plan?.section_segments as Record<string, number> | undefined
+  const titles = plan?.outline_titles as Record<string, string> | undefined
+  const thinSet = new Set(
+    (assess?.thin_sections as string[] | undefined) ?? [])
+  let sections: {
+    id: string; title: string; n: number; thin: boolean
+    status: '已写' | '写作中' | '失败' | '待写'; revised: boolean
+  }[] = []
+  if (segs && titles) {
+    // 顺序跟 outline_titles 的键序（= 大纲顺序），segs 里多出来的键收尾兜底
+    const ids = [...Object.keys(titles),
+      ...Object.keys(segs).filter((k) => !(k in titles))]
+    const covering = new Map<string, ProgressEntry[]>()
+    for (const e of progress) {
+      if (e.kind !== 'write_task') continue
+      for (const c of (e.covers as string[] | undefined) ?? []) {
+        const arr = covering.get(c) ?? []
+        arr.push(e)
+        covering.set(c, arr)
+      }
+    }
+    sections = ids.map((id) => {
+      const n = segs[id] ?? 0
+      const evs = covering.get(id) ?? []
+      let status: '已写' | '写作中' | '失败' | '待写'
+      if (evs.some((e) => e.ok === false)) status = '失败'
+      else if (evs.length && evs.every((e) => e.ok === true)) status = '已写'
+      // 尚无覆盖它的任务结果：写作阶段在跑算「写作中」，否则「待写」。
+      // 注意这是近似——没有「任务开始」事件，在飞的和排队的分不开。
+      else status = writingNow ? '写作中' : '待写'
+      return {
+        id, title: titles[id] ?? id, n,
+        thin: thinSet.has(id) || n === 0,
+        status,
+        revised: evs.some((e) => e.revise === true && e.ok === true),
+      }
+    })
+  }
+
+  return {
+    plan, assess, sources, segments, written,
+    doneTasks: doneTasks.size, planTasks, sections,
+  }
+}
+
+/** L0 刻度进度轨（替换旧分段轨）：四个大环节文字在上，
+ *  下面是一条刻度轨，走完的段填绿刻度。填充比例必须有依据：
+ *  - 已完成的环节整段填满；flow/回看态全部填满；
+ *  - 当前环节只有写作能算比例（完成任务/计划任务），
+ *    其它环节没有可量化依据就空着、靠绿点说「在跑」。 */
+function TrackRail({
+  phases, activeIdx, doneAll, writeFrac, writeDone, writeTotal, onJump,
 }: {
   phases: Phase[]
+  activeIdx: number
+  /** flow/done：全填满 */
+  doneAll: boolean
+  /** 写作环节内的比例（完成 write_task / plan.tasks），无依据给 0 */
+  writeFrac: number
+  /** 写作进度分子/分母：给环节名后面「写作 · 4/8」用 */
+  writeDone: number
+  writeTotal: number | null
+  /** 点环节名 = 展开并滚过去（沿用旧轨的交互） */
   onJump: (key: string) => void
 }) {
-  const ORDER = ['规划', '审批', '写作', '收尾']
-  // 当前环节：有 running 步骤的那个；没有就是最后一个非空环节
-  const activeKey =
-    phases.find((p) => p.steps.some((s) => s.state === 'running'))?.key
-    ?? phases[phases.length - 1]?.key
-  const activeIdx = ORDER.indexOf(activeKey ?? '')
-
+  const fill = doneAll
+    ? 100
+    : Math.min(100, Math.max(0,
+        activeIdx < 0 ? 0
+        : activeIdx * 25 + (ORDER[activeIdx] === '写作' ? writeFrac * 25 : 0)))
   return (
-    <div className="sticky top-0 z-20 border-b border-line bg-white/95 backdrop-blur">
-      <div className="mx-auto flex max-w-3xl items-center px-6 py-2">
+    <div className="mt-6">
+      <div className="grid grid-cols-4 pb-2 text-[12.5px]">
         {ORDER.map((k, i) => {
           const p = phases.find((x) => x.key === k)
-          const done = !!p && i < activeIdx
-          const active = k === activeKey
-          const warns = p ? p.steps.reduce(
-            (a, s) => a + (s.warn ? 1 : 0)
-              + (s.children?.filter((c) => c.warn).length ?? 0), 0) : 0
+          const done = doneAll || i < activeIdx
+          const cur = !doneAll && i === activeIdx
           return (
-            <div key={k} className="flex min-w-0 flex-1 items-center">
-              {i > 0 && (
-                <span className={[
-                  'mx-1 h-px flex-1 min-w-2',
-                  i <= activeIdx ? 'bg-live/50' : 'bg-line',
-                ].join(' ')} />
+            <button
+              key={k}
+              onClick={() => p && onJump(k)}
+              disabled={!p}
+              className={[
+                'flex items-center gap-1.5 pb-2 text-left',
+                p ? '' : 'cursor-default',
+                done ? 'text-muted' : cur ? 'font-medium text-ink' : 'text-faint',
+              ].join(' ')}
+            >
+              {done && <Icon name="check" size={13} strokeWidth={2.5} className="text-muted" />}
+              {cur && <span className="dot live" />}
+              {k}
+              {cur && k === '写作' && writeTotal != null && writeTotal > 0 && (
+                <span className="font-normal text-faint">
+                  · {writeDone} / {writeTotal} 节
+                </span>
               )}
-              <button
-                onClick={() => p && onJump(k)}
-                disabled={!p}
-                title={warns ? `${p!.steps.filter((s) => s.warn).length} 处需注意` : undefined}
-                className={[
-                  'flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-xs transition-colors',
-                  p ? 'hover:bg-gray-100' : 'cursor-default',
-                ].join(' ')}
-              >
-                <span className={[
-                  'flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold',
-                  done ? 'bg-live/15 text-live'
-                    : active ? 'wf-running-dot bg-live text-white'
-                    : 'bg-gray-200 text-gray-400',
-                ].join(' ')}>
-                  {done ? <Icon name="check" size={10} strokeWidth={2.5} /> : i + 1}
-                </span>
-                <span className={[
-                  'truncate',
-                  active ? 'font-medium text-ink'
-                    : done ? 'text-muted' : 'text-muted/60',
-                ].join(' ')}>
-                  {k}
-                </span>
-                {warns > 0 && (
-                  <span className="rounded bg-amber-100 px-1 text-2xs text-amber-800">{warns}</span>
-                )}
-              </button>
-            </div>
+            </button>
           )
         })}
+      </div>
+      <div className="wf-track">
+        <div className="wf-track-fill" style={{ width: `${fill}%` }} />
+      </div>
+    </div>
+  )
+}
+
+/** 小节卡片行（稿子 .sc）：序号 + 标题/副标题 + 厚度刻度 + 状态。 */
+function SectionRow({
+  i, sec, maxN,
+}: {
+  i: number
+  sec: ReturnType<typeof deriveFlow>['sections'][number]
+  maxN: number
+}) {
+  // 10 格相对厚度：n>0 至少 1 格（有材料就看得见），maxN 顶满
+  const filled = sec.n > 0 && maxN > 0 ? Math.max(1, Math.round(10 * sec.n / maxN)) : 0
+  const sub = sec.n === 0
+    ? '无材料'
+    : `${sec.n} 段证据 · ${sec.status === '已写' ? '已完成'
+      : sec.status === '写作中' ? '正在写作'
+      : sec.status === '失败' ? '写作失败' : '等待写作'}`
+  return (
+    <div className={[
+      'grid grid-cols-[26px_minmax(0,1fr)_auto_64px] items-center gap-3 px-3.5 py-3',
+      sec.status === '写作中' ? 'rounded-[11px] bg-live/[.06]' : '',
+      i > 0 ? 'border-t border-line2' : '',
+    ].join(' ')}>
+      <span className="font-mono text-[11.5px] text-faint">
+        {String(i + 1).padStart(2, '0')}
+      </span>
+      <div className="min-w-0">
+        <div className="truncate text-[13.5px] leading-snug">{sec.title}</div>
+        <div className="mt-0.5 flex items-center gap-1.5 text-[11.5px] text-faint">
+          {sub}
+          {sec.revised && (
+            <span className="rounded border border-seal/45 px-1 text-[10px] leading-4 text-seal">已返修</span>
+          )}
+        </div>
+      </div>
+      <div
+        className="flex items-end gap-[2px]"
+        title={`${sec.n} 段证据 · 相对其它小节；数值为任务级分配的近似`}
+      >
+        {Array.from({ length: 10 }, (_, k) => (
+          <i key={k} className={[
+            'block h-3.5 w-1 rounded-[1px]',
+            k < filled ? (sec.thin ? 'bg-seal' : 'bg-ink') : 'bg-black/10',
+          ].join(' ')} />
+        ))}
+      </div>
+      <div className="flex items-center justify-end gap-1.5 text-[11.5px] text-faint">
+        {sec.thin && sec.status !== '已写' && (
+          <span className="seal">
+            {sec.n === 0 ? '无材料' : '偏薄'}
+          </span>
+        )}
+        {sec.status === '已写' && (
+          <span className="flex items-center gap-1 text-muted">
+            <Icon name="check" size={13} strokeWidth={2.5} />已写
+          </span>
+        )}
+        {sec.status === '写作中' && (
+          <span className="flex items-center gap-1.5 text-live">
+            <span className="dot live" />写作中
+          </span>
+        )}
+        {sec.status === '失败' && <span className="text-seal">失败</span>}
+        {sec.status === '待写' && !sec.thin && '待写'}
       </div>
     </div>
   )
@@ -286,44 +442,34 @@ function PhaseBlock({
   defaultOpen: boolean
   isLast: boolean
   runningSince: number | null
-  /** 进度轨点了「跳过来」：变化时强制展开（展开后再滚，顺序不能反） */
   openSignal: number
-  /** 这是不是当前在跑的大环节。⚠️ 不能从 steps 里推——LLM 调用间隙
-   *  （assess 一次 ~77s）steps 里既没有 running 行也没有 _live 组，
-   *  从 steps 推就会「绿灯只在事件到达的瞬间亮一下，一静默就全灰」。 */
   active: boolean
 }) {
   const [open, setOpen] = useState(defaultOpen)
   const running = active
-  // ⚠️ 计数要把收进组里的明细行也算上——它们折起来了不代表不存在
   const warns = phase.steps.reduce(
     (a, s) => a + (s.warn && s.state !== 'running' ? 1 : 0)
       + (s.children?.filter((c) => c.warn).length ?? 0),
     0,
   )
   const labelW = labelColWidth(phase.steps)
-  // 「当前活跃组」= 本阶段最后一个非 running 步骤：write_dispatch 这类
-  // 组长落地后孩子还在流，保持展开看流；下一步落地就不再是最后一个，自动收拢。
   const lastReal = [...phase.steps].reverse().find((s) => s.state !== 'running')
 
   useEffect(() => {
     if (openSignal > 0) setOpen(true)
   }, [openSignal])
 
-  // 本阶段跑完（不再是最后一个大环节）就收成一行概要；
-  // 用户手动展开后 defaultOpen 不再变，不会被顶回去。
   useEffect(() => {
     if (!defaultOpen) setOpen(false)
   }, [defaultOpen])
 
   return (
     <section id={`wfphase-${phase.key}`}
-      className="border-b border-line last:border-b-0">
+      className="border-t border-line2 first:border-t-0">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="wf-phase-head flex w-full items-center gap-2.5 bg-gray-50/90 px-5 py-2.5 text-left transition-colors hover:bg-gray-100/80"
+        className="wf-phase-head flex w-full items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-black/[.02]"
       >
-        {/* 箭头用 CSS 过渡而不是换字符，展开时才有「转」的动画 */}
         <span
           className={[
             'shrink-0 text-muted transition-transform duration-200',
@@ -334,7 +480,7 @@ function PhaseBlock({
         </span>
         <span
           className={[
-            'shrink-0 text-sm font-medium transition-colors',
+            'shrink-0 text-[13px] font-medium transition-colors',
             running ? 'text-live' : 'text-ink',
           ].join(' ')}
         >
@@ -343,22 +489,22 @@ function PhaseBlock({
         {running && (
           <span className="wf-running-dot h-1.5 w-1.5 shrink-0 rounded-full bg-live" />
         )}
-        <span className="min-w-0 flex-1 truncate text-xs leading-5 text-muted/90">
+        <span className="min-w-0 flex-1 truncate text-2xs leading-5 text-muted/90">
           {phase.summary}
         </span>
         {warns > 0 && (
-          <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-2xs text-amber-800">
+          <span className="seal shrink-0">
             {warns} 处需注意
           </span>
         )}
       </button>
 
       {open && (
-        <div className="relative px-5 pb-4 pt-2">
-          {/* 时间轴竖线：给一串步骤一条纵向节奏线 */}
+        <div className="relative px-4 pb-3.5 pt-1">
+          {/* 时间轴竖线 */}
           {!isLast && (
             <span
-              className="pointer-events-none absolute bottom-0 left-[13.5px] top-3 w-px bg-line"
+              className="pointer-events-none absolute bottom-0 left-[13.5px] top-2 w-px bg-line"
               aria-hidden
             />
           )}
@@ -377,31 +523,63 @@ function PhaseBlock({
 }
 
 /**
- * 工作流视图：对话式的一条流，往上翻即可。
+ * 工作流视图（第 3 轮视觉稿 live.html）：
+ * 页头 → L0 刻度轨 → 指标条 → [小节卡片 | 执行记录] 两列。
  *
- * **动画克制**：只有三处动效——新条目淡入上移（0.28s）、
- * 进行中状态点呼吸、展开箭头旋转。其余一律不动。
- * 理由：这是长时间盯着看的界面，动得越多越累，
- * 而「有东西在推进」这件事，一个呼吸点就够表达了。
+ * 数据全部来自已落库的事件流（/events 历史 + SSE），
+ * 没有就不渲染对应块——**不编造**。
  */
 export function WorkflowView({
-  phases, running, runningSince, cost,
+  phases, progress, running, runningSince, cost, flow,
+  histLoaded, truncated, question, startedAt, onOpenReport,
 }: {
   phases: Phase[]
+  progress: ProgressEntry[]
   running: boolean
-  /** 当前节点开始时刻（ms），驱动「进行中 1:23」秒表 */
   runningSince: number | null
-  /** 累计 token（10s 轮询的活性信号） */
   cost: number | null
+  /** flow = 回看完已成的流程 */
+  flow: boolean
+  /** /events 历史已拉取完成（区分「还在拉」和「真的没有历史」） */
+  histLoaded: boolean
+  /** 历史被截断：顶部提示「较早的事件已省略」 */
+  truncated: boolean
+  question?: string
+  /** 会话创建时刻（ISO）——running 时用「现在-创建」算用时 */
+  startedAt?: string | null
+  /** flow 态的回报告入口 */
+  onOpenReport?: () => void
 }) {
+  const wrapRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
-  // 进度轨跳转信号：记录每个环节最近一次「被点名」的时刻，
-  // PhaseBlock 看到变化就展开——展开必须先于滚动，否则滚不到。
+  const [wide, setWide] = useState(false)
   const [openSig, setOpenSig] = useState<Record<string, number>>({})
+
+  // 当前大环节：有 running 步骤的那个；没有就落到最后一个非空环节
+  const activeKey =
+    phases.find((p) => p.steps.some((s) => s.state === 'running'))?.key
+    ?? phases[phases.length - 1]?.key
+  const activeIdx = ORDER.indexOf(activeKey as (typeof ORDER)[number])
+  // 「写作中」状态只该出现在真的写作环节——done/flow 里不能拿
+  // 历史最后一个事件的 node 去猜（收尾前最后一条往往也是 write）
+  const writingNow = running && activeKey === '写作'
+  const fdata = useMemo(
+    () => deriveFlow(progress, writingNow), [progress, writingNow])
+
+  // 两列布局按**容器实测宽度**分（主区侧栏展开/折叠会挤压可用宽，
+  // 视口媒体查询量不到这件事）。稿子断点 ~1000px。
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setWide(el.clientWidth >= 1000))
+    ro.observe(el)
+    setWide(el.clientWidth >= 1000)
+    return () => ro.disconnect()
+  }, [])
+
   const jumpToPhase = (key: string) => {
     setOpenSig((o) => ({ ...o, [key]: Date.now() }))
-    // 展开是重渲染，滚动要等 DOM 长出高度——一帧之后再滚
     requestAnimationFrame(() => {
       const el = document.getElementById(`wfphase-${key}`)
       const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -409,7 +587,6 @@ export function WorkflowView({
     })
   }
 
-  // 自动滚到底——但**用户一上滑就停**（正在读时被人拽走最烦人）
   useEffect(() => {
     const el = endRef.current?.parentElement
     if (!el) return
@@ -421,56 +598,184 @@ export function WorkflowView({
   }, [])
 
   useEffect(() => {
-    // ⚠️ 这里原来有一句 `if (!stick.current) { force(n => n + 1); return }`——
-    // 那个 `force` 触发一次谁也不读的重渲染，纯空转（2026-10-14 清掉）。
-    // 用户上滑之后本来就什么都不用做：不滚就是了。
     if (!stick.current) return
     endRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' })
   }, [phases])
 
-  // 什么都没发生的时候（刚点启动，第一个 SSE 事件还没到）：原来只回一句
-  // 「正在启动…」，用户不知道在等什么、是正常等待还是卡住了。
-  // 补一句**接下来会做什么**——这句话必须和 `graph/` 的真实顺序对得上：
-  // probe → outline → (retrieve/extract/assess)×N → 审批 → write → finalize。
-  // 不写「大概几分钟」：真实一轮 1591s，但这个数会随题材变，报不准不如不报。
+  const writeFrac = fdata.planTasks && fdata.planTasks > 0
+    ? Math.min(1, fdata.doneTasks / fdata.planTasks) : 0
+
+  /* ---- 空态 ---- */
   const started = phases.some((p) => p.steps.some((s) => s.state !== 'running'))
+    || progress.length > 0
   if (!started) {
+    if (histLoaded && !running) {
+      // 老会话（事件历史不存在）：明示空态，不能冒充「正在启动」
+      return (
+        <div ref={wrapRef} className="mx-auto w-full max-w-[1080px] px-6 py-7 md:px-10">
+          <PageHead running={running} flow={flow} question={question} onOpenReport={onOpenReport} />
+          <div className="card mt-8 px-6 py-10 text-sm text-faint">
+            该会话没有事件历史
+          </div>
+        </div>
+      )
+    }
     return (
-      <div className="px-6 py-10">
-        <div className="text-sm text-muted">正在启动…</div>
-        <p className="mt-2 max-w-prose text-xs leading-6 text-muted/80">
-          接下来会先做一轮轻量检索和深读，摸清这个题目有多少可用材料；
-          然后定下报告框架，再进入多轮「检索 → 抽取 → 评估」。
-          哪一步拿不准、或者有材料缺口，这里会标出来。
-        </p>
+      <div ref={wrapRef} className="mx-auto w-full max-w-[1080px] px-6 py-7 md:px-10">
+        <PageHead running={running} flow={flow} question={question} onOpenReport={onOpenReport} />
+        <div className="card mt-8 px-6 py-10">
+          <div className="text-sm text-muted">
+            {running ? '正在启动…' : '载入中…'}
+          </div>
+          {running && (
+            <p className="mt-2 max-w-prose text-2xs leading-6 text-faint">
+              接下来会先做一轮轻量检索和深读，摸清这个题目有多少可用材料；
+              然后定下报告框架，再进入多轮「检索 → 抽取 → 评估」。
+              哪一步拿不准、或者有材料缺口，这里会标出来。
+            </p>
+          )}
+        </div>
       </div>
     )
   }
 
+  /* ---- 指标条：每一项都要有真实事件来源，全无则整条不渲染 ---- */
+  const metrics: { k: string; v: string; unit?: string }[] = []
+  if (fdata.sources !== null) {
+    metrics.push({ k: '已读来源', v: String(fdata.sources), unit: '个' })
+  }
+  if (fdata.segments !== null) {
+    metrics.push({ k: '可用段落', v: String(fdata.segments), unit: '段' })
+  }
+  if (fdata.written !== null) {
+    metrics.push({
+      k: '已写入',
+      v: fdata.written >= 10000 ? (fdata.written / 10000).toFixed(1) : String(fdata.written),
+      unit: fdata.written >= 10000 ? '万字' : '字',
+    })
+  }
+  // 用时：running 用「现在 - 会话创建」；done/flow 没有可靠的结束时刻
+  // 可算（/events 不回时间戳），整条省略，不编。
+  const showElapsed = running && !!startedAt
+
+  const maxN = Math.max(0, ...fdata.sections.map((s) => s.n))
+
   return (
-    <div className="pb-4">
-      <PhaseRail phases={phases} onJump={jumpToPhase} />
-      {phases.map((p, i) => (
-        <PhaseBlock
-          key={p.key}
-          phase={p}
-          // 运行中：只展开当前大环节；跑完后**默认全收**——
-          // 完成的环节留一行概要，往上翻时点标题展开（2026-10-18 用户定）。
-          defaultOpen={running && i === phases.length - 1}
-          isLast={i === phases.length - 1}
-          runningSince={runningSince}
-          openSignal={openSig[p.key] ?? 0}
-          active={running && i === phases.length - 1}
+    <div ref={wrapRef} className="mx-auto w-full max-w-[1080px] px-6 pb-4 pt-7 md:px-10">
+      <PageHead running={running} flow={flow} question={question} onOpenReport={onOpenReport} />
+
+      {/* L0 刻度轨：sticky——长流程往下滚也要一眼看到走到哪了 */}
+      <div className="sticky top-0 z-20 -mx-2 bg-white/95 px-2 pb-3 pt-1 backdrop-blur">
+        <TrackRail
+          phases={phases}
+          activeIdx={activeIdx}
+          doneAll={flow}
+          writeFrac={writeFrac}
+          writeDone={fdata.doneTasks}
+          writeTotal={fdata.planTasks}
+          onJump={jumpToPhase}
         />
-      ))}
-      {/* 活性信号：累计 token。SSE 不推这个（频率不值一条事件），
-          每 10s 轮询便宜端点——对「花着钱在跑」的心理感知特别好。 */}
-      {cost !== null && (
-        <div className="px-6 pt-3 text-2xs text-muted/70 tabular-nums">
-          已用约 {cost >= 1000 ? `${(cost / 1000).toFixed(1)}k` : cost} token
+      </div>
+
+      {truncated && (
+        <div className="mt-2 text-2xs text-faint">较早的事件已省略</div>
+      )}
+
+      {(metrics.length > 0 || showElapsed) && (
+        <div className="card mt-4">
+          <div className="metrics">
+            {metrics.map((m) => (
+              <div key={m.k}>
+                <div className="k">{m.k}</div>
+                <div className="big tabular-nums">
+                  {m.v}{m.unit && <small>{m.unit}</small>}
+                </div>
+              </div>
+            ))}
+            {showElapsed && (
+              <div>
+                <div className="k">用时</div>
+                <div className="big tabular-nums">
+                  <ElapsedSince iso={startedAt!} />
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
+
+      <div className={wide && fdata.sections.length > 0
+        ? 'mt-5 grid grid-cols-[minmax(0,1fr)_minmax(0,330px)] gap-4'
+        : 'mt-5 space-y-4'}>
+        {fdata.sections.length > 0 && (
+          <div className="card self-start p-1.5">
+            {fdata.sections.map((sec, i) => (
+              <SectionRow key={sec.id} i={i} sec={sec} maxN={maxN} />
+            ))}
+          </div>
+        )}
+        <div>
+          <div className="card overflow-hidden">
+            <div className="px-4 pb-1 pt-3.5 text-[12.5px] font-medium">执行记录</div>
+            {phases.map((p, i) => (
+              <PhaseBlock
+                key={p.key}
+                phase={p}
+                defaultOpen={running && i === phases.length - 1}
+                isLast={i === phases.length - 1}
+                runningSince={runningSince}
+                openSignal={openSig[p.key] ?? 0}
+                active={running && i === phases.length - 1}
+              />
+            ))}
+            {/* 活性信号：累计 token */}
+            {cost !== null && (
+              <div className="px-4 pb-3 pt-2 text-2xs text-faint tabular-nums">
+                已用约 {cost >= 1000 ? `${(cost / 1000).toFixed(1)}k` : cost} token
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
       <div ref={endRef} />
     </div>
   )
+}
+
+/** 页头：进行中「报告正在成形」/回看「研究流程」+ 原问题。 */
+function PageHead({
+  running, flow, question, onOpenReport,
+}: {
+  running: boolean; flow: boolean
+  question?: string; onOpenReport?: () => void
+}) {
+  return (
+    <div className="flex items-end justify-between gap-4">
+      <div className="min-w-0">
+        <h1 className="text-2xl font-semibold tracking-[-.01em]">
+          {running ? '报告正在成形' : '研究流程'}
+        </h1>
+        {question && (
+          <div className="mt-1 truncate text-[13px] text-faint">{question}</div>
+        )}
+      </div>
+      {flow && onOpenReport && (
+        <button className="btn-ghost shrink-0" onClick={onOpenReport}>
+          查看报告 →
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** 「现在 - 创建时刻」的秒表，给指标条的「用时」用。 */
+function ElapsedSince({ iso }: { iso: string }) {
+  const [, tick] = useState(0)
+  useEffect(() => {
+    const t = window.setInterval(() => tick((x) => x + 1), 1000)
+    return () => window.clearInterval(t)
+  }, [])
+  const t0 = Date.parse(iso)
+  const s = Number.isFinite(t0) ? Math.max(0, Math.floor((Date.now() - t0) / 1000)) : 0
+  return <span className="tabular-nums">{fmtDur(s)}</span>
 }

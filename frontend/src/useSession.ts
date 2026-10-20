@@ -55,6 +55,22 @@ export function askNotifyPermission(): void {
   } catch { /* 同上 */ }
 }
 
+/** 事件内容指纹：和 server.py `_event_key` 同口径（排序键的紧凑 JSON）。
+ *  用来挡「历史回放与 SSE 在接缝处重复」——/api/stream 只发连接后的事件，
+ *  但 SSE 先连上、/events 后取数时，同一事件会同时出现在两边。 */
+function evKey(v: unknown): string {
+  return JSON.stringify(v, (_k, x) => {
+    if (x && typeof x === 'object' && !Array.isArray(x)) {
+      const o: Record<string, unknown> = {}
+      for (const k of Object.keys(x as object).sort()) {
+        o[k] = (x as Record<string, unknown>)[k]
+      }
+      return o
+    }
+    return x
+  })
+}
+
 /** `done` 之后图还会停在审批点（interrupt），所以收到 done 不能就断定结束。
  *  轮询 approval，拿到 payload 才切到 awaiting。 */
 export function useSession(sid: string | null) {
@@ -73,6 +89,10 @@ export function useSession(sid: string | null) {
   // 增量无法归属到具体小节——这是实测确认的约束，不是偷懒）。
   const [draft, setDraft] = useState('')
   const [seg, setSeg] = useState<SegmentRow | null>(null)
+  // /events 历史拉取是否完成：区分「还没拉回来」与「真的没有事件历史」
+  const [histLoaded, setHistLoaded] = useState(false)
+  // /events 截断标记：流程页顶部要提示「较早的事件已省略」
+  const [histTruncated, setHistTruncated] = useState(false)
 
   // ---- 一次操作没成时的提示（2026-10-13 加）----
   // ⚠️ **不要复用 `error`。** 那个字段驱动的是**整屏错误态**（图跑挂了、
@@ -99,6 +119,9 @@ export function useSession(sid: string | null) {
 
   const esRef = useRef<EventSource | null>(null)
   const timerRef = useRef<number | null>(null)
+  // 历史回放+实时 SSE 的事件指纹集：/events 与 /stream 在接缝处
+  // 可能各送一份同一事件，用它去重。每次换会话重建。
+  const seenRef = useRef<Set<string>>(new Set())
   // 轮询回调里读 view 需要最新值：effect 不随 view 重跑，留个 ref
   const viewRef = useRef(view)
   useEffect(() => {
@@ -186,64 +209,73 @@ export function useSession(sid: string | null) {
     setProgress([])
     setApproval(null)
     setError(null)
+    setNode(null)
     setNodeAt(null)
     setCost(null)
+    setThinking({})
+    setDraft('')
+    setHistLoaded(false)
+    setHistTruncated(false)
+    seenRef.current = new Set()
 
     void (async () => {
+      let d: SessionDetail
       try {
-        const d = await track(loadDetail(sid))
+        d = await track(loadDetail(sid))
         if (!alive) return
         setCost(d.cost_tokens ?? null)
         // 已在跑的会话（刷新页面后重连）不该显示成 idle
         setView(d.status === 'done' ? 'done' : 'running')
-        if (d.status === 'done') { void loadApproval(sid); return }
       } catch (e) {
         if (alive) { setView('error'); setError(String(e)) }
         return
       }
 
-      const es = new EventSource(`/api/stream/${sid}`)
-      esRef.current = es
-
-      es.onmessage = (m) => {
-        if (!alive) return
-        let ev: SseEvent
-        try { ev = JSON.parse(m.data) as SseEvent } catch { return }
-
+      /** 历史和实时共用的事件处理。`live=false` 时只还原状态：
+       *  done/error 是过去式，不能触发通知、也不能把 view 拽成 error。 */
+      const applyEvent = (ev: SseEvent, live: boolean) => {
         switch (ev.kind) {
           case 'node':
             setNode(ev.node)
             setNodeAt(Date.now())
             break
-          case 'progress':
-            // ⚠️ **`node` 必须一起存**（`server.py:832` 发的是 `{kind,node,event}`，
+          case 'progress': {
+            // ⚠️ **`node` 必须一起存**（`server.py` 发的是 `{kind,node,event}`，
             // node 在外层）。原来只 push `ev.event`，把 node 丢了——
             // `buildPhases` 拿不到事件出自哪个节点，只能拿「当前节点」去猜，
             // 结果写作阶段整个「规划」环节消失。端到端复现见 DECISIONS.md。
+            const k = evKey(ev)
+            if (live && seenRef.current.has(k)) return
+            seenRef.current.add(k)
             setProgress((p) => [...p, { ...ev.event, node: ev.node }])
             break
+          }
           case 'thinking':
             // 思考增量按 stage 累积（不是只留最后一段）。
             // 后端同一 stage 会分批推，最后一批带 `final:true`。
             // 累积量可能到几千字（实测 assess 一轮 7,009 字），
             // 所以拼接用「取尾部」而不是整段重赋——否则每 0.25 秒重渲整棵子树。
+            // 增量事件不进历史（/events 不带它们），只处理实时。
+            if (!live) break
             setThinking((prev) => {
               const cur = prev[ev.stage] || ''
               return { ...prev, [ev.stage]: cur + ev.delta }
             })
             break
           case 'draft':
-            setDraft((d) => d + ev.delta)
+            if (!live) break
+            setDraft((x) => x + ev.delta)
             break
           case 'done':
+            if (!live) break
             void (async () => {
-              const d = await track(loadDetail(sid)).catch(() => null)
-              if (d) setCost(d.cost_tokens ?? null)
+              const det = await track(loadDetail(sid)).catch(() => null)
+              if (det) setCost(det.cost_tokens ?? null)
               // done 之后可能还停在审批点（interrupt），所以要问一次。
               // 两种结束语义不同，通知文案也要分开：
               // 停在审批点 = 「等你批准」，跑完 = 「报告好了」。
               const r = await loadApproval(sid)
-              const t = d?.title || d?.question || sid
+              const t = det?.title || det?.question || sid
               sysNotify(
                 r.waiting ? '研究框架待审批' : '研究完成',
                 r.waiting ? `「${t}」的框架已校准好，等你批准开始写作`
@@ -252,12 +284,66 @@ export function useSession(sid: string | null) {
             })()
             break
           case 'error':
+            if (!live) break
             setError(ev.error)
             setView('error')
             sysNotify('研究出错', (ev.error ?? '').slice(0, 120))
             break
         }
       }
+
+      // ⚠️ **SSE 先连、历史后灌**。/api/stream 只发建连之后的事件，
+      // 先拉历史再建连会把中间那几秒的事件丢掉；反过来先建连、
+      // 把到达的信封堆进 pending，等 /events 灌完再放行——
+      // 两边都收到的事件用指纹去重，顺序也保得住。
+      const pending: SseEvent[] = []
+      let histDone = false
+      const es = d.status === 'done'
+        ? null                    // done 不开 SSE：不会再有新事件，只回放历史
+        : new EventSource(`/api/stream/${sid}`)
+      if (es) {
+        esRef.current = es
+        es.onmessage = (m) => {
+          if (!alive) return
+          let ev: SseEvent
+          try { ev = JSON.parse(m.data) as SseEvent } catch { return }
+          if (!histDone) pending.push(ev)
+          else applyEvent(ev, true)
+        }
+      }
+
+      // 历史回放（running/done/awaiting 都灌）：刷新或回看完成的会话时，
+      // 流程页要有完整的事件序列，不能只看到「正在启动…」。
+      try {
+        const h = await jget<{
+          events: SseEvent[]; last_id: number; truncated: boolean
+        }>(`/api/sessions/${sid}/events`)
+        if (!alive) return
+        const hist: ProgressEntry[] = []
+        let lastNode: string | null = null
+        for (const ev of h.events ?? []) {
+          seenRef.current.add(evKey(ev))
+          if (ev.kind === 'node' && ev.node) lastNode = ev.node
+          else if (ev.kind === 'progress' && ev.event) {
+            hist.push({ ...ev.event, node: ev.node } as ProgressEntry)
+          }
+        }
+        setProgress(hist)
+        // 还原「当前节点」：刷新后 L0 进度轨/绿点要落在正确的大环节上
+        if (lastNode) { setNode(lastNode); setNodeAt(Date.now()) }
+        setHistTruncated(!!h.truncated)
+      } catch {
+        // 历史拿不到不致命——老库可能没有 sse_event 表，实时流照旧
+      }
+      setHistLoaded(true)
+      histDone = true
+      for (const ev of pending.splice(0)) applyEvent(ev, true)
+
+      if (d.status === 'done') { void loadApproval(sid); return }
+      // 停在审批点的会话 status 还是 running——灌完历史问一次，
+      // 是 awaiting 就当场翻过去，不用干等 SSE 出错才兜底。
+      void loadApproval(sid)
+      if (!es) return
 
       // 活性信号（B2）：SSE 正常时这部分一个事件都不来，
       // 每 10s 问一次便宜端点拿累计 token——数字在涨就是活着。
@@ -357,7 +443,7 @@ export function useSession(sid: string | null) {
 
   return {
     view, detail, progress, node, nodeAt, cost, approval, error,
-    thinking, draft, seg, busy,
+    thinking, draft, seg, busy, histLoaded, histTruncated,
     notice, notify, setNotice,
     start, approve, create, archive, openSeg,
     setSeg, setView, setProgress, setNode, setApproval, setError, loadDetail,

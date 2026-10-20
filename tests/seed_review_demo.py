@@ -128,6 +128,48 @@ def _flow_seed(db, sid: str) -> int:
     if not sec_ids:
         raise SystemExit(f"{sid} 的事件流里找不到任何小节 id")
 
+    # 老会话的 write_task 事件录制于 covers 字段加进来之前——
+    # 流程页要靠 covers 推「哪节已写/在写」，这里按 tN→secN 1:1
+    # 补回去（形状与真事件一致；只补缺的行，天然幂等）。
+    patched = 0
+    for r in db.execute(
+            "SELECT id, event_json FROM sse_event WHERE session_id=? "
+            "AND kind='progress'", (sid,)).fetchall():
+        try:
+            env = json.loads(r["event_json"]) or {}
+        except (ValueError, TypeError):
+            continue
+        inner = env.get("event") or {}
+        if inner.get("kind") != "write_task" or inner.get("covers"):
+            continue
+        m = re.fullmatch(r"t(\d+)", str(inner.get("task") or ""))
+        if not m:
+            continue
+        idx = int(m.group(1)) - 1
+        if idx >= len(sec_ids):
+            continue
+        inner["covers"] = [sec_ids[idx]]
+        db.execute("UPDATE sse_event SET event_json=? WHERE id=?",
+                   (json.dumps(env, ensure_ascii=False), r["id"]))
+        patched += 1
+    if patched:
+        print(f"补了 {patched} 条老 write_task 事件的 covers"
+              "（tN→secN，仅为演示对齐）")
+
+    # 小节标题：报告 markdown 的 `## ` 大标题按序对应小节；
+    # 数对不上（标题改了/缺节）就退回「演示小节 N」，不强凑
+    titles: dict[str, str] = {}
+    row = db.execute("SELECT markdown FROM report WHERE session_id=?",
+                     (sid,)).fetchone()
+    if row and row["markdown"]:
+        heads = [m.group(1).strip()
+                 for m in re.finditer(r"(?m)^## (.+)$", row["markdown"])]
+        heads = [h for h in heads if not h.startswith("存疑")]
+        if len(heads) == len(sec_ids):
+            titles = dict(zip(sec_ids, heads))
+    if not titles:
+        titles = {s: f"演示小节 {i + 1}" for i, s in enumerate(sec_ids)}
+
     # 造有厚有薄、一节为 0 的分布——刻度条的区分度全指着这个
     hits = {s: n for s, n in zip(
         sec_ids, (12, 8, 0, 9, 2, 11, 5, 7, 4, 6)[:len(sec_ids)])}
@@ -135,7 +177,8 @@ def _flow_seed(db, sid: str) -> int:
                "tasks": len(sec_ids), "raw_tasks": len(sec_ids),
                "segments_available": 113, "tool_reads": 0,
                "plan_retried": False, "fallback_summary_segments": 0,
-               "section_segments": hits, "uncovered_sections": []}
+               "section_segments": hits, "outline_titles": titles,
+               "uncovered_sections": []}
     # best<=1 对应 thin_sections 的判薄口径（最高吻合度<=1）
     assess_ev = {"kind": "assess", "demo": True,           # ⚠️ 合成演示数据
                  "round": 99, "segments_total": 113, "new_segments": 0,

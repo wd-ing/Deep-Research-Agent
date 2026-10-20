@@ -334,13 +334,37 @@ textarea:focus-visible {
 }
 
 /* 大环节标题吸顶，滚过长规划时仍知道自己在哪。
-   top:41px 是进度轨（PhaseRail）的高度+边框——
+   top 值 = 刻度轨（wf-track 所在 sticky 块）的高度——
    轨在更上层（z-20），环节头要停在它下面，否则被盖住。 */
 .wf-phase-head {
   position: sticky;
-  top: 41px;
+  top: 89px;   /* 实测刻度轨 sticky 块高 89px */
   z-index: 10;
+  background: rgba(255,255,255,.92);
   backdrop-filter: saturate(180%) blur(8px);
+}
+
+/* 刻度轨（稿子 .track，2026-10-21 流程页第 3 轮）：
+   底色是密集刻度线，走完的段填绿刻度——「量出来了多少」
+   的隐喻，和 .ruler 同一套语言。 */
+.wf-track {
+  position: relative;
+  height: 14px;
+  background: repeating-linear-gradient(
+    90deg, rgb(0 0 0 / .16) 0 1px, transparent 1px 6px);
+}
+.wf-track-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    90deg, #3E8F4F 0 1.5px, transparent 1.5px 6px);
+  transition: width .4s ease-out;
+}
+.wf-track::after {
+  content: "";
+  position: absolute; left: 0; right: 0; bottom: -1px;
+  height: 1px;
+  background: rgb(0 0 0 / .08);
 }
 
 /* 打印 = 只留报告正文（C1）。

@@ -426,6 +426,11 @@ def node_plan_tasks(state: WriteState) -> dict:
                 if s in _as_str_list(t.get("covers"))
                 for x in (t.get("segments") or [])})
         for s in outline_ids}
+    # 小节标题也带出去：事件流里 outline 事件只有计数，
+    # 前端流程页的小节卡片拿不到标题——这个事件恰好是小节卡片
+    # 出现的同一时刻，顺路补齐。
+    outline_titles = {str(o.get("id")): str(o.get("title") or "")
+                      for o in outline if o.get("id")}
     return {
         "spec": spec, "tasks": tasks,
         "spec_capped": len(tasks) < len(raw_tasks),
@@ -436,6 +441,7 @@ def node_plan_tasks(state: WriteState) -> dict:
                     "plan_retried": plan_retried,
                     "fallback_summary_segments": n_fb,
                     "section_segments": section_segments,
+                    "outline_titles": outline_titles,
                     "uncovered_sections": uncovered}],
     }
 

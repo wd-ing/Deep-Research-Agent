@@ -556,23 +556,18 @@ export default function App() {
         {(s.view === 'running' || s.view === 'flow'
           || (s.view === 'idle' && sid && !report)) && (
           <div className="flex-1 overflow-auto">
-            {/* flow = done 之后回来看流程：顶部留一个回去的口 */}
-            {s.view === 'flow' && (
-              <div className="sticky top-0 z-30 flex items-center justify-between
-                              border-b border-line bg-white/95 px-6 py-2 backdrop-blur">
-                <span className="text-xs text-muted">研究流程（已完成）</span>
-                {report && (
-                  <button className="btn-ghost" onClick={() => s.setView('done')}>
-                    查看报告 →
-                  </button>
-                )}
-              </div>
-            )}
             <WorkflowView
               phases={phases}
+              progress={s.progress}
               running={s.view === 'running'}
               runningSince={s.nodeAt}
               cost={s.cost}
+              flow={s.view === 'flow'}
+              histLoaded={s.histLoaded}
+              truncated={s.histTruncated}
+              question={d?.title || d?.question}
+              startedAt={d?.created_at}
+              onOpenReport={report ? () => s.setView('done') : undefined}
             />
             {debug && <DebugPanel thinking={s.thinking} draft={s.draft} />}
           </div>

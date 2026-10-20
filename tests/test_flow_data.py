@@ -170,7 +170,9 @@ def t_plan_tasks_section_segments():
          "segments": ["S1·2", "S1·3"]}]}
     state = {"session_id": "", "question": "q",
              "spec": {"thesis": "T"},
-             "outline": [{"id": "sec1"}, {"id": "sec2"}, {"id": "sec3"}],
+             "outline": [{"id": "sec1", "title": "一"},
+                         {"id": "sec2", "title": "二"},
+                         {"id": "sec3", "title": "三"}],
              "on_topic": [{"ref": "S1·1"}, {"ref": "S1·2"}, {"ref": "S1·3"}]}
 
     # sec3 没人盖 → 覆盖校验会重试一次；两次回同一份 → 取第二次，结果不变
@@ -187,6 +189,10 @@ def t_plan_tasks_section_segments():
     check("③ section_segments 逐节并集去重",
           ss == {"sec1": 2, "sec2": 3, "sec3": 0},
           str(ss))
+    check("③ outline_titles 全节标题",
+          ev.get("outline_titles") ==
+          {"sec1": "一", "sec2": "二", "sec3": "三"},
+          str(ev.get("outline_titles")))
 
 
 def main() -> int:
