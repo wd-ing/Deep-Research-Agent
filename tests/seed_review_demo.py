@@ -12,11 +12,22 @@ sse_event，并补一行 run_health（字段形状同 `nodes._run_health`）。
    delete 型（old=真实片段、new=""）。这些补丁并没有真的写回
    报告正文——只供前端视图联调。
 
-幂等：演示事件带 `"demo": true` 标记；重跑先删掉自己上次写的行，
-不动真实事件。run_health 行只在会话还没有时补，绝不覆盖真数据。
+`--flow` 时改写流程页演示数据（也是合成）：1 条带
+`section_segments` 的 `write_plan_tasks` + 1 条带 `section_material`
+的 `assess` progress 事件。小节 id 从该会话真实事件（write_task
+的 covers / assess 的 thin_sections）里取。
+
+⚠️ 两条合成事件的自增 id 排在历史事件**之后**——位置不代表
+   真实时序（真实运行时 plan_tasks 在检索之后、首个 write_task
+   之前），只供前端字段联调。
+
+幂等：演示事件带 `"demo": true` 标记；重跑先删掉自己同类（按
+event.kind 区分 review/flow 两组，互不误删）的演示行，不动真实
+事件。run_health 行只在会话还没有时补，绝不覆盖真数据。
 
 用法：
     .venv/bin/python tests/seed_review_demo.py <db路径> <session_id>
+    .venv/bin/python tests/seed_review_demo.py <db路径> <session_id> --flow
 """
 
 from __future__ import annotations
@@ -61,22 +72,10 @@ def _pick(md: str) -> tuple[list[str], str, str]:
     return picked, frag, frag_src
 
 
-def main() -> int:
-    if len(sys.argv) != 3:
-        print(__doc__)
-        return 2
-    db_path, sid = sys.argv[1], sys.argv[2]
-    db = sqlite3.connect(db_path)
-    db.row_factory = sqlite3.Row
-
-    row = db.execute("SELECT markdown FROM report WHERE session_id=?",
-                     (sid,)).fetchone()
-    if not row or not row["markdown"]:
-        raise SystemExit(f"{sid} 没有 report.markdown")
-    md = row["markdown"]
-
-    # 幂等：清掉上一轮演示行（只认 "demo": true 标记的行）
-    n_del = 0
+def _clean_demo(db, sid: str, kinds: set[str]) -> int:
+    """删掉这组（kind 属于 kinds）的演示行——只认 "demo": true，
+    不碰真实事件，也不误删另一组演示数据。"""
+    n = 0
     for r in db.execute(
             "SELECT id, event_json FROM sse_event WHERE session_id=?",
             (sid,)).fetchall():
@@ -84,9 +83,105 @@ def main() -> int:
             inner = (json.loads(r["event_json"]) or {}).get("event") or {}
         except (ValueError, TypeError):
             continue
-        if inner.get("demo"):
+        if inner.get("demo") and inner.get("kind") in kinds:
             db.execute("DELETE FROM sse_event WHERE id=?", (r["id"],))
-            n_del += 1
+            n += 1
+    return n
+
+
+def _insert(db, sid: str, node: str, event: dict) -> None:
+    db.execute(
+        "INSERT INTO sse_event(session_id, at, kind, node, event_json) "
+        "VALUES (?,?,?,?,?)",
+        (sid, _now(), "progress", node,
+         json.dumps({"kind": "progress", "node": node, "event": event},
+                    ensure_ascii=False)))
+
+
+def _flow_seed(db, sid: str) -> int:
+    """流程页演示事件（合成，非真实运行）：小节材料厚度。"""
+    n = _clean_demo(db, sid, {"write_plan_tasks", "assess"})
+    if n:
+        print(f"清掉上轮 flow 演示事件 {n} 行")
+
+    # 真实小节 id：write_task 的 covers 顺序就是大纲顺序；
+    # 老会话没有 write_task 时退到 thin_sections/narrowed 里的 secN
+    sec_ids: list[str] = []
+    for r in db.execute(
+            "SELECT event_json FROM sse_event WHERE session_id=? "
+            "AND kind='progress' ORDER BY id", (sid,)).fetchall():
+        try:
+            inner = (json.loads(r["event_json"]) or {}).get("event") or {}
+        except (ValueError, TypeError):
+            continue
+        cands: list[str] = []
+        if inner.get("kind") == "write_task":
+            cands = [c for c in (inner.get("covers") or [])
+                     if isinstance(c, str)]
+        elif inner.get("kind") == "assess":
+            cands = [c for c in (inner.get("thin_sections") or [])
+                     if isinstance(c, str)]
+        for c in cands:
+            if re.fullmatch(r"sec\d+", c) and c not in sec_ids:
+                sec_ids.append(c)
+    sec_ids.sort(key=lambda s: int(s[3:]))
+    if not sec_ids:
+        raise SystemExit(f"{sid} 的事件流里找不到任何小节 id")
+
+    # 造有厚有薄、一节为 0 的分布——刻度条的区分度全指着这个
+    hits = {s: n for s, n in zip(
+        sec_ids, (12, 8, 0, 9, 2, 11, 5, 7, 4, 6)[:len(sec_ids)])}
+    plan_ev = {"kind": "write_plan_tasks", "demo": True,   # ⚠️ 合成演示数据
+               "tasks": len(sec_ids), "raw_tasks": len(sec_ids),
+               "segments_available": 113, "tool_reads": 0,
+               "plan_retried": False, "fallback_summary_segments": 0,
+               "section_segments": hits, "uncovered_sections": []}
+    # best<=1 对应 thin_sections 的判薄口径（最高吻合度<=1）
+    assess_ev = {"kind": "assess", "demo": True,           # ⚠️ 合成演示数据
+                 "round": 99, "segments_total": 113, "new_segments": 0,
+                 "round_gain": 0.0, "no_new_streak": 1,
+                 "has_enough": False,
+                 "thin_sections": [s for s in sec_ids
+                                  if hits[s] <= 2],
+                 "section_material": [
+                     {"id": s, "hits": hits[s],
+                      "best": 1 if hits[s] <= 2 else min(4, hits[s] // 3)}
+                     for s in sec_ids],
+                 "gaps": 0, "gaps_by_urgency": {},
+                 "queries_fresh": 0, "queries_dropped_repeat": 0,
+                 "queries_fallback": False,
+                 "stop_would_be": "（演示）", "stop_layer": "—"}
+    _insert(db, sid, "write", plan_ev)
+    _insert(db, sid, "assess", assess_ev)
+    db.commit()
+    print(f"已写入 {sid}：write_plan_tasks(section_segments) + "
+          f"assess(section_material) 演示事件，覆盖 {len(sec_ids)} 节："
+          f"{hits}")
+    print(f"验证: curl -s http://127.0.0.1:8000/api/sessions/{sid}/events"
+          " | python3 -m json.tool | tail -40")
+    return 0
+
+
+def main() -> int:
+    if len(sys.argv) not in (3, 4):
+        print(__doc__)
+        return 2
+    db_path, sid = sys.argv[1], sys.argv[2]
+    flow = len(sys.argv) == 4 and sys.argv[3] == "--flow"
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+
+    if flow:
+        return _flow_seed(db, sid)
+
+    row = db.execute("SELECT markdown FROM report WHERE session_id=?",
+                     (sid,)).fetchone()
+    if not row or not row["markdown"]:
+        raise SystemExit(f"{sid} 没有 report.markdown")
+    md = row["markdown"]
+
+    # 幂等：清掉上一轮 review 演示行（按 kind 限定，不碰 flow 组的）
+    n_del = _clean_demo(db, sid, {"write_revise"})
     db.execute("DELETE FROM run_trace WHERE session_id=? AND kind='run_health' "
                "AND detail_json LIKE '%\"demo\": true%'", (sid,))
     if n_del:

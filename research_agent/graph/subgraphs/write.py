@@ -418,6 +418,14 @@ def node_plan_tasks(state: WriteState) -> dict:
                   "plan_retried": plan_retried,
                   "fallback_summary_segments": n_fb,
                   "uncovered_sections": uncovered})
+    # 每节厚度刻度（前端流程页）：覆盖该节的任务的 segments 并集
+    # 去重条数。这是**任务级分配**的近似——任务 covers 多节时，
+    # 它的 segments 同时计进每个被覆盖的节，不是逐节精确拆分。
+    section_segments = {
+        s: len({x for t in tasks
+                if s in _as_str_list(t.get("covers"))
+                for x in (t.get("segments") or [])})
+        for s in outline_ids}
     return {
         "spec": spec, "tasks": tasks,
         "spec_capped": len(tasks) < len(raw_tasks),
@@ -427,6 +435,7 @@ def node_plan_tasks(state: WriteState) -> dict:
                     "tool_reads": sum(len(r) for r in log),
                     "plan_retried": plan_retried,
                     "fallback_summary_segments": n_fb,
+                    "section_segments": section_segments,
                     "uncovered_sections": uncovered}],
     }
 

@@ -726,6 +726,48 @@ def session_review(sid: str) -> dict:
     return {"patches": patches, "health": health}
 
 
+@app.get("/api/sessions/{sid}/events")
+def session_events(sid: str) -> dict:
+    """整场会话的事件流——给「回看流程」页供数。
+
+    跑完的会话 `useSession` 不开 EventSource（`/trace` 注释里那条
+    教训），运行中刷新后也只能接到此后的事件——`progress` 恒空，
+    流程页只剩「正在启动」。事件本来就经 `_emit` 全量落进
+    `sse_event`（0009），缺的只是读出来。
+
+    信封原样返回，前端喂给同一个 reducer。`thinking`/`draft` 是
+    打字机增量，量大且回看不需要，只留 node/progress/done/error。
+    行数超 5000 只留**最后** 5000——最早丢的是框架阶段的旧事件，
+    越靠后的事件对回看越有价值。
+    """
+    repo = get_repo()
+    if not repo.q1("SELECT 1 FROM session WHERE id=?", (sid,)):
+        raise HTTPException(404, "会话不存在")
+
+    rows = repo.q(
+        "SELECT id, event_json FROM sse_event "
+        "WHERE session_id=? AND kind IN ('node','progress','done','error') "
+        "ORDER BY id DESC LIMIT 5001", (sid,))
+    rows.reverse()
+    truncated = len(rows) > 5000
+    if truncated:
+        rows = rows[1:]               # 多取的那行是最早的，丢掉
+
+    events: list[dict] = []
+    last_id = 0
+    for r in rows:
+        try:
+            ev = json.loads(r["event_json"] or "{}")
+        except (ValueError, TypeError):
+            continue                  # 损坏行跳过：日志表不该让端点 500
+        if not isinstance(ev, dict):
+            continue
+        events.append(ev)
+        last_id = r["id"]
+
+    return {"events": events, "last_id": last_id, "truncated": truncated}
+
+
 @app.get("/api/sessions/{sid}/approval")
 def approval(sid: str) -> dict:
     """当前待审批的框架（没有就返回 waiting=False）。

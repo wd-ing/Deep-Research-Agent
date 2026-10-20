@@ -1001,6 +1001,12 @@ def node_assess(state: ResearchState) -> dict:
                     "no_new_streak": streak, "has_enough": enough,
                     "thin_sections": [v["id"] for v in section_views
                                       if v["最高吻合度"] <= 1],
+                    # 每节材料厚度明细（前端流程页的小节刻度）。thin_sections
+                    # 只留 0/1 判薄，读不出「厚多少」——所以整列给出去。
+                    "section_material": [{"id": v["id"],
+                                          "hits": v["沾边段数"],
+                                          "best": v["最高吻合度"]}
+                                         for v in section_views],
                     "gaps": len(gaps),
                     "gaps_by_urgency": _count_urgency(gaps),
                     "queries_fresh": len(fresh), "queries_dropped_repeat": len(dropped),
