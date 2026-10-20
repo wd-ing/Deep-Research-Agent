@@ -111,6 +111,12 @@ SSE 事件：`connected` / `node` / `progress` / `thinking` / `done` / `error`�
 （真 FastAPI / 真 SSE / 真 SQLite / 真 EvidenceTools）。
 fixture 用 v13 真跑录制，含 B1 全部细粒度事件（坑 68）。
 
+回放里的补丁明细和 `run_health` 是合成演示数据；视觉与交互改动用 Chromium 截图验收
+（无头浏览器 + 溢出/控制台/HTTP 断言），流程与脚本见 CONTEXT 坑 85/86。
+前端新增只读端点：`GET /api/sessions/{sid}/review`（补丁明细 + 运行健康）、
+`GET /api/sessions/{sid}/events`（已落库的可回放事件）。报告页顶栏「导出」支持
+Markdown / PDF（浏览器打印）/ Word（前端生成 .docx）。
+
 回放会话建的时候会把 donor 的 **report + source + chunk** 克隆进来
 （坑 73）——报告页、引用抽屉、段号 S1·5 全部可用，全程可测。
 
