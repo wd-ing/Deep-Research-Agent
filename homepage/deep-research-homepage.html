@@ -1,0 +1,1409 @@
+<!doctype html>
+<html lang="zh-CN" data-lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Deep Research · 逐句可回溯的深度研究 Agent</title>
+  <meta name="description" content="开源的深度研究 Agent：多轮检索、抓取原文、判定来源，由你确认框架后写出逐句带段落引用的长报告。" />
+  <meta name="theme-color" content="#FBFAF9" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Deep Research · 逐句可回溯的深度研究 Agent" />
+  <meta property="og:description" content="多轮检索、证据闸门、人工审批框架、交叉审查——写出一份每句话都能对上原文的报告。" />
+  <!-- og:image / og:url：部署后填上绝对地址 -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23161616'/%3E%3Cg fill='%23fff'%3E%3Crect x='9' y='17' width='2' height='7'/%3E%3Crect x='13' y='12' width='2' height='12'/%3E%3Crect x='17' y='17' width='2' height='7'/%3E%3Crect x='21' y='9' width='2' height='15'/%3E%3C/g%3E%3C/svg%3E" />
+  <script>
+    /* ── 站点配置：仓库与体验地址 ─────────────────────────────────
+       留空 = 「即将开放」：按钮保留位置与样式，点击只弹一条提示。
+       填上地址即生效，页面其它地方不用改。 */
+    window.DR_LINKS = {
+      repo: '',   // 例：'https://github.com/you/deep-research'
+      demo: ''    // 例：'https://demo.example.com'
+    };
+    /* 语言：URL ?lang= > 本地记忆 > 浏览器语言 */
+    (function () {
+      var q = new URLSearchParams(location.search).get('lang');
+      var saved = null; try { saved = localStorage.getItem('dr-lang'); } catch (e) {}
+      var l = q || saved || ((navigator.language || 'zh').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en');
+      if (l !== 'zh' && l !== 'en') l = 'zh';
+      var h = document.documentElement;
+      h.setAttribute('data-lang', l); h.lang = l === 'zh' ? 'zh-CN' : 'en';
+      h.classList.add('js');
+    })();
+  </script>
+  <style>
+    /* ─── 品牌 token ───────────────────────────────────────────────────
+       逐值取自产品前端（frontend/tailwind.config.js + src/index.css）。
+       文字三级 = 同一个黑压不同透明度；主行动用近黑不用彩；
+       彩色只负责「可点（accent）/ 在跑（live）/ 存疑（seal）」三种语义。
+       唯一刻意的差异：主页标题用衬线（营销页的气质），正文仍是产品同款无衬线。 */
+    :root {
+      --bg: #FBFAF9; --surface: #FFFFFF; --surface-2: #F5F4F2;
+      --fg: rgb(0 0 0 / .90); --muted: rgb(0 0 0 / .60); --faint: rgb(0 0 0 / .42);
+      --border: rgb(0 0 0 / .08); --line-2: rgb(0 0 0 / .05);
+      --accent: #2E50C8; --live: #3E8F4F; --seal: #C4412F;
+      --ink: #161616; --ink-2: #2B2B2B;
+      --c1: #3E8F4F; --c2: #2E50C8; --c3: #B8B4AC; --c4: #7B5EA7; --c5: #C28A2B;
+      --pill-bg: rgb(0 0 0 / .04);
+      --line-strong: rgb(0 0 0 / .26);
+
+      --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", "STSong",
+                    "Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", "Source Han Serif",
+                    Georgia, serif;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+                   "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "PingFang SC", monospace;
+
+      --container: 1200px; --gutter: clamp(20px, 4vw, 40px);
+      --ease: cubic-bezier(.22,.68,.24,1);
+      --ease-out: cubic-bezier(.2,.7,.3,1);
+      --nav-h: 60px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+    body {
+      margin: 0; background: var(--bg); color: var(--fg);
+      font-family: var(--font-sans); font-size: 16px; line-height: 1.65;
+      -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+      overflow-x: hidden;
+    }
+    ::selection { background: rgb(0 0 0 / .08); }
+    img, svg { display: block; max-width: 100%; }
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; color: inherit; cursor: pointer; background: none; border: 0; padding: 0; }
+    p { margin: 0; text-wrap: pretty; }
+    h1, h2, h3 { margin: 0; text-wrap: balance; font-weight: 600; }
+    [hidden] { display: none !important; }
+
+    /* ─── 双语：同一处并排两份文字，按 html[data-lang] 显隐 ─── */
+    html[data-lang="zh"] [data-l="en"], html[data-lang="en"] [data-l="zh"] { display: none !important; }
+
+    .container { max-width: var(--container); margin-inline: auto; padding-inline: var(--gutter); }
+    .section { padding-block: clamp(80px, 11vw, 148px); position: relative; }
+    .section[id], [id].anchor { scroll-margin-top: var(--nav-h); }
+
+    /* ─── 纸面：极淡测量网格 + 跟随指针的一圈「放大镜」 ─── */
+    .paper-grid {
+      position: fixed; inset: 0; z-index: -2; pointer-events: none;
+      background-image:
+        linear-gradient(rgb(0 0 0 / .028) 1px, transparent 1px),
+        linear-gradient(90deg, rgb(0 0 0 / .028) 1px, transparent 1px);
+      background-size: 88px 88px;
+      -webkit-mask: linear-gradient(180deg, #000 0, #000 70%, transparent);
+              mask: linear-gradient(180deg, #000 0, #000 70%, transparent);
+    }
+    .paper-lens {
+      position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: 0;
+      transition: opacity .6s ease;
+      background-image:
+        linear-gradient(rgb(0 0 0 / .075) 1px, transparent 1px),
+        linear-gradient(90deg, rgb(0 0 0 / .075) 1px, transparent 1px),
+        repeating-linear-gradient(90deg, rgb(0 0 0 / .05) 0 1px, transparent 1px 11px);
+      background-size: 88px 88px, 88px 88px, 100% 6px;
+      background-repeat: repeat, repeat, repeat-y;
+      --mx: 50vw; --my: 30vh;
+      -webkit-mask: radial-gradient(240px 240px at var(--mx) var(--my), #000, transparent 72%);
+              mask: radial-gradient(240px 240px at var(--mx) var(--my), #000, transparent 72%);
+    }
+    .paper-lens.on { opacity: 1; }
+
+    /* ─── 文字 ─── */
+    .serif { font-family: var(--font-serif); }
+    .display {
+      font-family: var(--font-serif); font-weight: 600;
+      font-size: clamp(44px, 6.4vw, 86px); line-height: 1.08; letter-spacing: -.02em;
+    }
+    html[data-lang="en"] .display { font-size: clamp(40px, 5.6vw, 76px); letter-spacing: -.028em; line-height: 1.04; }
+    .h2 {
+      font-family: var(--font-serif); font-weight: 600;
+      font-size: clamp(32px, 3.8vw, 52px); line-height: 1.18; letter-spacing: -.018em;
+    }
+    html[data-lang="en"] .h2 { letter-spacing: -.024em; line-height: 1.1; }
+    .h3 { font-size: 20px; line-height: 1.4; letter-spacing: -.008em; }
+    .lead { font-size: 18px; line-height: 1.75; color: var(--muted); max-width: 34em; }
+    html[data-lang="en"] .lead { font-size: 17.5px; max-width: 36em; }
+    .eyebrow {
+      display: flex; align-items: center; gap: 12px;
+      font-family: var(--font-mono); font-size: 12px; letter-spacing: .06em; color: var(--muted);
+      margin-bottom: 28px;
+    }
+    .eyebrow .no { color: var(--fg); }
+    .eyebrow::after {
+      content: ""; flex: 0 0 120px; height: 9px;
+      background: repeating-linear-gradient(90deg, var(--line-strong) 0 1px, transparent 1px 8px);
+      -webkit-mask: linear-gradient(90deg, #000, transparent); mask: linear-gradient(90deg, #000, transparent);
+    }
+    .mono { font-family: var(--font-mono); }
+    .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .em {
+      text-emphasis: filled dot; -webkit-text-emphasis: filled dot;
+      text-emphasis-position: under; -webkit-text-emphasis-position: under;
+    }
+    html[data-lang="en"] .em { text-emphasis: none; -webkit-text-emphasis: none; font-style: italic; }
+
+    /* ─── 签名件：刻度尺 ─── */
+    .ruler { position: relative; height: 10px; width: 220px; }
+    .ruler::before, .ruler::after {
+      content: ""; position: absolute; inset-inline: 0; bottom: 0;
+      -webkit-mask: linear-gradient(90deg, #000 20%, transparent); mask: linear-gradient(90deg, #000 20%, transparent);
+    }
+    .ruler::before { height: 5px; background: repeating-linear-gradient(90deg, rgb(0 0 0 / .22) 0 1px, transparent 1px 8px); }
+    .ruler::after  { height: 10px; background: repeating-linear-gradient(90deg, rgb(0 0 0 / .34) 0 1px, transparent 1px 40px); }
+
+    /* ─── 导航 ─── */
+    .topnav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 50; height: var(--nav-h);
+      transition: background .3s ease, border-color .3s ease, transform .4s var(--ease);
+      border-bottom: 1px solid transparent;
+    }
+    .topnav.scrolled {
+      background: color-mix(in oklch, var(--bg) 86%, transparent);
+      backdrop-filter: saturate(180%) blur(14px); -webkit-backdrop-filter: saturate(180%) blur(14px);
+      border-bottom-color: var(--border);
+    }
+    .topnav.on-dark { background: rgb(22 22 22 / .72); border-bottom-color: rgb(255 255 255 / .08); color: #fff; }
+    .topnav.on-dark .nav-links a { color: rgb(255 255 255 / .62); }
+    .topnav.on-dark .nav-links a:hover, .topnav.on-dark .nav-links a[aria-current="true"] { color: #fff; }
+    .topnav.on-dark .brandmark { background: #fff; }
+    .topnav.on-dark .brandmark i { background: var(--ink); }
+    .topnav.on-dark .seg { background: rgb(255 255 255 / .1); }
+    .topnav.on-dark .seg > button { color: rgb(255 255 255 / .6); }
+    .topnav.on-dark .seg > .on { background: rgb(255 255 255 / .16); color: #fff; box-shadow: none; }
+    .topnav.on-dark .gh { border-color: rgb(255 255 255 / .16); }
+    .topnav-inner { height: 100%; display: flex; align-items: center; gap: 28px; }
+    .logo { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: -.01em; font-size: 15.5px; }
+    .brandmark {
+      display: inline-flex; align-items: flex-end; justify-content: center; gap: 2px;
+      width: 24px; height: 24px; padding-bottom: 6px; border-radius: 7px; background: var(--ink);
+      transition: background .3s ease;
+    }
+    .brandmark i { display: block; width: 1.6px; background: #fff; transform-origin: bottom; transition: background .3s ease; }
+    .logo:hover .brandmark i { animation: eq .9s var(--ease-out) both; }
+    .logo:hover .brandmark i:nth-child(2) { animation-delay: .06s; }
+    .logo:hover .brandmark i:nth-child(3) { animation-delay: .12s; }
+    .logo:hover .brandmark i:nth-child(4) { animation-delay: .18s; }
+    .logo:hover .brandmark i:nth-child(5) { animation-delay: .24s; }
+    @keyframes eq { 0% { transform: scaleY(1); } 40% { transform: scaleY(.35); } 100% { transform: scaleY(1); } }
+    .nav-links { display: flex; gap: 26px; margin-left: auto; }
+    .nav-links a { position: relative; font-size: 14px; color: var(--muted); padding: 8px 0; transition: color .15s ease; }
+    .nav-links a:hover, .nav-links a[aria-current="true"] { color: var(--fg); }
+    .nav-links a::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: 2px; height: 1px; background: currentColor;
+      transform: scaleX(0); transform-origin: left; transition: transform .3s var(--ease);
+    }
+    .nav-links a[aria-current="true"]::after { transform: scaleX(1); }
+    .nav-tools { display: flex; align-items: center; gap: 10px; }
+    .gh {
+      display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 11px;
+      border: 1px solid var(--border); border-radius: 9px; font-size: 13px; font-weight: 500;
+      transition: border-color .15s ease;
+    }
+    .gh:hover { border-color: var(--line-strong); }
+    .gh svg { width: 15px; height: 15px; }
+    @media (max-width: 980px) { .nav-links { display: none; } .nav-tools { margin-left: auto; } }
+
+    /* 分段控件（产品 .seg 同款） */
+    .seg { display: inline-flex; gap: 2px; border-radius: 999px; background: var(--pill-bg); padding: 3px; }
+    .seg > button {
+      border-radius: 999px; padding: 3px 10px; font-size: 12px; line-height: 18px; color: var(--muted);
+      transition: color .15s ease, background .15s ease;
+    }
+    .seg > button:hover { color: var(--fg); }
+    .seg > .on { background: #fff; color: var(--fg); font-weight: 500; box-shadow: 0 0 0 1px rgb(0 0 0 / .08), 0 1px 2px rgb(0 0 0 / .04); }
+
+    /* ─── 胶囊 / 点 / 章 / tag / 引用 ─── */
+    .pill {
+      display: inline-flex; align-items: center; gap: 8px; height: 26px; padding: 0 12px;
+      border-radius: 999px; background: var(--pill-bg); font-size: 12px; color: var(--muted); white-space: nowrap;
+    }
+    .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: rgb(0 0 0 / .2); flex: none; }
+    .dot.live { background: var(--live); animation: br 1.8s infinite; }
+    @keyframes br { 0%,100% { box-shadow: 0 0 0 3px rgb(62 143 79 / .16); } 50% { box-shadow: 0 0 0 5px rgb(62 143 79 / .05); } }
+    .seal {
+      display: inline-flex; align-items: center; height: 20px; padding: 0 7px; vertical-align: 1px;
+      border: 1px solid rgb(196 65 47 / .45); border-radius: 5px;
+      font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--seal); white-space: nowrap;
+    }
+    .tg { display: inline-flex; align-items: center; height: 19px; padding: 0 7px; border-radius: 4px; font-size: 11px; white-space: nowrap; }
+    .tg1 { background: rgba(62,143,79,.1);  color: #2f7440; }
+    .tg2 { background: rgba(46,80,200,.09); color: #2E50C8; }
+    .tg3 { background: rgba(0,0,0,.06);     color: rgb(0 0 0 / .52); }
+    .tg4 { background: rgba(123,94,167,.1); color: #6a4c96; }
+    .tg5 { background: rgba(194,138,43,.12);color: #9a6a17; }
+    .cite {
+      display: inline-block; margin: 0 1px; padding: 1px 5px; border-radius: 5px;
+      background: rgba(46,80,200,.08); color: var(--accent);
+      font-family: var(--font-mono); font-size: 11px; line-height: 1.5; vertical-align: 1px;
+      transition: background .15s ease, color .15s ease, box-shadow .3s ease;
+    }
+    .cite:hover, .cite:focus-visible, .cite.on { background: var(--accent); color: #fff; }
+    .cite.on { box-shadow: 0 0 0 3px rgba(46,80,200,.14); }
+
+    /* ─── 按钮（产品 .btn 同款：圆角 11px，主行动近黑） ─── */
+    .btn {
+      position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      height: 46px; padding: 0 22px; border-radius: 11px; border: 1px solid transparent;
+      font-size: 15px; font-weight: 500; letter-spacing: -.005em; white-space: nowrap;
+      transition: background .15s ease, border-color .15s ease, color .15s ease, transform .15s ease;
+    }
+    .btn:active { transform: scale(.98); }
+    .btn-primary { background: var(--ink); color: #fff; }
+    .btn-primary:hover { background: var(--ink-2); }
+    .btn-ghost { background: var(--surface); border-color: var(--border); color: var(--fg); }
+    .btn-ghost:hover { border-color: var(--line-strong); }
+    .btn-text { height: auto; padding: 0; color: var(--muted); font-size: 14.5px; }
+    .btn-text:hover { color: var(--fg); }
+    .arrow { display: inline-block; transition: transform .25s var(--ease); }
+    .btn:hover .arrow { transform: translateX(3px); }
+    .btn-text:hover .arrow.down { transform: translateY(3px); }
+    .btn svg { width: 16px; height: 16px; }
+    /* 未开放：保留按钮重量，右上角一枚「即将开放」小签 */
+    .is-soon { cursor: default; }
+    .is-soon .soon-tag {
+      position: absolute; top: -9px; right: -8px; height: 18px; padding: 0 6px; border-radius: 5px;
+      background: var(--bg); border: 1px solid var(--border); color: var(--muted);
+      font-size: 10.5px; font-weight: 500; line-height: 16px; letter-spacing: .02em;
+    }
+    .soon-tag { display: none; }
+    .is-soon .soon-tag { display: inline-block; }
+    .gh.is-soon .soon-tag { position: static; display: inline-block; border: 0; background: var(--pill-bg); height: 17px; line-height: 17px; margin-left: 2px; }
+    .topnav.on-dark .gh.is-soon .soon-tag { background: rgb(255 255 255 / .1); color: rgb(255 255 255 / .7); }
+
+    /* 提示条 */
+    .toast {
+      position: fixed; left: 50%; bottom: 28px; z-index: 80; transform: translate(-50%, 16px);
+      display: flex; align-items: center; gap: 10px; padding: 11px 16px; border-radius: 12px;
+      background: var(--ink); color: #fff; font-size: 13.5px; opacity: 0; pointer-events: none;
+      box-shadow: 0 16px 44px rgb(0 0 0 / .16), 0 4px 12px rgb(0 0 0 / .08);
+      transition: opacity .3s ease, transform .4s var(--ease);
+    }
+    .toast.on { opacity: 1; transform: translate(-50%, 0); }
+    .toast .dot { background: #fff; opacity: .5; }
+
+    /* ─── 入场动效 ─── */
+    .js [data-reveal] {
+      opacity: 0; transform: translateY(18px);
+      transition: opacity .9s var(--ease), transform .9s var(--ease); transition-delay: var(--d, 0s);
+    }
+    .js [data-reveal].in { opacity: 1; transform: none; }
+    /* 行遮罩上浮：标题逐行从基线下升起 */
+    .line { display: block; overflow: hidden; padding-bottom: .06em; margin-bottom: -.06em; }
+    .line > span { display: inline-block; }
+    .js .rise .line > span { transform: translateY(105%); transition: transform 1.1s var(--ease); transition-delay: calc(var(--i, 0) * .09s + var(--d, 0s)); }
+    .js .rise.in .line > span { transform: none; }
+
+    /* ════════ 一、首屏 ════════ */
+    .hero { padding-top: calc(var(--nav-h) + clamp(56px, 8vw, 104px)); padding-bottom: clamp(72px, 9vw, 120px); }
+    .hero-grid { display: grid; grid-template-columns: 1.02fr .98fr; gap: clamp(40px, 6vw, 88px); align-items: center; }
+    .hero-status { margin-bottom: 34px; }
+    .hero .display { margin-bottom: 30px; }
+    .hero .ruler { margin-bottom: 30px; overflow: hidden; }
+    .hero .ruler .scan {
+      position: absolute; top: 0; bottom: 0; width: 46px; left: -50px; z-index: 1;
+      background: linear-gradient(90deg, transparent, rgb(62 143 79 / .55), transparent);
+      -webkit-mask: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 8px);
+              mask: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 8px);
+      animation: scan 4.8s var(--ease) 1.6s infinite;
+    }
+    @keyframes scan { 0% { left: -50px; } 55%, 100% { left: 230px; } }
+    .hero-cta { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 14px; margin-top: 38px; }
+    .hero-cta .btn-text { margin-left: 8px; }
+    .hero-foot { margin-top: 30px; display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13px; color: var(--faint); }
+    .hero-foot span { display: inline-flex; align-items: center; gap: 7px; }
+    .hero-foot span::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+    @media (max-width: 980px) { .hero-grid { grid-template-columns: minmax(0, 1fr); } .hero-grid > * { min-width: 0; } }
+    @media (max-width: 640px) { .hero .display { font-size: clamp(36px, 9.4vw, 44px); } .hero .line > span { max-width: 100%; } }
+
+    /* 报告面板：浮层，唯一带影的卡 */
+    .stage-wrap { position: relative; }
+    .panel {
+      position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden;
+      box-shadow: 0 1px 2px rgb(0 0 0 / .04), 0 30px 60px -32px rgb(0 0 0 / .3), 0 12px 24px -18px rgb(0 0 0 / .12);
+    }
+    .panel-chrome { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line-2); font-size: 12px; color: var(--muted); }
+    .panel-chrome .seg { margin-left: auto; }
+    .panel-chrome .seg > button { font-size: 11.5px; padding: 2px 9px; cursor: default; }
+    .panel-head { padding: 18px 22px 14px; }
+    .panel-title { font-size: 15px; font-weight: 600; letter-spacing: -.005em; line-height: 1.45; }
+    .panel-sub { margin-top: 7px; display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+    .panel-mix { padding: 0 22px 16px; border-bottom: 1px solid var(--line-2); }
+    .mix { display: flex; height: 5px; gap: 2px; overflow: hidden; border-radius: 3px; }
+    .mix i { display: block; height: 100%; transform-origin: left; }
+    .in .mix i, .mix.in i { animation: grow-x .9s var(--ease-out) both; }
+    .mix i:nth-child(2) { animation-delay: .08s !important; } .mix i:nth-child(3) { animation-delay: .16s !important; }
+    .mix i:nth-child(4) { animation-delay: .24s !important; } .mix i:nth-child(5) { animation-delay: .32s !important; }
+    @keyframes grow-x { from { transform: scaleX(0); opacity: .3; } to { transform: none; opacity: 1; } }
+    .c1 { background: var(--c1); } .c2 { background: var(--c2); } .c3 { background: var(--c3); } .c4 { background: var(--c4); } .c5 { background: var(--c5); }
+    .mix-legend { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 12px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+    .mix-legend b { font-weight: 500; color: var(--fg); margin-left: 3px; }
+    .panel-body { padding: 18px 22px 6px; }
+    .panel-h { font-size: 14px; font-weight: 600; }
+    .panel-body .ruler { margin: 9px 0 14px; height: 8px; width: 180px; }
+    .panel-body p { font-size: 14.5px; line-height: 1.85; margin: 0 0 13px; }
+    .preview { border-top: 1px solid var(--line-2); background: var(--surface-2); padding: 14px 22px 16px; min-height: 148px; position: relative; }
+    .preview-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .preview-no { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
+    .preview-src { font-size: 12px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+    .preview-date { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
+    .preview-text { margin-top: 8px; font-family: var(--font-serif); font-size: 14px; line-height: 1.7; color: var(--fg); }
+    .preview-text mark { background: rgba(46,80,200,.1); color: inherit; padding: 0 1px; border-radius: 2px; }
+    .preview-in { animation: pop-in .45s var(--ease-out) both; }
+    @keyframes pop-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .autoplay { position: absolute; left: 0; bottom: 0; height: 2px; width: 100%; background: rgb(0 0 0 / .18); transform-origin: left; transform: scaleX(0); }
+    .autoplay.run { animation: autoplay var(--t, 4.2s) linear both; }
+    @keyframes autoplay { to { transform: scaleX(1); } }
+    .stage-caption { margin-top: 16px; display: flex; justify-content: space-between; gap: 12px; font-family: var(--font-mono); font-size: 11.5px; color: var(--faint); }
+    /* 浮在面板外的批注卡（产品 .note.red 同款） */
+    .float-note {
+      position: absolute; right: -26px; top: -30px; width: 230px; z-index: 2;
+      padding: 11px 13px; border-radius: 12px; font-size: 12px; line-height: 1.55; color: var(--muted);
+      background: #fff; border: 1px solid rgba(196,65,47,.35);
+      box-shadow: 0 16px 34px -18px rgb(0 0 0 / .25);
+      animation: float 7s ease-in-out infinite;
+    }
+    .float-note .h { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
+    .float-note .h b { color: var(--seal); font-weight: 500; font-size: 12px; }
+    @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+    @media (max-width: 1240px) { .float-note { right: 10px; } }
+    @media (max-width: 640px) { .float-note { display: none; } }
+
+    /* ════════ 二、宣言：滚动时逐字点亮 ════════ */
+    .manifesto { padding-block: clamp(96px, 14vw, 200px); }
+    .manifesto p {
+      font-family: var(--font-serif); font-weight: 500;
+      font-size: clamp(28px, 3.6vw, 50px); line-height: 1.45; letter-spacing: -.012em; max-width: 21em;
+    }
+    html[data-lang="en"] .manifesto p { line-height: 1.3; letter-spacing: -.02em; max-width: 23em; }
+    .manifesto .ch { color: rgb(0 0 0 / .13); transition: color .5s ease; }
+    .manifesto .ch.lit { color: var(--fg); }
+    .manifesto .ch.lit.key { color: var(--seal); }
+    .manifesto .sig { margin-top: 40px; display: flex; align-items: center; gap: 14px; font-family: var(--font-mono); font-size: 12px; color: var(--faint); }
+
+    /* ════════ 三、工序：吸顶长镜头 ════════ */
+    .scene { position: relative; border-top: 1px solid var(--border); }
+    .scene-intro { padding-top: clamp(80px, 10vw, 128px); padding-bottom: 24px; }
+    .scene-intro .lead { margin-top: 20px; }
+    .scene-track-wrap { height: calc(var(--n) * 78vh + 100vh); position: relative; }
+    .scene-sticky {
+      position: sticky; top: var(--nav-h); height: calc(100vh - var(--nav-h)); min-height: 600px;
+      display: flex; flex-direction: column; justify-content: center; gap: 36px;
+    }
+    .scene-meter { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+    .meter { display: flex; gap: 34px; }
+    .meter > div { min-width: 0; }
+    .meter .k { font-size: 12px; color: var(--faint); }
+    .meter .v { font-size: 30px; font-weight: 500; letter-spacing: -.02em; line-height: 1.15; font-variant-numeric: tabular-nums; }
+    .meter .v small { margin-left: 4px; font-size: 13px; font-weight: 400; letter-spacing: 0; color: var(--faint); }
+    .scene-q { font-size: 13px; color: var(--muted); max-width: 30em; text-align: right; }
+    .scene-q b { color: var(--fg); font-weight: 500; }
+    /* 刻度轨（产品 .wf-track 同款） */
+    .track { position: relative; height: 14px; background: repeating-linear-gradient(90deg, rgb(0 0 0 / .16) 0 1px, transparent 1px 6px); }
+    .track::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--border); }
+    .track-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: repeating-linear-gradient(90deg, var(--live) 0 1.5px, transparent 1.5px 6px); }
+    .stages { list-style: none; display: grid; grid-template-columns: repeat(10, 1fr); margin: -5px 0 0; padding: 0; }
+    .stage { position: relative; padding-top: 20px; text-align: center; font-size: 12.5px; color: var(--faint); transition: color .35s ease; }
+    .stage i {
+      position: absolute; top: 0; left: 50%; width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%;
+      background: var(--surface); border: 1px solid var(--line-strong); transition: background .35s ease, border-color .35s ease, box-shadow .35s ease;
+    }
+    .stage.done { color: var(--muted); }
+    .stage.done i { background: var(--live); border-color: var(--live); }
+    .stage.cur { color: var(--fg); font-weight: 600; }
+    .stage.cur i { background: var(--live); border-color: var(--live); box-shadow: 0 0 0 4px rgb(62 143 79 / .16); }
+    .stage.human.done i, .stage.human.cur i { background: var(--ink); border-color: var(--ink); }
+    .stage.human.cur i { box-shadow: 0 0 0 4px rgb(0 0 0 / .1); }
+    .chapters { display: grid; }
+    .chapter {
+      grid-area: 1 / 1; display: grid; grid-template-columns: .92fr 1.08fr; gap: clamp(32px, 5vw, 72px); align-items: start;
+      opacity: 0; visibility: hidden; transition: opacity .5s ease, visibility 0s linear .5s;
+    }
+    .chapter.on { opacity: 1; visibility: visible; transition: opacity .6s ease .1s, visibility 0s; }
+    .ch-no { font-family: var(--font-mono); font-size: 12px; color: var(--faint); letter-spacing: .06em; margin-bottom: 14px; }
+    .ch-no b { color: var(--fg); font-weight: 500; }
+    .chapter h3 { font-family: var(--font-serif); font-size: clamp(26px, 2.6vw, 36px); line-height: 1.25; letter-spacing: -.015em; }
+    .chapter .ch-text p { margin-top: 16px; color: var(--muted); font-size: 16px; line-height: 1.8; max-width: 28em; }
+    .chapter .ch-text .ch-time { margin-top: 22px; font-family: var(--font-mono); font-size: 12px; color: var(--faint); }
+    .chapter.on .ch-text > * { animation: pop-in .7s var(--ease-out) both; }
+    .chapter.on .ch-text > *:nth-child(2) { animation-delay: .06s; }
+    .chapter.on .ch-text > *:nth-child(3) { animation-delay: .12s; }
+    .chapter.on .ch-text > *:nth-child(4) { animation-delay: .18s; }
+    /* 流程卡：产品流程页的事件行 */
+    .log { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+    .log-head { display: flex; align-items: center; gap: 9px; padding: 13px 18px; border-bottom: 1px solid var(--line-2); font-size: 12.5px; color: var(--muted); }
+    .log-head b { color: var(--fg); font-weight: 500; }
+    .log-head .num { margin-left: auto; font-size: 11.5px; }
+    .log ol { list-style: none; margin: 0; padding: 8px 0; }
+    .log li { display: grid; grid-template-columns: 18px 1fr auto; align-items: baseline; gap: 10px; padding: 8px 18px; font-size: 13.5px; }
+    .log li .st { align-self: center; width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--line-strong); }
+    .log li.done .st { background: rgb(0 0 0 / .32); border-color: transparent; }
+    .log li.run .st { background: var(--live); border-color: var(--live); animation: wfp 1.5s ease-in-out infinite; }
+    .log li.warn .st { background: transparent; border-color: var(--seal); }
+    .log li .sm { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+    .log li .sm .tg { margin-left: 4px; }
+    @keyframes wfp { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.82); } }
+    .chapter.on .log li { animation: pop-in .4s var(--ease-out) both; animation-delay: calc(var(--k, 0) * .09s + .15s); }
+    /* 审批卡：人的那一步 */
+    .approve { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px 22px; }
+    .approve-top { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--muted); }
+    .approve h4 { margin: 12px 0 4px; font-size: 15px; font-weight: 600; }
+    .approve ol { margin: 10px 0 0; padding: 0; list-style: none; counter-reset: s; }
+    .approve li { counter-increment: s; display: flex; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line-2); font-size: 13.5px; }
+    .approve li::before { content: counter(s, decimal-leading-zero); font-family: var(--font-mono); font-size: 11px; color: var(--faint); padding-top: 2px; }
+    .approve li:last-child { border-bottom: 0; }
+    .approve-act { display: flex; gap: 10px; margin-top: 16px; }
+    .approve-act .btn { height: 36px; padding: 0 16px; font-size: 13px; cursor: default; }
+    .approve-act .btn-primary { animation: ring 2.4s ease-in-out infinite; }
+    @keyframes ring { 0%,100% { box-shadow: 0 0 0 0 rgb(0 0 0 / .14); } 50% { box-shadow: 0 0 0 6px rgb(0 0 0 / 0); } }
+    .chapter.on .approve li { animation: pop-in .4s var(--ease-out) both; animation-delay: calc(var(--k, 0) * .06s + .15s); }
+    .scene-hint { position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%); font-family: var(--font-mono); font-size: 11px; color: var(--faint); transition: opacity .4s ease; }
+    /* 窄屏 / 减弱动效：不吸顶，章节顺排 */
+    @media (max-width: 980px), (prefers-reduced-motion: reduce) {
+      .scene-track-wrap { height: auto; }
+      .scene-sticky { position: static; height: auto; min-height: 0; display: block; padding-bottom: 80px; }
+      .scene-meter, .scene-track, .scene-hint { display: none; }
+      .chapters { gap: 72px; }
+      .chapter { grid-area: auto; opacity: 1; visibility: visible; grid-template-columns: 1fr; gap: 24px; }
+    }
+
+    /* ════════ 四、证据：三段交错 ════════ */
+    .proof { border-top: 1px solid var(--border); }
+    .proof-head { max-width: 40em; margin-bottom: clamp(56px, 8vw, 104px); }
+    .proof-head .lead { margin-top: 20px; }
+    .proof-row { display: grid; grid-template-columns: 1fr 1.15fr; gap: clamp(32px, 6vw, 96px); align-items: center; padding-block: clamp(40px, 5vw, 64px); }
+    .proof-row + .proof-row { border-top: 1px solid var(--line-2); }
+    .proof-row.flip .proof-text { order: 2; }
+    .proof-text .k { font-family: var(--font-mono); font-size: 12px; color: var(--faint); letter-spacing: .06em; }
+    .proof-text h3 { margin-top: 14px; font-family: var(--font-serif); font-size: clamp(26px, 2.5vw, 34px); line-height: 1.25; letter-spacing: -.015em; }
+    .proof-text p { margin-top: 16px; color: var(--muted); line-height: 1.8; max-width: 27em; }
+    .proof-text .vs { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 13.5px; color: var(--muted); max-width: 27em; }
+    .proof-text .vs b { color: var(--fg); font-weight: 500; }
+    @media (max-width: 980px) { .proof-row { grid-template-columns: 1fr; } .proof-row.flip .proof-text { order: 0; } }
+
+    /* 01 引用：句子 → 一根线 → 原文 */
+    .thread-box { position: relative; display: grid; gap: 54px; }
+    .thread-box svg.thread { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 1; }
+    .thread path { fill: none; stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: var(--len, 400); stroke-dashoffset: var(--len, 400); transition: stroke-dashoffset 1.4s var(--ease); }
+    .thread circle { fill: var(--accent); opacity: 0; transition: opacity .3s ease 1.2s; }
+    .thread-box.in .thread path { stroke-dashoffset: 0; }
+    .thread-box.in .thread circle { opacity: 1; }
+    .sentence-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px 22px; font-size: 15.5px; line-height: 1.9; max-width: 30em; }
+    .sentence-card .meta { margin-bottom: 8px; font-size: 12px; color: var(--faint); }
+    .source-card {
+      justify-self: end; width: min(100%, 30em); background: var(--surface-2); border: 1px solid var(--border); border-radius: 16px; padding: 16px 20px 18px;
+      opacity: 0; transform: translateY(10px); transition: opacity .7s ease .9s, transform .7s var(--ease) .9s;
+    }
+    .thread-box.in .source-card { opacity: 1; transform: none; }
+    .source-card .preview-text { font-size: 14.5px; }
+
+    /* 02 来源 */
+    .src-box { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+    .src-top { padding: 20px 22px 18px; border-bottom: 1px solid var(--line-2); }
+    .src-top .row { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; }
+    .src-top .big { font-size: 38px; font-weight: 500; letter-spacing: -.02em; line-height: 1; }
+    .src-top .big small { margin-left: 4px; font-size: 13px; font-weight: 400; letter-spacing: 0; color: var(--faint); }
+    .src-top .mix { height: 8px; border-radius: 4px; gap: 3px; }
+    .src-list { list-style: none; margin: 0; padding: 6px 0; }
+    .src-list li { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 9px 22px; font-size: 13.5px; }
+    .src-list li .sn { font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
+    .src-list li .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .src-list li .t small { margin-left: 6px; color: var(--faint); font-size: 12px; }
+    @media (max-width: 640px) {
+      .src-list li { grid-template-columns: 30px minmax(0, 1fr) auto; gap: 8px; padding-inline: 14px; }
+      .src-list li .t { white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
+      .src-list li .t small { display: block; max-width: 100%; margin: 2px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    }
+    .src-box.in .src-list li { animation: pop-in .5s var(--ease-out) both; animation-delay: calc(var(--k) * .08s + .3s); }
+    .js .src-box:not(.in) .src-list li { opacity: 0; }
+
+    /* 03 审查 */
+    .review-box { display: grid; gap: 14px; }
+    .rev-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 18px 22px; }
+    .rev-card .meta { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 12px; color: var(--faint); }
+    .rev-line { font-size: 15px; line-height: 1.95; min-height: 3.9em; }
+    .rev-line del { color: var(--seal); text-decoration: line-through; text-decoration-thickness: 1px; opacity: .85; }
+    .rev-line ins { text-decoration: none; background: rgba(196,65,47,.1); border-bottom: 1.5px solid var(--seal); }
+    .rev-line .caret { display: inline-block; width: 1px; height: 1.1em; vertical-align: -2px; background: var(--fg); margin-left: 1px; animation: blink 1s steps(1) infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+    .doubt { border-color: rgba(196,65,47,.35); background: rgba(196,65,47,.045); }
+    .doubt h5 { margin: 0 0 8px; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--seal); }
+    .doubt p { font-size: 13.5px; line-height: 1.75; color: var(--muted); }
+    .doubt p + p { margin-top: 6px; }
+
+    /* ════════ 五、账单：唯一的深色段 ════════ */
+    .ledger { background: #121212; color: #fff; overflow: hidden; isolation: isolate; }
+    .ledger::before {
+      content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+      background-image: linear-gradient(rgb(255 255 255 / .035) 1px, transparent 1px), linear-gradient(90deg, rgb(255 255 255 / .035) 1px, transparent 1px);
+      background-size: 88px 88px;
+      -webkit-mask: radial-gradient(80% 70% at 50% 0%, #000, transparent); mask: radial-gradient(80% 70% at 50% 0%, #000, transparent);
+    }
+    .ledger .eyebrow { color: rgb(255 255 255 / .55); }
+    .ledger .eyebrow .no { color: #fff; }
+    .ledger .eyebrow::after { background: repeating-linear-gradient(90deg, rgb(255 255 255 / .3) 0 1px, transparent 1px 8px); }
+    .ledger .lead { color: rgb(255 255 255 / .62); margin-top: 20px; }
+    .ledger .lead q { color: #fff; quotes: "「" "」"; }
+    html[data-lang="en"] .ledger .lead q { quotes: "“" "”"; }
+    .ledger-grid { margin-top: clamp(48px, 6vw, 80px); display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid rgb(255 255 255 / .12); }
+    .ledger-grid > div { padding: 28px 28px 30px 0; border-bottom: 1px solid rgb(255 255 255 / .12); }
+    .ledger-grid > div:not(:nth-child(3n+1)) { padding-left: 28px; border-left: 1px solid rgb(255 255 255 / .12); }
+    .ledger-grid .k { font-size: 12.5px; color: rgb(255 255 255 / .5); }
+    .ledger-grid .v { margin-top: 8px; font-size: clamp(44px, 5vw, 68px); font-weight: 500; letter-spacing: -.03em; line-height: 1; font-variant-numeric: tabular-nums; }
+    .ledger-grid .v small { margin-left: 6px; font-size: 15px; font-weight: 400; letter-spacing: 0; color: rgb(255 255 255 / .5); }
+    .ledger-grid .d { margin-top: 10px; font-size: 13px; color: rgb(255 255 255 / .5); }
+    @media (max-width: 820px) {
+      .ledger-grid { grid-template-columns: 1fr 1fr; }
+      .ledger-grid > div, .ledger-grid > div:not(:nth-child(3n+1)) { padding: 22px 18px 22px 0; border-left: 0; }
+      .ledger-grid > div:nth-child(2n) { padding-left: 18px; border-left: 1px solid rgb(255 255 255 / .12); }
+    }
+    .burn { margin-top: 56px; }
+    .burn-head { display: flex; justify-content: space-between; gap: 16px; font-size: 13px; color: rgb(255 255 255 / .55); margin-bottom: 14px; }
+    .burn-bar { display: flex; height: 40px; gap: 3px; }
+    .burn-bar > div { position: relative; height: 100%; border-radius: 4px; background: rgb(255 255 255 / .1); overflow: hidden; transform-origin: left; }
+    .burn-bar > div::before { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, rgb(255 255 255 / .5) 0 1px, transparent 1px 6px); opacity: .35; }
+    .burn-bar > div.hot::before { background: repeating-linear-gradient(90deg, #fff 0 1.5px, transparent 1.5px 6px); opacity: .55; }
+    .js .burn:not(.in) .burn-bar > div { transform: scaleX(0); }
+    .burn.in .burn-bar > div { transition: transform 1.1s var(--ease); transition-delay: calc(var(--k) * .1s); }
+    .burn-legend { display: flex; gap: 3px; margin-top: 10px; }
+    .burn-legend > div { font-size: 12px; color: rgb(255 255 255 / .55); min-width: 0; line-height: 1.4; }
+    .burn-legend b { display: block; font-family: var(--font-mono); font-weight: 400; color: #fff; font-size: 12.5px; }
+    @media (max-width: 720px) { .burn-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; } .burn-legend > div { flex: none !important; } }
+    .ledger-note { margin-top: 48px; padding-top: 24px; border-top: 1px solid rgb(255 255 255 / .12); display: flex; gap: 14px; align-items: flex-start; font-size: 14.5px; line-height: 1.75; color: rgb(255 255 255 / .7); max-width: 52em; }
+    .ledger-note .dot { margin-top: 9px; }
+
+    /* ════════ 六、自部署 ════════ */
+    .selfhost-grid { display: grid; grid-template-columns: .9fr 1.1fr; gap: clamp(40px, 6vw, 96px); align-items: start; }
+    @media (max-width: 980px) { .selfhost-grid { grid-template-columns: 1fr; } }
+    .spec { width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse; margin-top: 40px; font-size: 14.5px; }
+    .spec th, .spec td { padding: 14px 0; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+    .spec tr:last-child th, .spec tr:last-child td { border-bottom: 0; }
+    .spec th { width: 84px; padding-right: 16px; font-family: var(--font-mono); font-size: 12px; font-weight: 500; color: var(--muted); letter-spacing: .04em; white-space: nowrap; }
+    .spec td { line-height: 1.7; overflow-wrap: anywhere; }
+    .spec td code { font-family: var(--font-mono); font-size: 12.5px; background: var(--pill-bg); padding: 1px 5px; border-radius: 4px; }
+    .term { background: #161616; color: rgb(255 255 255 / .86); border-radius: 16px; overflow: hidden; box-shadow: 0 30px 60px -36px rgb(0 0 0 / .45); }
+    .term-head { display: flex; align-items: center; gap: 7px; padding: 12px 16px; border-bottom: 1px solid rgb(255 255 255 / .08); }
+    .term-head i { width: 10px; height: 10px; border-radius: 50%; background: rgb(255 255 255 / .14); }
+    .term-head span { margin-left: 8px; font-family: var(--font-mono); font-size: 11.5px; color: rgb(255 255 255 / .45); }
+    .term-head button { margin-left: auto; font-size: 12px; color: rgb(255 255 255 / .6); padding: 3px 9px; border-radius: 7px; border: 1px solid rgb(255 255 255 / .12); transition: color .15s ease, border-color .15s ease; }
+    .term-head button:hover { color: #fff; border-color: rgb(255 255 255 / .3); }
+    .term pre { margin: 0; padding: 20px 22px 24px; font-family: var(--font-mono); font-size: 13px; line-height: 1.85; overflow-x: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .term .c { color: rgb(255 255 255 / .38); }
+    .term .p { color: #7FB98B; user-select: none; }
+    .stack { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+    .stack span { font-family: var(--font-mono); font-size: 12px; color: var(--muted); padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); }
+
+    /* ════════ 七、进度 + 问答 ════════ */
+    .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(40px, 6vw, 96px); }
+    @media (max-width: 980px) { .status-grid { grid-template-columns: 1fr; } }
+    .road { list-style: none; margin: 36px 0 0; padding: 0; position: relative; }
+    .road::before { content: ""; position: absolute; left: 4px; top: 10px; bottom: 10px; width: 1px; background: var(--border); }
+    .road li { position: relative; padding: 9px 0 9px 28px; font-size: 15px; display: flex; gap: 10px; align-items: baseline; }
+    .road li > i { position: absolute; left: 0; top: 16px; width: 9px; height: 9px; border-radius: 50%; background: var(--surface); border: 1px solid var(--line-strong); }
+    .road li.done > i { background: rgb(0 0 0 / .5); border-color: transparent; }
+    .road li.now > i { background: var(--live); border-color: var(--live); animation: br 1.8s infinite; }
+    .road li.done { color: var(--muted); }
+    .road li .tag { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--faint); white-space: nowrap; }
+    .road li.now .tag { color: var(--live); }
+    .faq { margin-top: 36px; border-top: 1px solid var(--border); }
+    .faq details { border-bottom: 1px solid var(--border); }
+    .faq summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; gap: 16px; padding: 18px 0; font-size: 16px; font-weight: 500; }
+    .faq summary::-webkit-details-marker { display: none; }
+    .faq summary::after { content: "+"; font-family: var(--font-mono); font-weight: 400; color: var(--faint); transition: transform .3s var(--ease); }
+    .faq details[open] summary::after { transform: rotate(45deg); }
+    .faq .a { padding: 0 0 20px; color: var(--muted); font-size: 15px; line-height: 1.8; max-width: 36em; }
+    .faq details[open] .a { animation: pop-in .4s var(--ease-out) both; }
+
+    /* ════════ 八、收尾 ════════ */
+    .finale { text-align: center; border-top: 1px solid var(--border); overflow: hidden; }
+    .finale .display { font-size: clamp(40px, 5.6vw, 76px); }
+    .finale .lead { margin: 26px auto 0; }
+    .finale .hero-cta { justify-content: center; }
+    .finale .ruler { margin: 36px auto 0; width: 260px; }
+    .finale .ruler::before, .finale .ruler::after { -webkit-mask: linear-gradient(90deg, transparent, #000 30%, #000 70%, transparent); mask: linear-gradient(90deg, transparent, #000 30%, #000 70%, transparent); }
+    .soon-note { margin-top: 22px; font-size: 13px; color: var(--faint); }
+    .pagefoot { border-top: 1px solid var(--border); padding-block: 36px; font-size: 13px; color: var(--muted); }
+    .pagefoot .container { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
+    .pagefoot .logo { font-size: 14px; }
+    .pagefoot .brandmark { width: 20px; height: 20px; padding-bottom: 5px; border-radius: 6px; }
+    .pagefoot nav { display: flex; gap: 20px; }
+    .pagefoot nav a:hover { color: var(--fg); }
+
+    .btn:focus-visible, button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+      .js [data-reveal] { opacity: 1 !important; transform: none !important; }
+      .js .rise .line > span { transform: none !important; }
+      .paper-lens { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="paper-grid" aria-hidden="true"></div>
+  <div class="paper-lens" aria-hidden="true"></div>
+
+  <!-- ══ 导航 ══ -->
+  <header class="topnav" id="topnav">
+    <div class="container topnav-inner">
+      <a class="logo" href="#top" aria-label="Deep Research">
+        <span class="brandmark" aria-hidden="true"><i style="height:5px"></i><i style="height:9px"></i><i style="height:5px"></i><i style="height:12px"></i><i style="height:5px"></i></span>
+        Deep Research
+      </a>
+      <nav class="nav-links" aria-label="页面导航">
+        <a href="#workflow"><span data-l="zh">工序</span><span data-l="en">How it works</span></a>
+        <a href="#proof"><span data-l="zh">证据</span><span data-l="en">Evidence</span></a>
+        <a href="#ledger"><span data-l="zh">账单</span><span data-l="en">The bill</span></a>
+        <a href="#selfhost"><span data-l="zh">自部署</span><span data-l="en">Self-host</span></a>
+        <a href="#status"><span data-l="zh">进度</span><span data-l="en">Status</span></a>
+      </nav>
+      <div class="nav-tools">
+        <div class="seg" role="group" aria-label="Language">
+          <button type="button" data-set-lang="zh">中</button>
+          <button type="button" data-set-lang="en">EN</button>
+        </div>
+        <a class="gh" data-link="repo" href="#" target="_blank" rel="noopener">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub<span class="soon-tag"><span data-l="zh">即将开源</span><span data-l="en">soon</span></span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+
+    <!-- ══ 一、首屏 ══ -->
+    <section class="hero">
+      <div class="container hero-grid">
+        <div>
+          <div class="hero-status" data-reveal>
+            <span class="pill"><span class="dot live" aria-hidden="true"></span>
+              <span data-l="zh">开源 · 优化中 · 在线体验限量开放</span>
+              <span data-l="en">Open source · in active tuning · limited demo</span>
+            </span>
+          </div>
+          <h1 class="display rise" data-reveal style="--d:.1s">
+            <span data-l="zh"><span class="line"><span style="--i:0">把一个真问题，</span></span><span class="line"><span style="--i:1">做成一份</span></span><span class="line"><span style="--i:2"><span class="em">逐句可回溯</span>的报告</span></span></span>
+            <span data-l="en"><span class="line"><span style="--i:0">Turn a real question</span></span><span class="line"><span style="--i:1">into a report you can</span></span><span class="line"><span style="--i:2"><span class="em">trace</span>, sentence by sentence.</span></span></span>
+          </h1>
+          <div class="ruler" aria-hidden="true" data-reveal style="--d:.55s"><span class="scan"></span></div>
+          <p class="lead" data-reveal style="--d:.6s">
+            <span data-l="zh">多轮检索、抓取原文、判定来源，框架由你确认之后才动笔。每个判断都挂着能点开的段落引用；拿不准的地方盖上朱批，不悄悄略过。</span>
+            <span data-l="en">It searches in rounds, reads the originals and grades every source — and only starts writing once you approve the outline. Every claim carries a paragraph citation you can open; anything uncertain gets a red seal instead of being glossed over.</span>
+          </p>
+          <div class="hero-cta" data-reveal style="--d:.7s">
+            <a class="btn btn-primary" data-link="demo" href="#" target="_blank" rel="noopener">
+              <span data-l="zh">在线体验</span><span data-l="en">Try the demo</span><span class="arrow">→</span>
+              <span class="soon-tag"><span data-l="zh">即将开放</span><span data-l="en">Soon</span></span>
+            </a>
+            <a class="btn btn-ghost" data-link="repo" href="#" target="_blank" rel="noopener">
+              <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+              <span data-l="zh">GitHub 仓库</span><span data-l="en">GitHub</span>
+              <span class="soon-tag"><span data-l="zh">即将开源</span><span data-l="en">Soon</span></span>
+            </a>
+            <a class="btn btn-text" href="#workflow"><span data-l="zh">看一场研究怎么跑</span><span data-l="en">Watch a run</span> <span class="arrow down">↓</span></a>
+          </div>
+          <div class="hero-foot" data-reveal style="--d:.8s">
+            <span data-l="zh">段级引用</span><span data-l="en">Paragraph-level citations</span>
+            <span data-l="zh">人工审批框架</span><span data-l="en">Human-approved outline</span>
+            <span data-l="zh">交叉审查</span><span data-l="en">Cross-review</span>
+            <span data-l="zh">可自部署</span><span data-l="en">Self-hostable</span>
+          </div>
+        </div>
+
+        <!-- 报告面板：真实一次运行的片段 -->
+        <div class="stage-wrap" data-reveal style="--d:.35s">
+          <div class="float-note" aria-hidden="true">
+            <div class="h"><span class="seal">存疑</span><b><span data-l="zh">存疑与未完成</span><span data-l="en">Open questions</span></b></div>
+            <span data-l="zh">「丰田 1300 项专利」这类高频数字，在来源清单里主要是二手转述，原始一手来源仍需再核。</span>
+            <span data-l="en">High-frequency figures like “Toyota’s 1,300 patents” appear mostly as second-hand citations — the primary source still needs checking.</span>
+          </div>
+          <div class="panel" id="hero-panel">
+            <div class="panel-chrome">
+              <span class="dot" aria-hidden="true"></span>
+              <span data-l="zh">报告</span><span data-l="en">Report</span>
+              <div class="seg" aria-hidden="true"><button class="on" tabindex="-1"><span data-l="zh">报告</span><span data-l="en">Report</span></button><button tabindex="-1"><span data-l="zh">流程</span><span data-l="en">Flow</span></button><button tabindex="-1"><span data-l="zh">来源库</span><span data-l="en">Sources</span></button></div>
+            </div>
+            <div class="panel-head">
+              <div class="panel-title"><span data-l="zh">固态电池的产业化进展，以及各家技术路线的分歧点</span><span data-l="en">Solid-state batteries: industrialization progress and where the technical routes diverge</span></div>
+              <div class="panel-sub"><span class="dot" aria-hidden="true"></span><span data-l="zh">已完成 · 41 个来源 · 327 处引用</span><span data-l="en">Done · 41 sources · 327 citations</span></div>
+            </div>
+            <div class="panel-mix">
+              <div class="mix" role="img" aria-label="来源性质构成"><i class="c1" style="flex:16"></i><i class="c2" style="flex:9"></i><i class="c3" style="flex:9"></i><i class="c4" style="flex:5"></i><i class="c5" style="flex:2"></i></div>
+              <div class="mix-legend">
+                <span><span data-l="zh">一手</span><span data-l="en">Primary</span><b>16</b></span>
+                <span><span data-l="zh">媒体</span><span data-l="en">Media</span><b>9</b></span>
+                <span><span data-l="zh">聚合</span><span data-l="en">Aggregator</span><b>9</b></span>
+                <span><span data-l="zh">研究</span><span data-l="en">Research</span><b>5</b></span>
+                <span><span data-l="zh">社区</span><span data-l="en">Community</span><b>2</b></span>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="panel-h"><span data-l="zh">4.2 丰田主线：2027—2028 节点</span><span data-l="en">4.2 Toyota’s track: the 2027–2028 milestone</span></div>
+              <div class="ruler" aria-hidden="true"></div>
+              <p><span data-l="zh">丰田官方披露的商业化节点为 2027—2028 年，第一代全固态方案预计届时「ready for commercial use」</span><span data-l="en">Toyota’s official roadmap puts commercialization at 2027–2028, when its first-generation all-solid-state pack should be “ready for commercial use”</span><button class="cite" type="button" data-seg="S10·1">S10·1</button></p>
+              <p><span data-l="zh">丰田印度高管 2024 年 1 月的口径与此一致：「将在数年内全球推出固态电池车」</span><span data-l="en">A Toyota India executive said the same in January 2024: solid-state EVs will launch globally “in a couple of years”</span><button class="cite" type="button" data-seg="S13·1">S13·1</button></p>
+              <p><span data-l="zh">社区站 EVWorld 也强调丰田至今未交付任何固态电池车</span><span data-l="en">EVWorld likewise stresses that Toyota has yet to deliver a solid-state EV</span><button class="cite" type="button" data-seg="S11·1">S11·1</button><span data-l="zh">——但它属社区站点，作为独立信源强度有限。</span><span data-l="en"> — but as a community site, its weight as an independent source is limited.</span> <span class="seal"><span data-l="zh">存疑</span><span data-l="en">Doubt</span></span></p>
+            </div>
+            <div class="preview" aria-live="polite">
+              <div id="preview-body"></div>
+              <span class="autoplay" id="autoplay"></span>
+            </div>
+          </div>
+          <div class="stage-caption">
+            <span><span data-l="zh">真实运行片段 · 报告视图</span><span data-l="en">Real run excerpt · report view</span></span>
+            <span><span data-l="zh">点段号看原文</span><span data-l="en">Click a citation to read the source</span></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ 二、宣言 ══ -->
+    <section class="manifesto" aria-label="主张">
+      <div class="container">
+        <p class="lightup" data-l="zh">AI 写的长文，大多读起来都很像回事。<br>问题是——<span data-key>你没法核对它</span>。我们想让每一句话，都能被追到它的原文。</p>
+        <p class="lightup" data-l="en">Most AI-written long reads sound convincing. The trouble is, <span data-key>you can’t check them</span>. We want every sentence to lead back to the passage it came from.</p>
+        <div class="sig"><div class="ruler" aria-hidden="true" style="width:120px"></div><span data-l="zh">设计原则</span><span data-l="en">Design principle</span></div>
+      </div>
+    </section>
+
+    <!-- ══ 三、工序（吸顶长镜头） ══ -->
+    <section class="scene" id="workflow">
+      <div class="container scene-intro">
+        <div class="eyebrow"><span class="no">01</span><span data-l="zh">工序</span><span data-l="en">How it works</span></div>
+        <h2 class="h2" data-reveal><span data-l="zh">一场研究，<br>是一串过了检查的工序</span><span data-l="en">A research run is a chain<br>of checked steps</span></h2>
+        <p class="lead" data-reveal style="--d:.08s"><span data-l="zh">不是把问题丢进对话框等它写完。下面按一次真实运行的时间和花费，走一遍。</span><span data-l="en">Not a prompt you fire and forget. Here is one real run, replayed with its actual timing and token spend.</span></p>
+      </div>
+      <div class="scene-track-wrap" id="scene" style="--n:5">
+        <div class="scene-sticky">
+          <div class="container">
+            <div class="scene-meter">
+              <div class="meter">
+                <div><div class="k"><span data-l="zh">已用时</span><span data-l="en">Elapsed</span></div><div class="v" id="m-time">00:00</div></div>
+                <div><div class="k"><span data-l="zh">累计消耗</span><span data-l="en">Tokens used</span></div><div class="v"><span id="m-tok">0</span><small>token</small></div></div>
+              </div>
+              <div class="scene-q"><span data-l="zh">问题 · </span><span data-l="en">Question · </span><b><span data-l="zh">固态电池的产业化进展，以及各家技术路线的分歧点</span><span data-l="en">Solid-state battery industrialization &amp; route divergence</span></b></div>
+            </div>
+            <div class="scene-track" style="margin-top:28px">
+              <div class="track" aria-hidden="true"><span class="track-fill" id="track-fill"></span></div>
+              <ol class="stages" id="stages">
+                <li class="stage"><i></i><span data-l="zh">探测</span><span data-l="en">Probe</span></li>
+                <li class="stage"><i></i><span data-l="zh">定框架</span><span data-l="en">Outline</span></li>
+                <li class="stage"><i></i><span data-l="zh">检索</span><span data-l="en">Search</span></li>
+                <li class="stage"><i></i><span data-l="zh">抽取</span><span data-l="en">Extract</span></li>
+                <li class="stage"><i></i><span data-l="zh">证据闸门</span><span data-l="en">Gate</span></li>
+                <li class="stage"><i></i><span data-l="zh">评估</span><span data-l="en">Assess</span></li>
+                <li class="stage"><i></i><span data-l="zh">校准</span><span data-l="en">Calibrate</span></li>
+                <li class="stage human"><i></i><span data-l="zh">待审批</span><span data-l="en">Approve</span></li>
+                <li class="stage"><i></i><span data-l="zh">写作</span><span data-l="en">Write</span></li>
+                <li class="stage"><i></i><span data-l="zh">收尾</span><span data-l="en">Finish</span></li>
+              </ol>
+            </div>
+          </div>
+          <div class="container" style="margin-top:8px">
+            <div class="chapters" id="chapters">
+              <!-- 01 -->
+              <article class="chapter on">
+                <div class="ch-text">
+                  <div class="ch-no"><b>01</b> / 05 · <span data-l="zh">探测 → 定框架</span><span data-l="en">Probe → Outline</span></div>
+                  <h3><span data-l="zh">先摸清地形，再搭框架</span><span data-l="en">Survey the terrain, then draft a frame</span></h3>
+                  <p><span data-l="zh">不急着检索。先轻扫一圈、深读几篇概览，归纳出这个领域的轮廓，再据此定一个初版框架。</span><span data-l="en">No rushing into search. It skims the field, reads a few overviews closely, sketches the landscape, and only then drafts a first outline.</span></p>
+                  <div class="ch-time">00:00 → 02:21 · 22.9k token</div>
+                </div>
+                <div class="log">
+                  <div class="log-head"><span class="dot live"></span><b><span data-l="zh">探测</span><span data-l="en">Probing</span></b><span class="num">4 calls</span></div>
+                  <ol>
+                    <li class="done" style="--k:0"><span class="st"></span><span><span data-l="zh">轻扫检索</span><span data-l="en">Light sweep</span></span><span class="sm">3 calls · 4.3k</span></li>
+                    <li class="done" style="--k:1"><span class="st"></span><span><span data-l="zh">深读 · 归纳领域轮廓</span><span data-l="en">Deep read · map the field</span></span><span class="sm">15.3k</span></li>
+                    <li class="run" style="--k:2"><span class="st"></span><span><span data-l="zh">定框架</span><span data-l="en">Draft outline</span></span><span class="sm"><span data-l="zh">8 个小节</span><span data-l="en">8 sections</span></span></li>
+                  </ol>
+                </div>
+              </article>
+              <!-- 02 -->
+              <article class="chapter">
+                <div class="ch-text">
+                  <div class="ch-no"><b>02</b> / 05 · <span data-l="zh">检索 → 抽取 → 证据闸门</span><span data-l="en">Search → Extract → Gate</span></div>
+                  <h3><span data-l="zh">每一段材料，都要过闸</span><span data-l="en">Every passage has to pass the gate</span></h3>
+                  <p><span data-l="zh">按框架分头检索、抓取原文、切成段落。每个来源先判性质，每一段再过证据闸门：跑没跑题、算不算证据，判不过的不进库。</span><span data-l="en">It searches per section, fetches full text and splits it into passages. Each source is graded by type; each passage must pass an evidence gate — off-topic or non-evidence never enters the library.</span></p>
+                  <div class="ch-time">02:21 → 07:05 · 178k token</div>
+                </div>
+                <div class="log">
+                  <div class="log-head"><span class="dot live"></span><b><span data-l="zh">检索（第 1 轮）</span><span data-l="en">Search (round 1)</span></b><span class="num">74 calls</span></div>
+                  <ol>
+                    <li class="done" style="--k:0"><span class="st"></span><span><span data-l="zh">抓取原文</span><span data-l="en">Fetch originals</span></span><span class="sm"><span data-l="zh">41 个来源</span><span data-l="en">41 sources</span></span></li>
+                    <li class="done" style="--k:1"><span class="st"></span><span><span data-l="zh">段落概括</span><span data-l="en">Summarize passages</span></span><span class="sm">24 batches</span></li>
+                    <li class="done" style="--k:2"><span class="st"></span><span><span data-l="zh">来源判定</span><span data-l="en">Grade sources</span></span><span class="sm"><span class="tg tg1"><span data-l="zh">一手 16</span><span data-l="en">Primary 16</span></span><span class="tg tg4"><span data-l="zh">研究 5</span><span data-l="en">Research 5</span></span></span></li>
+                    <li class="done" style="--k:3"><span class="st"></span><span><span data-l="zh">抽取</span><span data-l="en">Extract</span></span><span class="sm">6 calls</span></li>
+                    <li class="run" style="--k:4"><span class="st"></span><span><span data-l="zh">证据闸门</span><span data-l="en">Evidence gate</span></span><span class="sm"><span data-l="zh">44 次判定 · 入库 122 段</span><span data-l="en">44 checks · 122 passages kept</span></span></li>
+                  </ol>
+                </div>
+              </article>
+              <!-- 03 -->
+              <article class="chapter">
+                <div class="ch-text">
+                  <div class="ch-no"><b>03</b> / 05 · <span data-l="zh">评估 → 校准</span><span data-l="en">Assess → Calibrate</span></div>
+                  <h3><span data-l="zh">够不够，先问自己</span><span data-l="en">Is it enough? Ask first.</span></h3>
+                  <p><span data-l="zh">逐节评估材料够不够厚；不够就带着缺口回去补检索，而不是硬写。框架也会按真实拿到的材料再校准一遍。</span><span data-l="en">Each section is checked for evidence depth. Gaps send it back to search with a precise brief instead of writing around them — and the outline is recalibrated to what was actually found.</span></p>
+                  <div class="ch-time">11:23 → 29:40 · 237k token</div>
+                </div>
+                <div class="log">
+                  <div class="log-head"><span class="dot live"></span><b><span data-l="zh">评估</span><span data-l="en">Assess</span></b><span class="num">2 rounds</span></div>
+                  <ol>
+                    <li class="warn" style="--k:0"><span class="st"></span><span><span data-l="zh">评估（第 1 轮）</span><span data-l="en">Assess (round 1)</span></span><span class="sm"><span class="seal"><span data-l="zh">偏薄</span><span data-l="en">Thin</span></span></span></li>
+                    <li class="done" style="--k:1"><span class="st"></span><span><span data-l="zh">检索（第 2 轮）· 定向补检</span><span data-l="en">Search (round 2) · targeted</span></span><span class="sm">gap-driven</span></li>
+                    <li class="done" style="--k:2"><span class="st"></span><span><span data-l="zh">评估（第 2 轮）</span><span data-l="en">Assess (round 2)</span></span><span class="sm"><span data-l="zh">通过</span><span data-l="en">pass</span></span></li>
+                    <li class="run" style="--k:3"><span class="st"></span><span><span data-l="zh">校准框架 · 写作规约</span><span data-l="en">Calibrate outline · writing spec</span></span><span class="sm">34.1k</span></li>
+                  </ol>
+                </div>
+              </article>
+              <!-- 04 -->
+              <article class="chapter">
+                <div class="ch-text">
+                  <div class="ch-no"><b>04</b> / 05 · <span data-l="zh">待审批</span><span data-l="en">Approval</span></div>
+                  <h3><span data-l="zh">这一步，留给你</span><span data-l="en">This step is yours</span></h3>
+                  <p><span data-l="zh">框架在材料上校准过之后会停下来，等你点头。你可以改小节、删掉不要的方向；确认之前，一个字都不会写。</span><span data-l="en">Once calibrated against the evidence, the outline stops and waits for you. Edit sections, drop directions you don’t need — not a word gets written until you approve.</span></p>
+                  <div class="ch-time"><span data-l="zh">计时暂停 · 不消耗 token</span><span data-l="en">Clock paused · no tokens spent</span></div>
+                </div>
+                <div class="approve">
+                  <div class="approve-top"><span class="dot" style="background:var(--ink)"></span><span data-l="zh">待你审批 · 已在材料上校准</span><span data-l="en">Awaiting your approval · calibrated</span></div>
+                  <h4><span data-l="zh">报告框架</span><span data-l="en">Report outline</span></h4>
+                  <ol>
+                    <li style="--k:0"><span data-l="zh">技术路线分类与核心分歧</span><span data-l="en">Route taxonomy and core divergences</span></li>
+                    <li style="--k:1"><span data-l="zh">固-固界面瓶颈与放大失效</span><span data-l="en">Solid–solid interfaces and scale-up failure</span></li>
+                    <li style="--k:2"><span data-l="zh">成本结构与制造工艺不兼容</span><span data-l="en">Cost structure and process incompatibility</span></li>
+                    <li style="--k:3"><span data-l="zh">产业化时间表与过渡期</span><span data-l="en">Timelines and the transition period</span></li>
+                    <li style="--k:4"><span data-l="zh">应用场景与车规路线之争</span><span data-l="en">Applications beyond automotive</span></li>
+                    <li style="--k:5;color:var(--faint)"><span data-l="zh">…… 另 3 节</span><span data-l="en">… 3 more</span></li>
+                  </ol>
+                  <div class="approve-act">
+                    <span class="btn btn-primary"><span data-l="zh">通过，开始写作</span><span data-l="en">Approve &amp; write</span></span>
+                    <span class="btn btn-ghost"><span data-l="zh">修改框架</span><span data-l="en">Edit outline</span></span>
+                  </div>
+                </div>
+              </article>
+              <!-- 05 -->
+              <article class="chapter">
+                <div class="ch-text">
+                  <div class="ch-no"><b>05</b> / 05 · <span data-l="zh">写作 → 审查 → 收尾</span><span data-l="en">Write → Review → Finish</span></div>
+                  <h3><span data-l="zh">分头写，再交叉审</span><span data-l="en">Write in parallel, then cross-review</span></h3>
+                  <p><span data-l="zh">多个子 agent 按小节并行写作，每句只能引用库里有的段落，编造的段号会被丢弃。写完换一组视角审查，偏薄、越界、没答上的地方返修；返修也补不上的，写进「存疑与未完成」。</span><span data-l="en">Sub-agents write sections in parallel and may only cite passages in the library — fabricated citations are dropped. A separate reviewer then flags thin, out-of-scope or unanswered parts for revision; what still can’t be fixed goes into “Open questions”.</span></p>
+                  <div class="ch-time">13:44 → 40:26 · 651k token</div>
+                </div>
+                <div class="log">
+                  <div class="log-head"><span class="dot"></span><b><span data-l="zh">完成</span><span data-l="en">Done</span></b><span class="num">35 calls</span></div>
+                  <ol>
+                    <li class="done" style="--k:0"><span class="st"></span><span><span data-l="zh">任务分派 · 并行写作</span><span data-l="en">Dispatch · parallel writing</span></span><span class="sm">20 calls · 259k</span></li>
+                    <li class="done" style="--k:1"><span class="st"></span><span><span data-l="zh">审查</span><span data-l="en">Review</span></span><span class="sm"><span class="seal"><span data-l="zh">越界引用 1</span><span data-l="en">1 out-of-scope</span></span></span></li>
+                    <li class="done" style="--k:2"><span class="st"></span><span><span data-l="zh">返修</span><span data-l="en">Revise</span></span><span class="sm">7 calls · 90k</span></li>
+                    <li class="done" style="--k:3"><span class="st"></span><span><span data-l="zh">装配成文</span><span data-l="en">Assemble</span></span><span class="sm"><span data-l="zh">4.1 万字 · 327 处引用</span><span data-l="en">41k chars · 327 citations</span></span></li>
+                  </ol>
+                </div>
+              </article>
+            </div>
+          </div>
+          <div class="scene-hint" id="scene-hint"><span data-l="zh">继续滚动 ↓</span><span data-l="en">Keep scrolling ↓</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ 四、证据 ══ -->
+    <section class="section proof" id="proof">
+      <div class="container">
+        <div class="proof-head">
+          <div class="eyebrow"><span class="no">02</span><span data-l="zh">证据</span><span data-l="en">Evidence</span></div>
+          <h2 class="h2" data-reveal><span data-l="zh">能被核对的，<br>才算研究</span><span data-l="en">If you can’t check it,<br>it isn’t research</span></h2>
+          <p class="lead" data-reveal style="--d:.08s"><span data-l="zh">差别不在能不能写长文，而在写出来的东西，能不能对上原文。以下都取自同一次真实运行。</span><span data-l="en">The difference isn’t whether it can write long — it’s whether what it writes holds up against the source. Everything below comes from the same real run.</span></p>
+        </div>
+
+        <!-- 01 引用 -->
+        <div class="proof-row">
+          <div class="proof-text" data-reveal>
+            <div class="k">01 · CITATION</div>
+            <h3><span data-l="zh">引用挂在句子上，<br>不堆在文末</span><span data-l="en">Citations live on the sentence,<br>not in a footer</span></h3>
+            <p><span data-l="zh">每个判断后面挂一个段号，指向原文里具体的那一段。点开就能看到它引了什么、来自哪篇、属于哪类材料。</span><span data-l="en">Every claim carries a passage number pointing at one specific paragraph of the source. Open it to see exactly what was quoted, from where, and what kind of source it is.</span></p>
+            <div class="vs"><span data-l="zh">一份报告，<b>327</b> 处引用，指向 <b>82</b> 段不同的原文。</span><span data-l="en">One report: <b>327</b> citations pointing at <b>82</b> distinct passages.</span></div>
+          </div>
+          <div class="thread-box" id="thread-box" data-reveal-self>
+            <svg class="thread" aria-hidden="true"><path id="thread-path" d=""/><circle id="thread-dot" r="3"/></svg>
+            <div class="sentence-card">
+              <div class="meta">§ 2.6 · <span data-l="zh">量产最大卡点的共识表述</span><span data-l="en">Consensus on the main bottleneck</span></div>
+              <span data-l="zh">各类电解质的取舍并未收敛：固-固界面是首要技术障碍，刚性界面在材料、工艺、设备任一环节失配，即触发阻抗与失效的连锁放大</span><span data-l="en">No electrolyte chemistry has won: the solid–solid interface is the first barrier, and a mismatch in materials, process or equipment triggers a cascade of impedance and failure</span><span class="cite on" id="thread-cite">S27·12</span>
+            </div>
+            <div class="source-card" id="thread-src">
+              <div class="preview-head"><span class="preview-no">S27·12</span><span class="tg tg4"><span data-l="zh">研究</span><span data-l="en">Research</span></span><span class="preview-src">Frontiers · frontiersin.org</span><span class="preview-date">2026-09-30</span></div>
+              <p class="preview-text">“A comparative evaluation of sulfide and halide-based solid electrolytes confirms a central conclusion: <mark>no single electrolyte chemistry yet delivers the full set of properties</mark> required for practical lithium metal solid-state batteries. These properties include high ionic transport, <mark>durable interfacial stability</mark>, mechanical resilience, manufacturability…”</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 02 来源 -->
+        <div class="proof-row flip">
+          <div class="proof-text" data-reveal>
+            <div class="k">02 · SOURCES</div>
+            <h3><span data-l="zh">来源先分性质，<br>再当证据用</span><span data-l="en">Sources are graded<br>before they’re used</span></h3>
+            <p><span data-l="zh">每个来源被判成一手、媒体、聚合、研究、社区五类，构成比例印在报告头上。还没读正文，就知道这份材料有多硬。</span><span data-l="en">Every source is classified as primary, media, aggregator, research or community, and the mix is printed at the top of the report. You know how solid the footing is before you read a word.</span></p>
+            <div class="vs"><span data-l="zh">社区站点的说法会被写明「独立信源强度有限」，而不是和官方披露平起平坐。</span><span data-l="en">A community site’s claim is explicitly marked as <b>limited as an independent source</b>, not weighed equally with official disclosures.</span></div>
+          </div>
+          <div class="src-box" id="src-box" data-reveal-self>
+            <div class="src-top">
+              <div class="row"><span class="big num">41<small><span data-l="zh">个来源</span><span data-l="en">sources</span></small></span><span class="mono" style="font-size:11.5px;color:var(--faint)">122 <span data-l="zh">段入库</span><span data-l="en">passages kept</span></span></div>
+              <div class="mix"><i class="c1" style="flex:16"></i><i class="c2" style="flex:9"></i><i class="c3" style="flex:9"></i><i class="c4" style="flex:5"></i><i class="c5" style="flex:2"></i></div>
+              <div class="mix-legend">
+                <span><span data-l="zh">一手</span><span data-l="en">Primary</span><b>16</b></span><span><span data-l="zh">媒体</span><span data-l="en">Media</span><b>9</b></span><span><span data-l="zh">聚合</span><span data-l="en">Aggregator</span><b>9</b></span><span><span data-l="zh">研究</span><span data-l="en">Research</span><b>5</b></span><span><span data-l="zh">社区</span><span data-l="en">Community</span><b>2</b></span>
+              </div>
+            </div>
+            <ul class="src-list">
+              <li style="--k:0"><span class="sn">S27</span><span class="t">Interface failure mechanisms in sulfide and halide solid electrolytes<small>frontiersin.org</small></span><span class="tg tg4"><span data-l="zh">研究</span><span data-l="en">Research</span></span></li>
+              <li style="--k:1"><span class="sn">S36</span><span class="t">Isostatic Pressing: The Core Process for SSB Mass Production<small>neware.net</small></span><span class="tg tg1"><span data-l="zh">一手</span><span data-l="en">Primary</span></span></li>
+              <li style="--k:2"><span class="sn">S10</span><span class="t">Toyota plots solid-state battery timeline for future EVs<small>greencarreports.com</small></span><span class="tg tg2"><span data-l="zh">媒体</span><span data-l="en">Media</span></span></li>
+              <li style="--k:3"><span class="sn">S30</span><span class="t">Argyrodite Li6PS5Cl Scale-Up Market, Outlook 2026–2034<small>24chemicalresearch.com</small></span><span class="tg tg3"><span data-l="zh">聚合</span><span data-l="en">Aggregator</span></span></li>
+              <li style="--k:4"><span class="sn">S11</span><span class="t">Toyota’s Solid-State Battery Roadmap: Reality vs. Rumor<small>evworld.com</small></span><span class="tg tg5"><span data-l="zh">社区</span><span data-l="en">Community</span></span></li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- 03 审查 -->
+        <div class="proof-row">
+          <div class="proof-text" data-reveal>
+            <div class="k">03 · REVIEW</div>
+            <h3><span data-l="zh">写完还要过一遍审，<br>补不上的就直说</span><span data-l="en">Reviewed after writing —<br>and honest about gaps</span></h3>
+            <p><span data-l="zh">另一组视角复核结论：偏薄、越界、没答上的地方返修，改了哪一句都留下修订痕迹。证据确实不够的，写进文末「存疑与未完成」，不拿漂亮话糊过去。</span><span data-l="en">A separate reviewer re-checks the conclusions. Thin, out-of-scope or unanswered parts are revised with visible tracked changes. Where evidence truly runs out, it says so in “Open questions” rather than papering over it.</span></p>
+          </div>
+          <div class="review-box" data-reveal-self id="review-box">
+            <div class="rev-card">
+              <div class="meta"><span class="seal"><span data-l="zh">已修订</span><span data-l="en">Revised</span></span><span data-l="zh">修订痕迹 · 示意</span><span data-l="en">Tracked change · illustrative</span></div>
+              <p class="rev-line" id="rev-line"></p>
+            </div>
+            <div class="rev-card doubt">
+              <h5><span class="seal"><span data-l="zh">存疑</span><span data-l="en">Doubt</span></span><span data-l="zh">存疑与未完成 · 真实摘录</span><span data-l="en">Open questions · real excerpt</span></h5>
+              <p><span data-l="zh">「成本为液态 3—5 倍」一句的偏差范围：最低 2 倍、最高 8 倍都有口径，若不在开篇明确采用哪种倍数，后续数字会多次反向。</span><span data-l="en">The “3–5× the cost of liquid” figure: estimates range from 2× to 8×. Unless the report fixes which multiple it uses up front, later numbers will contradict each other.</span></p>
+              <p><span data-l="zh">丰田 1300 项专利、711 Wh/kg 世界纪录等高频数字，来源清单里主要是二手转述，原始一手来源需再核。</span><span data-l="en">High-frequency figures — Toyota’s 1,300 patents, the 711 Wh/kg record — appear mostly second-hand in the source list; primary sources need checking.</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ 五、账单（深色） ══ -->
+    <section class="section ledger" id="ledger">
+      <div class="container">
+        <div class="eyebrow"><span class="no">03</span><span data-l="zh">账单</span><span data-l="en">The bill</span></div>
+        <h2 class="h2" data-reveal><span data-l="zh">一场研究的真实账单</span><span data-l="en">What one run really costs</span></h2>
+        <p class="lead" data-reveal style="--d:.08s"><span data-l="zh">题目 <q>固态电池的产业化进展，以及各家技术路线的分歧点</q>，2026 年 10 月的一次完整运行。深度是有代价的，我们不藏这个数字。</span><span data-l="en">Question: <q>Solid-state battery industrialization and where the routes diverge</q> — one complete run, October 2026. Depth has a price, and we’d rather show it.</span></p>
+        <div class="ledger-grid" id="ledger-grid">
+          <div><div class="k"><span data-l="zh">耗时</span><span data-l="en">Wall time</span></div><div class="v"><span data-count="40">40</span><small><span data-l="zh">分钟</span><span data-l="en">min</span></small></div><div class="d"><span data-l="zh">含等待你审批的时间</span><span data-l="en">incl. waiting for approval</span></div></div>
+          <div><div class="k"><span data-l="zh">消耗</span><span data-l="en">Tokens</span></div><div class="v"><span data-count="651">651</span><small>k token</small></div><div class="d"><span data-l="zh">输入 461k · 输出 190k</span><span data-l="en">461k in · 190k out</span></div></div>
+          <div><div class="k"><span data-l="zh">模型调用</span><span data-l="en">Model calls</span></div><div class="v"><span data-count="117">117</span><small><span data-l="zh">次</span><span data-l="en">calls</span></small></div><div class="d"><span data-l="zh">12 个环节</span><span data-l="en">across 12 stages</span></div></div>
+          <div><div class="k"><span data-l="zh">来源</span><span data-l="en">Sources</span></div><div class="v"><span data-count="41">41</span><small><span data-l="zh">个</span><span data-l="en">read</span></small></div><div class="d"><span data-l="zh">全文抓取，逐个判性质</span><span data-l="en">full text, each graded</span></div></div>
+          <div><div class="k"><span data-l="zh">引用</span><span data-l="en">Citations</span></div><div class="v"><span data-count="327">327</span><small><span data-l="zh">处</span><span data-l="en">inline</span></small></div><div class="d"><span data-l="zh">指向 82 段不同原文</span><span data-l="en">to 82 distinct passages</span></div></div>
+          <div><div class="k"><span data-l="zh">成稿</span><span data-l="en">Report</span></div><div class="v"><span data-count="4.1" data-dec="1">4.1</span><small><span data-l="zh">万字</span><span data-l="en">×10k chars</span></small></div><div class="d"><span data-l="zh">8 节正文 + 存疑与未完成</span><span data-l="en">8 sections + open questions</span></div></div>
+        </div>
+        <div class="burn" id="burn">
+          <div class="burn-head"><span data-l="zh">token 花在哪</span><span data-l="en">Where the tokens go</span><span class="mono">651k</span></div>
+          <div class="burn-bar">
+            <div style="flex:23;--k:0"></div><div style="flex:155;--k:1"></div><div style="flex:60;--k:2"></div><div class="hot" style="flex:309;--k:3"></div><div style="flex:104;--k:4"></div>
+          </div>
+          <div class="burn-legend">
+            <div style="flex:23"><b>23k</b><span data-l="zh">探测</span><span data-l="en">Probe</span></div>
+            <div style="flex:155"><b>155k</b><span data-l="zh">检索 · 概括 · 闸门</span><span data-l="en">Search · summarize · gate</span></div>
+            <div style="flex:60"><b>60k</b><span data-l="zh">评估 · 校准</span><span data-l="en">Assess · calibrate</span></div>
+            <div style="flex:309"><b>309k</b><span data-l="zh">分派 + 并行写作</span><span data-l="en">Dispatch + parallel writing</span></div>
+            <div style="flex:104"><b>104k</b><span data-l="zh">审查 · 返修</span><span data-l="en">Review · revise</span></div>
+          </div>
+        </div>
+        <div class="ledger-note" data-reveal>
+          <span class="dot live" aria-hidden="true"></span>
+          <span><span data-l="zh">这也是在线体验需要限量的原因——每场研究都是真金白银的模型调用。我们正在压低这个数字；在那之前，欢迎直接拿源码，用你自己的密钥跑。</span><span data-l="en">That’s why the hosted demo is limited — every run is real, paid model usage. We’re working to bring the number down; until then, you’re welcome to grab the source and run it on your own keys.</span></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ 六、自部署 ══ -->
+    <section class="section" id="selfhost">
+      <div class="container selfhost-grid">
+        <div>
+          <div class="eyebrow"><span class="no">04</span><span data-l="zh">自部署</span><span data-l="en">Self-host</span></div>
+          <h2 class="h2" data-reveal><span data-l="zh">开源，<br>跑在你自己的机器上</span><span data-l="en">Open source.<br>Runs on your machine.</span></h2>
+          <table class="spec" data-reveal style="--d:.1s">
+            <tbody>
+              <tr><th scope="row"><span data-l="zh">数据</span><span data-l="en">Data</span></th><td><span data-l="zh">会话、来源、报告都在本地一个 SQLite 文件里，可备份、可迁移。</span><span data-l="en">Sessions, sources and reports live in one local SQLite file — easy to back up or move.</span></td></tr>
+              <tr><th scope="row"><span data-l="zh">外呼</span><span data-l="en">Network</span></th><td><span data-l="zh">只有模型与搜索请求会出网，发给你自己配置的服务商；可接本机 SearXNG。</span><span data-l="en">Only model and search requests leave the machine, to providers you configure. Local SearXNG supported.</span></td></tr>
+              <tr><th scope="row"><span data-l="zh">密钥</span><span data-l="en">Keys</span></th><td><span data-l="zh">写在你自己的 <code>.env</code> 里，研究请求由你的机器直接发往所选服务商。</span><span data-l="en">Stored in your own <code>.env</code>; requests go directly from your machine to the provider you choose.</span></td></tr>
+              <tr><th scope="row"><span data-l="zh">模型</span><span data-l="en">Models</span></th><td><span data-l="zh">provider 档案集中在 <code>config/models.yaml</code>，各环节预算与思考强度可单独调。</span><span data-l="en">Provider profiles live in <code>config/models.yaml</code>; per-stage budgets and reasoning effort are tunable.</span></td></tr>
+              <tr><th scope="row"><span data-l="zh">产出</span><span data-l="en">Export</span></th><td><span data-l="zh">Markdown、PDF、Word。带走的是成稿，不是截图。</span><span data-l="en">Markdown, PDF, Word — you take away a document, not a screenshot.</span></td></tr>
+              <tr><th scope="row"><span data-l="zh">回放</span><span data-l="en">Replay</span></th><td><span data-l="zh">每轮检索、每次调用都落库，可回放重看；内置零 token 的回放模式。</span><span data-l="en">Every round and call is recorded and replayable, with a zero-token replay mode built in.</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div data-reveal style="--d:.15s">
+          <div class="term">
+            <div class="term-head"><i></i><i></i><i></i><span>quick start</span><button type="button" id="copy-btn"><span data-l="zh">复制</span><span data-l="en">Copy</span></button></div>
+<pre id="quickstart"><span class="c"># 1. 获取源码（仓库即将开放）</span>
+<span class="p">$ </span>git clone &lt;repo-url&gt; deep-research && cd deep-research
+<span class="p">$ </span>uv venv && uv pip install -e .
+
+<span class="c"># 2. 填入密钥：搜索 + 模型 provider</span>
+<span class="p">$ </span>echo "TAVILY_API_KEY=…"  >> .env
+<span class="p">$ </span>echo "MINIMAX_API_KEY=…" >> .env
+
+<span class="c"># 3. 启动后端</span>
+<span class="p">$ </span>set -a; . ./.env; set +a
+<span class="p">$ </span>.venv/bin/python -m uvicorn research_agent.server:app --port 8000
+
+<span class="c"># 4. 启动前端 → http://127.0.0.1:5173</span>
+<span class="p">$ </span>cd frontend && npm install && npm run dev</pre>
+          </div>
+          <div class="stack">
+            <span>Python 3.12</span><span>LangGraph</span><span>FastAPI</span><span>SQLite · FTS5</span><span>React</span><span>Vite</span><span>Tailwind</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ 七、进度 + 问答 ══ -->
+    <section class="section" id="status" style="border-top:1px solid var(--border)">
+      <div class="container status-grid">
+        <div>
+          <div class="eyebrow"><span class="no">05</span><span data-l="zh">进度</span><span data-l="en">Status</span></div>
+          <h2 class="h2" data-reveal><span data-l="zh">还在打磨，<br>但已经能用</span><span data-l="en">Still being polished,<br>already useful</span></h2>
+          <ul class="road" data-reveal style="--d:.1s">
+            <li class="done"><i></i><span data-l="zh">端到端研究流程（含人工审批点）</span><span data-l="en">End-to-end research pipeline with approval step</span><span class="tag">done</span></li>
+            <li class="done"><i></i><span data-l="zh">段级引用与原文回溯</span><span data-l="en">Paragraph-level citations &amp; source lookup</span><span class="tag">done</span></li>
+            <li class="done"><i></i><span data-l="zh">来源性质判定与证据闸门</span><span data-l="en">Source grading &amp; evidence gate</span><span class="tag">done</span></li>
+            <li class="done"><i></i><span data-l="zh">交叉审查、返修与修订痕迹</span><span data-l="en">Cross-review, revision &amp; tracked changes</span><span class="tag">done</span></li>
+            <li class="done"><i></i><span data-l="zh">导出 Markdown / PDF / Word · 回放模式</span><span data-l="en">Export MD / PDF / Word · replay mode</span><span class="tag">done</span></li>
+            <li class="now"><i></i><span data-l="zh">压低单场研究的 token 成本</span><span data-l="en">Cutting per-run token cost</span><span class="tag">in progress</span></li>
+            <li><i></i><span data-l="zh">开源 GitHub 仓库</span><span data-l="en">Public GitHub repository</span><span class="tag">next</span></li>
+            <li><i></i><span data-l="zh">限量在线体验</span><span data-l="en">Limited hosted demo</span><span class="tag">next</span></li>
+          </ul>
+        </div>
+        <div>
+          <div class="eyebrow" style="visibility:hidden" aria-hidden="true"><span class="no">·</span></div>
+          <h3 class="h3 serif" style="font-size:24px" data-reveal><span data-l="zh">常见问题</span><span data-l="en">FAQ</span></h3>
+          <div class="faq" data-reveal style="--d:.1s">
+            <details>
+              <summary><span data-l="zh">一场研究要多久、花多少？</span><span data-l="en">How long does a run take, and what does it cost?</span></summary>
+              <div class="a"><span data-l="zh">视题目而定，通常 25–40 分钟、几十万 token。上面的「账单」是一次真实运行的完整数字。过程中可以随时离开，回来接着看。</span><span data-l="en">It depends on the question — typically 25–40 minutes and a few hundred thousand tokens. The “bill” above is a complete real run. You can leave and come back at any time.</span></div>
+            </details>
+            <details>
+              <summary><span data-l="zh">支持哪些模型？</span><span data-l="en">Which models are supported?</span></summary>
+              <div class="a"><span data-l="zh">目前默认走 MiniMax，另有 OpenAI 兼容协议的备用档案。切换 provider 在配置里完成，但不同平台的协议细节不同，换之前建议先跑一遍自带的预检脚本。</span><span data-l="en">MiniMax by default, plus OpenAI-compatible fallback profiles. Switching providers is a config change, but protocols differ — run the bundled preflight check first.</span></div>
+            </details>
+            <details>
+              <summary><span data-l="zh">为什么要我审批框架？</span><span data-l="en">Why do I have to approve the outline?</span></summary>
+              <div class="a"><span data-l="zh">写作是最贵的一步（约占一半 token），也是最难返工的一步。框架先在材料上校准，再让你确认方向，比写完再推倒便宜得多。</span><span data-l="en">Writing is the most expensive step (about half the tokens) and the hardest to redo. Calibrating the outline against evidence and letting you confirm direction is far cheaper than rewriting afterwards.</span></div>
+            </details>
+            <details>
+              <summary><span data-l="zh">在线体验和自部署有什么区别？</span><span data-l="en">Hosted demo vs. self-hosting?</span></summary>
+              <div class="a"><span data-l="zh">功能相同。在线体验由我们承担模型费用，所以名额有限；自部署用你自己的密钥，数据只在你的机器上。</span><span data-l="en">Same features. The hosted demo runs on our model budget, so seats are limited; self-hosting uses your own keys and keeps data on your machine.</span></div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ 八、收尾 ══ -->
+    <section class="section finale">
+      <div class="container">
+        <h2 class="display rise" data-reveal>
+          <span data-l="zh"><span class="line"><span>从一个<span class="em">真问题</span>开始</span></span></span>
+          <span data-l="en"><span class="line"><span>Start with a <span class="em">real</span> question</span></span></span>
+        </h2>
+        <p class="lead" data-reveal style="--d:.1s"><span data-l="zh">它不会替你下结论，但会把每个结论的来处摆在你面前。</span><span data-l="en">It won’t decide for you — it lays out where every conclusion came from.</span></p>
+        <div class="hero-cta" data-reveal style="--d:.18s">
+          <a class="btn btn-primary" data-link="demo" href="#" target="_blank" rel="noopener"><span data-l="zh">在线体验</span><span data-l="en">Try the demo</span><span class="arrow">→</span><span class="soon-tag"><span data-l="zh">即将开放</span><span data-l="en">Soon</span></span></a>
+          <a class="btn btn-ghost" data-link="repo" href="#" target="_blank" rel="noopener"><span data-l="zh">GitHub 仓库</span><span data-l="en">GitHub</span><span class="soon-tag"><span data-l="zh">即将开源</span><span data-l="en">Soon</span></span></a>
+        </div>
+        <p class="soon-note" id="soon-note"><span data-l="zh">仓库与在线体验正在准备中，很快开放。</span><span data-l="en">The repository and hosted demo are on their way.</span></p>
+        <div class="ruler" aria-hidden="true"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="pagefoot">
+    <div class="container">
+      <span class="logo"><span class="brandmark" aria-hidden="true"><i style="height:4px"></i><i style="height:7px"></i><i style="height:4px"></i><i style="height:9px"></i><i style="height:4px"></i></span>Deep Research</span>
+      <nav>
+        <a href="#workflow"><span data-l="zh">工序</span><span data-l="en">How it works</span></a>
+        <a href="#selfhost"><span data-l="zh">自部署</span><span data-l="en">Self-host</span></a>
+        <a data-link="repo" href="#" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+      <span class="mono" style="font-size:12px;color:var(--faint)">© 2026 · <span data-l="zh">开源 · 可自部署 · 优化中</span><span data-l="en">Open source · self-hostable · in progress</span></span>
+    </div>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"><span class="dot"></span><span id="toast-text"></span></div>
+
+  <script>
+  (function () {
+    var $ = function (s, r) { return (r || document).querySelector(s); };
+    var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+    var html = document.documentElement;
+    var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var lang = function () { return html.getAttribute('data-lang'); };
+
+    /* ── 语言切换 ── */
+    var TITLES = {
+      zh: 'Deep Research · 逐句可回溯的深度研究 Agent',
+      en: 'Deep Research · A research agent you can trace, sentence by sentence'
+    };
+    function setLang(l) {
+      html.setAttribute('data-lang', l); html.lang = l === 'zh' ? 'zh-CN' : 'en';
+      document.title = TITLES[l];
+      try { localStorage.setItem('dr-lang', l); } catch (e) {}
+      $$('[data-set-lang]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-set-lang') === l); });
+      buildLightup(); renderPreview(current, false); drawThread(); typeRevision(true);
+    }
+    $$('[data-set-lang]').forEach(function (b) { b.addEventListener('click', function () { setLang(b.getAttribute('data-set-lang')); }); });
+
+    /* ── 外链：未配置时显示「即将开放」并弹提示 ── */
+    var LINKS = window.DR_LINKS || {};
+    var anySoon = false;
+    $$('[data-link]').forEach(function (a) {
+      var url = LINKS[a.getAttribute('data-link')];
+      if (url) { a.href = url; return; }
+      anySoon = true;
+      a.classList.add('is-soon'); a.setAttribute('data-soon', 'true'); a.setAttribute('title', lang() === 'zh' ? '即将开放' : 'Coming soon'); a.removeAttribute('target');
+      a.addEventListener('click', function (e) {
+        e.preventDefault();
+        var isRepo = a.getAttribute('data-link') === 'repo';
+        toast(lang() === 'zh'
+          ? (isRepo ? '仓库正在整理，即将开源。' : '在线体验正在准备，即将限量开放。')
+          : (isRepo ? 'The repository is being prepared — open-sourcing soon.' : 'The hosted demo is coming soon, with limited seats.'));
+      });
+    });
+    if (!anySoon) { var sn = $('#soon-note'); if (sn) sn.hidden = true; }
+    var toastTimer;
+    function toast(msg) {
+      $('#toast-text').textContent = msg; $('#toast').classList.add('on');
+      clearTimeout(toastTimer); toastTimer = setTimeout(function () { $('#toast').classList.remove('on'); }, 2600);
+    }
+
+    /* ── 入场 ── */
+    var revealEls = $$('[data-reveal], [data-reveal-self]');
+    if (!('IntersectionObserver' in window) || reduce) {
+      revealEls.forEach(function (el) { el.classList.add('in'); });
+    } else {
+      var ro = new IntersectionObserver(function (es) {
+        es.forEach(function (e) {
+          if (!e.isIntersecting) return;
+          e.target.classList.add('in'); ro.unobserve(e.target);
+          if (e.target.id === 'thread-box') drawThread();
+          if (e.target.id === 'review-box') typeRevision();
+        });
+      }, { threshold: .15, rootMargin: '0px 0px -8% 0px' });
+      revealEls.forEach(function (el) { ro.observe(el); });
+      setTimeout(function () { if (!$('[data-reveal].in')) revealEls.forEach(function (el) { el.classList.add('in'); }); }, 2500);
+    }
+
+    /* ── 指针放大镜 ── */
+    var lens = $('.paper-lens');
+    if (window.matchMedia('(pointer: fine)').matches && !reduce) {
+      var lx = 0, ly = 0, pending = false;
+      window.addEventListener('pointermove', function (e) {
+        lx = e.clientX; ly = e.clientY; lens.classList.add('on');
+        if (pending) return; pending = true;
+        requestAnimationFrame(function () { lens.style.setProperty('--mx', lx + 'px'); lens.style.setProperty('--my', ly + 'px'); pending = false; });
+      }, { passive: true });
+      document.addEventListener('pointerleave', function () { lens.classList.remove('on'); });
+    }
+
+    /* ── 首屏：段号 → 原文（真实运行的段落） ── */
+    var SEG = {
+      'S10·1': { cls: 'tg2', zh: '媒体', en: 'Media', src: 'Toyota plots solid-state battery timeline for future EVs · greencarreports.com', date: '2023-09-15',
+        text: '…Toyota expects the solid-state batteries, which the company has been researching with Panasonic, to be <mark>“ready for commercial use” by 2027 or 2028</mark>, according to a company press release.' },
+      'S13·1': { cls: 'tg2', zh: '媒体', en: 'Media', src: 'Toyota to roll out solid-state battery EVs globally · Reuters via finance.yahoo.com', date: '2024-01-11',
+        text: 'Reuters quoted a Toyota executive: “We will be rolling out our electric vehicles with solid state batteries <mark>in a couple of years from now</mark>.”' },
+      'S11·1': { cls: 'tg5', zh: '社区', en: 'Community', src: 'Toyota’s Solid-State Battery Roadmap: Reality vs. Rumor · evworld.com', date: '2026-06-17',
+        text: '…Toyota’s solid-state battery program is progressing steadily, but <mark>no production vehicle using the technology exists today</mark>. The company’s official roadmap places the first commercial model in the 2027–2028 timeframe.' }
+    };
+    var chips = $$('#hero-panel .cite');
+    var current = 'S10·1', auto = !reduce, autoTimer, AUTO_MS = 4200;
+    function renderPreview(no, animate) {
+      var d = SEG[no]; if (!d) return;
+      current = no;
+      chips.forEach(function (c) { c.classList.toggle('on', c.getAttribute('data-seg') === no); });
+      var l = lang();
+      $('#preview-body').innerHTML =
+        '<div class="' + (animate === false ? '' : 'preview-in') + '">' +
+          '<div class="preview-head"><span class="preview-no">' + no + '</span><span class="tg ' + d.cls + '">' + d[l] + '</span>' +
+          '<span class="preview-date">' + d.date + '</span></div>' +
+          '<div class="preview-src" style="margin-top:6px">' + d.src + '</div>' +
+          '<p class="preview-text">' + d.text + '</p></div>';
+    }
+    function kickAuto() {
+      var bar = $('#autoplay'); if (!auto) { bar.classList.remove('run'); return; }
+      bar.classList.remove('run'); void bar.offsetWidth; bar.style.setProperty('--t', AUTO_MS + 'ms'); bar.classList.add('run');
+      clearTimeout(autoTimer);
+      autoTimer = setTimeout(function () {
+        var keys = Object.keys(SEG); renderPreview(keys[(keys.indexOf(current) + 1) % keys.length]); kickAuto();
+      }, AUTO_MS);
+    }
+    chips.forEach(function (c) {
+      c.addEventListener('click', function () { auto = false; clearTimeout(autoTimer); kickAuto(); renderPreview(c.getAttribute('data-seg')); });
+    });
+    renderPreview(current, false);
+    setTimeout(kickAuto, 1400);
+
+    /* ── 宣言：逐字点亮 ── */
+    var lightChars = [];
+    function buildLightup() {
+      var p = $('.manifesto .lightup[data-l="' + lang() + '"]'); if (!p) return;
+      if (!p.dataset.built) {
+        var isZh = lang() === 'zh';
+        (function walk(node, key) {
+          Array.prototype.slice.call(node.childNodes).forEach(function (n) {
+            if (n.nodeType === 3) {
+              var parts = isZh ? Array.from(n.textContent) : n.textContent.split(/(\s+)/);
+              var frag = document.createDocumentFragment();
+              parts.forEach(function (t) {
+                if (!t) return;
+                if (/^\s+$/.test(t)) { frag.appendChild(document.createTextNode(t)); return; }
+                var s = document.createElement('span'); s.className = 'ch' + (key ? ' key' : ''); s.textContent = t; frag.appendChild(s);
+              });
+              node.replaceChild(frag, n);
+            } else if (n.nodeType === 1 && n.tagName !== 'BR') {
+              walk(n, key || n.hasAttribute('data-key'));
+            }
+          });
+        })(p, false);
+        p.dataset.built = '1';
+      }
+      lightChars = $$('.ch', p);
+      onScroll();
+    }
+
+    /* ── 工序长镜头 ── */
+    // 每章结束时的累计（时间：秒；token：k）——取自一次真实运行
+    var CH = [
+      { t0: 0,    t1: 141,  k0: 0,     k1: 22.9,  s: [0, 1] },
+      { t0: 141,  t1: 310,  k0: 22.9,  k1: 177.8, s: [2, 4] },
+      { t0: 310,  t1: 824,  k0: 177.8, k1: 238.3, s: [5, 6] },
+      { t0: 824,  t1: 824,  k0: 238.3, k1: 238.3, s: [7, 7] },
+      { t0: 824,  t1: 2426, k0: 238.3, k1: 651.3, s: [8, 9] }
+    ];
+    var scene = $('#scene'), chapters = $$('#chapters .chapter'), stages = $$('#stages .stage');
+    var fill = $('#track-fill'), mTime = $('#m-time'), mTok = $('#m-tok'), hint = $('#scene-hint');
+    var activeCh = 0;
+    function fmtTime(s) { s = Math.round(s); var m = Math.floor(s / 60), r = s % 60; return (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r; }
+    function fmtTok(k) { return k < 1 ? Math.round(k * 1000) : (k < 100 ? k.toFixed(1) : Math.round(k)) + 'k'; }
+    function sceneUpdate() {
+      if (!scene || getComputedStyle($('.scene-sticky')).position !== 'sticky') return;
+      var r = scene.getBoundingClientRect(), vh = window.innerHeight;
+      var total = r.height - vh; var p = Math.min(1, Math.max(0, -r.top / total));
+      var n = CH.length, x = p * n, i = Math.min(n - 1, Math.floor(x)), f = Math.min(1, (x - i) * 1.25);
+      var c = CH[i];
+      var t = c.t0 + (c.t1 - c.t0) * f, k = c.k0 + (c.k1 - c.k0) * f;
+      mTime.textContent = fmtTime(t); mTok.textContent = fmtTok(k);
+      var stagePos = c.s[0] + (c.s[1] - c.s[0] + 1) * f; // 0..10
+      fill.style.width = Math.min(100, (stagePos / 10) * 100) + '%';
+      stages.forEach(function (s, j) {
+        s.classList.toggle('done', j < Math.floor(stagePos) && !(j === Math.floor(stagePos)));
+        s.classList.toggle('cur', j === Math.min(9, Math.floor(stagePos)) && p < 1);
+      });
+      if (p >= 1) stages.forEach(function (s) { s.classList.add('done'); s.classList.remove('cur'); });
+      if (i !== activeCh) { chapters[activeCh].classList.remove('on'); chapters[i].classList.add('on'); activeCh = i; }
+      hint.style.opacity = p > .02 ? 0 : 1;
+    }
+
+    /* ── 导航：滚动底、当前节高亮、压在深色段上反色 ── */
+    var nav = $('#topnav');
+    var navLinks = $$('.nav-links a');
+    var sections = navLinks.map(function (a) { return $(a.getAttribute('href')); });
+    var ledger = $('#ledger');
+    function onScroll() {
+      var y = window.scrollY, vh = window.innerHeight;
+      nav.classList.toggle('scrolled', y > 8);
+      var lr = ledger.getBoundingClientRect();
+      nav.classList.toggle('on-dark', lr.top < 60 && lr.bottom > 60);
+      var cur = -1;
+      sections.forEach(function (s, i) { if (s && s.getBoundingClientRect().top < vh * .45) cur = i; });
+      navLinks.forEach(function (a, i) { if (i === cur) a.setAttribute('aria-current', 'true'); else a.removeAttribute('aria-current'); });
+      // 宣言逐字
+      if (lightChars.length) {
+        var p = lightChars[0].closest('p').getBoundingClientRect();
+        var prog = Math.min(1, Math.max(0, (vh * .82 - p.top) / (p.height + vh * .35)));
+        var lit = reduce ? lightChars.length : Math.round(prog * lightChars.length);
+        for (var j = 0; j < lightChars.length; j++) lightChars[j].classList.toggle('lit', j < lit);
+      }
+      sceneUpdate();
+    }
+    var ticking = false;
+    window.addEventListener('scroll', function () {
+      if (ticking) return; ticking = true;
+      requestAnimationFrame(function () { onScroll(); ticking = false; });
+    }, { passive: true });
+    window.addEventListener('resize', function () { onScroll(); drawThread(); });
+
+    /* ── 证据 01：句子到原文的一根线 ── */
+    function drawThread() {
+      var box = $('#thread-box'), cite = $('#thread-cite'), src = $('#thread-src'), path = $('#thread-path'), dot = $('#thread-dot');
+      if (!box || !cite.offsetParent) return;
+      var b = box.getBoundingClientRect(), c = cite.getBoundingClientRect(), s = src.getBoundingClientRect();
+      var x1 = c.left + c.width / 2 - b.left, y1 = c.bottom - b.top + 2;
+      var x2 = s.left + 28 - b.left, y2 = s.top - b.top;
+      var my = (y1 + y2) / 2;
+      path.setAttribute('d', 'M' + x1 + ',' + y1 + ' C' + x1 + ',' + my + ' ' + x2 + ',' + my + ' ' + x2 + ',' + y2);
+      dot.setAttribute('cx', x2); dot.setAttribute('cy', y2);
+      var len = path.getTotalLength ? path.getTotalLength() : 400;
+      path.style.setProperty('--len', Math.ceil(len));
+    }
+
+    /* ── 证据 03：修订痕迹逐字打出 ── */
+    var REV = {
+      zh: { del: '固态电池量产良率已经达标，', ins: '小批量样品已通过验证，量产良率尚未在工程化电芯上披露，', tail: '各家时间表仍以 2027—2028 为锚点。' },
+      en: { del: 'Mass-production yield has already been reached; ', ins: 'small-batch samples have been validated, but yield on engineering-scale cells is not yet disclosed; ', tail: 'timelines still anchor on 2027–2028.' }
+    };
+    var revTimer, revStarted = false;
+    function typeRevision(restart) {
+      if (restart && !revStarted) return;
+      revStarted = true; clearTimeout(revTimer);
+      var el = $('#rev-line'), r = REV[lang()];
+      if (reduce) { el.innerHTML = '<del>' + r.del + '</del><ins>' + r.ins + '</ins>' + r.tail; return; }
+      var i = 0, step = lang() === 'zh' ? 55 : 22;
+      el.innerHTML = '<span class="plain">' + r.del + '</span>' + r.tail;
+      revTimer = setTimeout(function strike() {
+        el.innerHTML = '<del>' + r.del + '</del><ins></ins><span class="caret"></span>' + r.tail;
+        var ins = el.querySelector('ins'), chars = Array.from(r.ins);
+        (function tick() {
+          if (i >= chars.length) { var cr = el.querySelector('.caret'); revTimer = setTimeout(function () { if (cr) cr.remove(); }, 1400); return; }
+          ins.textContent += chars[i++]; revTimer = setTimeout(tick, step);
+        })();
+      }, 900);
+    }
+
+    /* ── 账单：数字滚动 + 色条 ── */
+    var countEls = $$('[data-count]');
+    function runCounts() {
+      countEls.forEach(function (el) {
+        var to = parseFloat(el.getAttribute('data-count')), dec = +(el.getAttribute('data-dec') || 0), t0 = null;
+        if (reduce) { el.textContent = to.toFixed(dec); return; }
+        (function f(ts) {
+          if (!t0) t0 = ts; var p = Math.min(1, (ts - t0) / 1400), e = 1 - Math.pow(1 - p, 3);
+          el.textContent = (to * e).toFixed(dec); if (p < 1) requestAnimationFrame(f);
+        })(performance.now());
+      });
+    }
+    if ('IntersectionObserver' in window) {
+      var lo = new IntersectionObserver(function (es) {
+        es.forEach(function (e) {
+          if (!e.isIntersecting) return;
+          if (e.target.id === 'ledger-grid') runCounts();
+          e.target.classList.add('in'); lo.unobserve(e.target);
+        });
+      }, { threshold: .3 });
+      lo.observe($('#ledger-grid')); lo.observe($('#burn'));
+    } else { $('#burn').classList.add('in'); }
+
+    /* ── 复制快速开始 ── */
+    $('#copy-btn').addEventListener('click', function () {
+      var txt = $('#quickstart').innerText.split('\n').filter(function (l) { return l.trim().indexOf('#') !== 0; }).map(function (l) { return l.replace(/^\$ /, ''); }).join('\n').trim();
+      (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(function () {
+        toast(lang() === 'zh' ? '已复制到剪贴板' : 'Copied to clipboard');
+      }, function () { toast(lang() === 'zh' ? '复制失败，请手动选择' : 'Copy failed — please select manually'); });
+    });
+
+    setLang(lang());
+    onScroll();
+  })();
+  </script>
+</body>
+</html>
