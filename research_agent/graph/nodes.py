@@ -15,6 +15,8 @@ import re
 import time
 from typing import Any
 
+import httpx
+
 from ..db.repo import get_repo
 from ..ingest.extract import Fetcher
 from ..ingest.split import RecursiveSplitter
@@ -549,8 +551,12 @@ def node_retrieve(state: ResearchState) -> dict:
             # 搜、抓还是写库，靠它和下面的 fetch/split 对出来。
             with span("retrieve", "search", session_id=sid,
                       provider=type(prov).__name__, query=q, lang=lang) as sd:
-                res = await asyncio.to_thread(prov.search, q,
-                                              language=lang, limit=lim)
+                try:
+                    res = await asyncio.to_thread(prov.search, q,
+                                                  language=lang, limit=lim)
+                except Exception as e:
+                    sd["timeout"] = isinstance(e, httpx.TimeoutException)
+                    raise
                 sd["hits"] = len(res)
             ev["hits"] = len(res)
             return res
@@ -842,6 +848,12 @@ def _predict_stop(state: ResearchState) -> str:
     q = state.get("plan_queries") or {}
     if not q.get("zh") and not q.get("en"):
         return "没有可用的查询词"
+    # 与 node_assess 的停止链同一条：≥2 轮后 high≤1 → 材料够用。
+    # 只在 state 里真有最近一次 assess 的分布时才触发（字段缺省 →
+    # high 取 99，不会把「没跑过 assess」误判成「紧迫度低」）。
+    if (state.get("round", 0) >= 2
+            and (state.get("gaps_by_urgency") or {}).get("high", 99) <= 1):
+        return "剩余缺口紧迫度低（high≤1），不再追加检索"
     checks = [
         (state.get("consecutive_no_new", 0) >= HARD["no_new_streak"],
          f"连续 {state.get('consecutive_no_new', 0)} 轮无新增（阈值 {HARD['no_new_streak']}）"),
@@ -1001,6 +1013,7 @@ def node_assess(state: ResearchState) -> dict:
 
     # 停止原因要**可归因**：是提示词让模型说了「够了」，
     # 还是机制层的硬判据拦下的。分不清就没法判断该改哪边。
+    gaps_by_urgency = _count_urgency(gaps)
     stop_would_be, stop_layer = "", ""
     if enough:
         stop_would_be, stop_layer = "assess 说够了", "prompt"
@@ -1010,6 +1023,15 @@ def node_assess(state: ResearchState) -> dict:
         stop_would_be = (f"边际收益过低（本轮新增 {new_segs} 段 = {gain:.0%}，"
                          f"阈值 {MIN_ROUND_GAIN:.0%}）")
         stop_layer = "mechanism"
+    elif (rnd >= 2 and data
+          and gaps_by_urgency.get("high", 99) <= 1):
+        # 2026-10-25 新增（时间优化）：第 3 轮起，若高紧迫缺口 ≤1，
+        # 剩下的 medium/low 多半是「网上没有」——再搜只是在烧配额。
+        # v18 基线：第 2 轮 high=1，第 3 轮只新增 9 段、0 段相关。
+        # `data` 真值门槛：assess 调用失败时 gaps 是空表，high 会假成 0，
+        # 那时绝不能按「紧迫度低」收工（静默早停）。
+        stop_would_be = "剩余缺口紧迫度低（high≤1），不再追加检索"
+        stop_layer = "urgency"
     elif rnd >= HARD["max_rounds"]:
         stop_would_be = f"轮数到顶（{rnd}/{HARD['max_rounds']}）"
         stop_layer = "mechanism"
@@ -1024,6 +1046,9 @@ def node_assess(state: ResearchState) -> dict:
         "last_round_segments": n_seg,
         "stop_reason": stop_would_be,
         "stop_layer": stop_layer,      # 路由的 _stop_kind 要读它（区分「够了」和「撞顶」）
+        # 最近一次 assess 的缺口紧迫度分布：`_predict_stop` 的 urgency
+        # 停止线读它。必须在 ResearchState 里声明，否则 LangGraph 静默丢。
+        "gaps_by_urgency": gaps_by_urgency,
         "pending_revision": _rev,
         "_expect_revision": _rev["op"] == "revise",   # 给 apply_revision 对账用
         "events": [{"kind": "assess", "round": rnd,
@@ -1039,7 +1064,7 @@ def node_assess(state: ResearchState) -> dict:
                                           "best": v["最高吻合度"]}
                                          for v in section_views],
                     "gaps": len(gaps),
-                    "gaps_by_urgency": _count_urgency(gaps),
+                    "gaps_by_urgency": gaps_by_urgency,
                     "queries_fresh": len(fresh), "queries_dropped_repeat": len(dropped),
                     "queries_fallback": fallback_used,
                     "stop_would_be": stop_would_be or "（会继续检索）",
@@ -1055,7 +1080,7 @@ def node_assess(state: ResearchState) -> dict:
         "round_gain": round(gain, 4),
         "has_enough": enough,
         "stop_would_be": stop_would_be, "stop_layer": stop_layer,
-        "gaps_by_urgency": _count_urgency(gaps),
+        "gaps_by_urgency": gaps_by_urgency,
         "sections": [{"id": v["id"], "hits": v["沾边段数"],
                       "top": v["最高吻合度"]} for v in section_views],
         "gaps": gaps[:10],
@@ -1255,14 +1280,20 @@ def _stop_kind(state: ResearchState) -> str:
         return ""
     # assess 算的时候把 stop_layer 一起写进了 state（路由要用，不能只留在事件里）。
     # 下面是**兜底**：stop_layer 缺失时按 stop_reason 反推。
-    # 必须覆盖 assess 实际会写出的全部 5 种文案，否则会出现
+    # 必须覆盖 assess 实际会写出的全部文案，否则会出现
     # 「边际收益过低」被当成 prompt（= 材料够了），而它其实是硬判据。
+    # `urgency` 层（2026-10-25 加，剩余缺口紧迫度低）也归 satisfied：
+    # 它意味着材料够用，不是撞顶——审批页不该亮「材料不足」警告。
     layer = str(state.get("stop_layer") or "")
     if not layer:
         r = str(state["stop_reason"])
-        prompt_markers = ("assess 说够了",)
-        layer = "prompt" if r.startswith(prompt_markers) else "mechanism"
-    return "satisfied" if layer == "prompt" else "forced"
+        if r.startswith("assess 说够了"):
+            layer = "prompt"
+        elif r.startswith("剩余缺口紧迫度低"):
+            layer = "urgency"
+        else:
+            layer = "mechanism"
+    return "satisfied" if layer in ("prompt", "urgency") else "forced"
 
 
 def _should_stop(state: ResearchState) -> bool:
@@ -1472,6 +1503,23 @@ def _run_health(repo, sid: str, state: ResearchState) -> dict:
             failed_tasks = e["failed"] or 0
             break
     ev["failed_tasks"] = failed_tasks
+
+    # 末轮审查是否被跳过（2026-10-25 时间优化）：write_audit_skipped
+    # 只发生在合成结论那条路，模型没再审——开发者要看得见这件事。
+    # 「末轮返修目标数」= 跳过前最后一轮审查点名的 high 数，
+    # 表示最后那次返修被派了多少活。
+    try:
+        hist = (repo.write_trace(sid).get("audit_history") or [])
+        skipped = [h for h in hist
+                   if isinstance(h, dict) and h.get("skipped")]
+        ev["final_audit_skipped"] = bool(skipped)
+        real = [h for h in hist
+                if isinstance(h, dict) and not h.get("skipped")]
+        ev["final_revise_targets"] = (
+            real[-1].get("high") if real else None)
+    except Exception:
+        ev["final_audit_skipped"] = False
+        ev["final_revise_targets"] = None
 
     try:
         repo.save_run_trace(sid, int(state.get("round", 0) or 0),

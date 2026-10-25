@@ -139,7 +139,12 @@ def main() -> None:
                 tick(f"SSE {ev.get('kind')}: "
                      f"{json.dumps(ev, ensure_ascii=False)[:180]}")
                 if ev.get("kind") == "done":
-                    done = True
+                    # ⚠️ interrupt（审批点）也会推 done——report_chars=0 的那条
+                    # 不是终态，真 done 发生在 approve 续跑完之后。
+                    if (ev.get("state") or {}).get("report_chars"):
+                        done = True
+                    else:
+                        tick("interrupt 的 done（报告还没写），继续等审批点")
                 elif ev.get("kind") in ("error", "_sse_error"):
                     tick(f"出错：{ev}")
                     done = True

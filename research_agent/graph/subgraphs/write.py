@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from typing import Any
@@ -37,6 +38,10 @@ from ._retry import (_TRANSIENT_RE, _TRANSIENT_WAIT_S, _norm_audit_list,
 
 MAX_TASKS = 15              # 任务数上限。测试阶段的硬边界，防止主 agent 切得过细
 CONCURRENCY = 4             # 并发子 agent 上限
+# 写作/返修的并行度（2026-10-25）：v18 基线实测缓存预热回本失败（命中 8.3%），
+# dispatch 540s vs 单任务最长 ~120s——分批+串行头纯属内耗，改为一次全并发。
+# 环境变量 RA_WRITE_WORKERS 可压低（比如限流紧张时）。
+WRITE_WORKERS = max(1, int(os.environ.get("RA_WRITE_WORKERS", "12") or 12))
 MAX_REWORK = 2              # 返修轮数上限
 MAX_TOOL_ROUNDS = 3         # plan 取全文的工具循环上限
 TASK_MARK_RE = re.compile(r"<!--\s*task:(\S+)\s+section:(\S+)\s*-->")
@@ -557,8 +562,11 @@ def node_dispatch(state: WriteState) -> dict:
     cache_read（8,304 / 8,506 / 8,375 三组完全对上），说明是写入-读取的
     因果链，不是前缀不一致。
 
-    改成**每批先串行跑一个预热、其余再并发**：`first_serial` 落在每一批，
-    不只是第一批。
+    ~~改成**每批先串行跑一个预热、其余再并发**~~（2026-10-25 撤销）：
+    v18 基线实测整场缓存命中只有 8.3%，分批预热省的钱填不平批次等待——
+    dispatch 540s，而单任务最长约 120s，12 任务被切成 3 批 ×
+    （串行头 + 等批内最慢）。现在**一次全并发**（WRITE_WORKERS 封顶），
+    `first_serial=False`；批次/串行头是纯粹的内耗。
     """
     tasks = state.get("tasks") or []
     drafts = dict(state.get("drafts") or {})
@@ -569,8 +577,6 @@ def node_dispatch(state: WriteState) -> dict:
         return {}
 
     ev = {"drafts": dict(drafts), "failed": list(failed)}
-    batches = [todo[i:i + CONCURRENCY]
-               for i in range(0, len(todo), CONCURRENCY)]
 
     def _one(t: dict) -> tuple[dict, str | None]:
         secs, err = _run_task(state, t, revise=None)
@@ -585,29 +591,26 @@ def node_dispatch(state: WriteState) -> dict:
             "reason": (err or "")[:80]})
         return secs, err
 
+    # 必须走 parallel_labelled：它内部用 submit_run_in_context 在**主线程**
+    # 造好 wrapper 再提交，线程不继承 contextvar 这件事才不会漏。
+    # 注意**不能**写成 pool.map(lambda t: run_in_context(...), todo)——
+    # 那个 lambda 是在 worker 线程里执行的，复制到的 context 是空的，
+    # 记账 session_id 会静默变 NULL（2026-10-07 实测漏记 238,901 token）。
+    results = parallel_labelled(todo, _one,
+                                workers=min(len(todo), WRITE_WORKERS),
+                                label="write", first_serial=False)
+    for t, r in zip(todo, results):
+        if not r:
+            ev["failed"].append({"task": t["id"], "reason": "调用失败或异常"})
+            continue
+        secs, err = r
+        if secs:
+            ev["drafts"][t["id"]] = secs
+        else:
+            ev["failed"].append({"task": t["id"],
+                                 "reason": err or "empty output"})
+    # 2026-10-25 起没有串行头了：字段保留（前端/测试在读），值恒 0。
     first_cost = 0.0
-    for bi, batch in enumerate(batches):
-        t0 = _now()
-
-        # 必须走 parallel_labelled：它内部用 submit_run_in_context 在**主线程**
-        # 造好 wrapper 再提交，线程不继承 contextvar 这件事才不会漏。
-        # 注意**不能**写成 pool.map(lambda t: run_in_context(...), batch)——
-        # 那个 lambda 是在 worker 线程里执行的，复制到的 context 是空的，
-        # 记账 session_id 会静默变 NULL（2026-10-07 实测漏记 238,901 token）。
-        results = parallel_labelled(batch, _one, workers=CONCURRENCY,
-                                    label="write", first_serial=True)
-        if bi == 0:
-            first_cost = round(_now() - t0, 1)
-        for t, r in zip(batch, results):
-            if not r:
-                ev["failed"].append({"task": t["id"], "reason": "调用失败或异常"})
-                continue
-            secs, err = r
-            if secs:
-                ev["drafts"][t["id"]] = secs
-            else:
-                ev["failed"].append({"task": t["id"],
-                                     "reason": err or "empty output"})
 
     # ---- 偶发失败重试一次（2026-10-19，坑 78）----
     # 「交卷但正文全空」这类随机失败，同一任务复测 6/6 成功——值一轮重试。
@@ -641,9 +644,10 @@ def node_dispatch(state: WriteState) -> dict:
             return secs, err
 
         # 与首跑同一层：parallel_labelled 的 contextvar 记账坑见上面注释。
-        retry_results = parallel_labelled(retry_tasks, _one_retry,
-                                          workers=CONCURRENCY,
-                                          label="write", first_serial=True)
+        retry_results = parallel_labelled(
+            retry_tasks, _one_retry,
+            workers=min(len(retry_tasks), WRITE_WORKERS),
+            label="write", first_serial=False)
         recovered_ids: set = set()
         for t, r in zip(retry_tasks, retry_results):
             if not r:
@@ -1945,13 +1949,80 @@ def _normalize_patch_input(raw) -> dict | None:
             "unresolved": _items(d.get("unresolved"), ("reason",))}
 
 
+def _audit_skip_final(state: WriteState) -> dict:
+    """末轮审查：返修额度已用完时的合成结论，**不调模型**（2026-10-25）。
+
+    此时刚做完最后一轮返修（rework_rounds 已到 MAX_REWORK）。
+    基线里三次审查 127/62/162s，末次唯一的产出是「把残留问题收进
+    存疑节」——而那不是模型独产：violations 在 node_revise 已重算、
+    revise_unresolved 本来就逐条进存疑节，blocked/remaining_issues
+    沿用上轮 audit 的即可。模型再审一次只多等一分钟。
+
+    ⚠️ 「末轮未复核」这件事**不进报告正文**（读者看不出也不需要），
+    但开发者必须看得见：events 用独立 kind `write_audit_skipped`
+    （**不复用 `write_audit`**——复用会被读成「审查通过」），
+    audit_history 记 `skipped`，_run_health 有 `final_audit_skipped`。
+    """
+    sid = state.get("session_id")
+    rounds = int(state.get("rework_rounds", 0) or 0)
+    prev = state.get("audit") or {}
+    blocked = [b for b in (prev.get("blocked") or []) if isinstance(b, dict)]
+    remaining = list(prev.get("remaining_issues") or [])
+    violations = state.get("violations") or {}
+    rework_effective = bool(state.get("rework_effective", True))
+    audit = {
+        "need_rework": False,                  # 路由自然去 final
+        "reason": "已达返修上限，末轮不再由模型复核，仅做程序检查",
+        "spec_issue": prev.get("spec_issue"),
+        "findings": [],
+        "targets": [],
+        "blocked": blocked,
+        "remaining_issues": remaining,
+        "rework_effective": rework_effective,
+        "rework_check": [],
+        "still_open": 0,
+        "still_unresolved": 0,
+        "prev_high": _prev_high_from_state(state, rounds),
+        "cur_high": 0,
+        "model_high": 0,
+        "checked": 0,
+        "violation_targets": 0,
+        "skipped": True,
+    }
+    _trace(sid, audit=audit,
+           stats=_merge_stats(sid, {"audit_round": rounds,
+                                    "final_audit_skipped": True}))
+    _push_audit_history(sid, {
+        "round": rounds, "skipped": True,
+        "need_rework": False, "findings": 0, "high": 0,
+        "blocked": len(blocked), "violation_targets": 0,
+        "targets": [], "rework_effective": rework_effective,
+        "rework_checked": 0, "still_open": 0, "still_unresolved": 0,
+        "prev_high": audit["prev_high"], "cur_high": 0,
+        "reason": audit["reason"][:200],
+    })
+    return {
+        "audit": audit,
+        "events": [{"kind": "write_audit_skipped", "rounds": rounds,
+                    "blocked": len(blocked),
+                    "violations": len(violations),
+                    "reason": audit["reason"]}],
+    }
+
+
 def node_audit(state: WriteState) -> dict:
     """主 agent 通读全稿。返回是否返修、返修谁、以及返修有没有真的解决问题。
 
     `rework_effective` **不再采信模型自评**，改由 `rework_check` 逐条核对推出：
     模型要回答的是「上轮那几条现在还在吗」（稿子里能查），
     而不是「返修整体有没有用」（没有依据，只能猜）。
+
+    返修额度用完（rework_rounds >= MAX_REWORK）时不再调模型，
+    走 `_audit_skip_final` 的合成结论（2026-10-25，基线实测末轮审查
+    只为收残留问题，省 ~2.7 分钟）。
     """
+    if state.get("rework_rounds", 0) >= MAX_REWORK:
+        return _audit_skip_final(state)
     # 构造 prompt（含读上一轮 findings）一段一个 span——静默对账时要能
     # 把「dispatch 结束 → audit 请求发出」之间的非 LLM 时间拆开看。
     with span("subnode", "write.audit_prompt") as _sp:
@@ -2580,8 +2651,9 @@ def node_revise(state: WriteState) -> dict:
         first_cost = round(_now() - t0, 1)
         rest = porder[1:]
         if rest:
-            for r in parallel_labelled(rest, _patch_one, workers=CONCURRENCY,
-                                       label="revise", first_serial=True):
+            for r in parallel_labelled(rest, _patch_one,
+                                       workers=min(len(rest), WRITE_WORKERS),
+                                       label="revise", first_serial=False):
                 if not r:
                     continue
                 tid, res = r
@@ -2671,11 +2743,11 @@ def node_revise(state: WriteState) -> dict:
 
         rest = forder[1:]
         if rest:
-            # 同 node_dispatch（C1-f2）：返修的并发任务共享同一段前缀，
-            # 预热同样要**每批一个**，不能只有第一个任务。
+            # 同 node_dispatch（2026-10-25 全并发）：预热实测不回本（命中 8.3%）。
             # parallel_labelled 保证按原顺序返回，逐个合并不影响装配顺序。
-            for r in parallel_labelled(rest, _one, workers=CONCURRENCY,
-                                       label="revise", first_serial=True):
+            for r in parallel_labelled(rest, _one,
+                                       workers=min(len(rest), WRITE_WORKERS),
+                                       label="revise", first_serial=False):
                 if not r:
                     continue
                 tid, new, _err = r
@@ -2823,7 +2895,11 @@ def route_after_audit(state: WriteState) -> str:
     三条收工线，两条是硬约束，一条是**有依据的**判断：
 
     1. 没有 high finding        → 没什么可改的
+       （含末轮合成结论：`rework_rounds` 用完后 audit 不再调模型，
+        `_audit_skip_final` 直接给 need_rework=False，见 node_audit 开头）
     2. `rework_rounds` 用完     → 改够了，剩下的问题写进存疑节
+       （防御性保留：正常路径下走到这的 audit 已是合成结论，
+        need_rework=False 在第 1 条就回了，到不了这里）
     3. 逐条核对显示上轮问题仍在 → **改不动了**，同样写进存疑节
 
     第 3 条以前是 `not rework_effective`，而那个字段是模型**自己填的**，

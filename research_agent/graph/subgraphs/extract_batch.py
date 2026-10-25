@@ -36,7 +36,9 @@ MIN_SOURCE_CHARS = 800          # 正文短于此的源不进抽取（实测 <3�
 HARD_CAP_CHARS = 150000         # 防病态输入的硬上限，超过则截断（正常语料不会触发）
 SUMMARY_BUDGET_CHARS = 24000    # 一次概括调用的段落正文字符预算
 SUMMARY_BATCH = 12            # 一次最多概括几段
-SUMM_WORKERS = 4              # 概括批次的并发度。缓存要预热、别打太满（2026-10-07）
+SUMM_WORKERS = 8              # 概括批次的并发度。2026-10-25 实测缓存预热
+                              # 不回本（命中 8.3%）→ 去掉 first_serial 并加宽；
+                              # 限流器 40/分钟是兜底，刻意不动它。
 # 🔴 概括批次失败后的**有界重试次数**（2026-10-18 加）。
 # 一次失败 = 12 段证据静默丢失（见 summarize_segments 里那段）。
 # 只重试**失败/不完整**的批次，不重跑成功的；设 0 即回到旧行为。
@@ -355,7 +357,7 @@ def summarize_segments(items: list[dict]) -> dict:
 
     results = parallel_labelled(
         list(enumerate(batches)), _one, workers=SUMM_WORKERS,
-        label="段落概括", first_serial=True)
+        label="段落概括", first_serial=False)
 
     # 🔴 **有界重试（2026-10-18 加）**
     #
@@ -388,7 +390,8 @@ def summarize_segments(items: list[dict]) -> dict:
         for _ in range(SUMM_RETRY):
             again = parallel_labelled(
                 [(i, batches[i]) for i in retry_idx], _one,
-                workers=SUMM_WORKERS, label="段落概括·重试", first_serial=True)
+                workers=SUMM_WORKERS, label="段落概括·重试",
+                first_serial=False)
             still: list[int] = []
             for i, got in zip(retry_idx, again):
                 retried += 1

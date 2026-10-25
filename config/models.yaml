@@ -318,9 +318,16 @@ stages:
   # 读 2-3 篇正文归纳领域轮廓。整场研究的地基——大纲的 grounded_in
   # 全部指回这里，所以给最高档。
   probe_outline:
+    # 2026-10-25 迁到 M3.1-Flash low（v18 基线真实载荷 A/B，n=3）：
+    #   M3 high 中位 55.5s（另有一次工具入参归一化后字段全空），
+    #   M3.1 low 中位 23.4s（42%），3/3 无重试、subtopics 9~11、
+    #   entities/jargon/controversies 三组全非空。
+    #   **退路：删 provider/reasoning/thinking 三行即回 M3。**
+    provider: minimax31
+    reasoning_effort: low
+    thinking_effort: low
     # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
     stream: true
-    reasoning_effort: high
     temperature: 0.0
     # ⚠️ 4096 → 8192 → **16384（2026-10-17）**。两次都是被实测逼的：
     #   · 2026-10-15：v5 实测 3,966 = 旧上限 4,096 的 97%，贴墙
@@ -358,12 +365,24 @@ stages:
   # 研究框架生成。原先挂在 write 上，用了 0.3 的散文温度，
   # 但框架是结构规划任务，输出是 JSON 而不是文章。
   outline:
+    # 2026-10-25 迁到 M3.1-Flash low（v18 基线真实载荷 A/B，n=3）：
+    #   M3 high 中位 198.5s、3/3 都要吃 1~2 次 guard 重试
+    #   （思考吃光 4096 预算 → 空/截断 → 翻倍重发——v18 那 52s
+    #   「静默」就是这种被丢掉的尝试）；
+    #   M3.1 low 中位 10.6s（5%）、3/3 一次成功、节数 10~12、
+    #   grounded_in 100% 通过、queries zh/en 各 5 条。
+    #   **退路：删 provider/reasoning/thinking 三行即回 M3。**
+    provider: minimax31
+    reasoning_effort: low
+    thinking_effort: low
     # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
     stream: true
-    reasoning_effort: high
     temperature: 0.0
-    max_output_tokens: 4096
-    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 8192 }
+    # 4096 → 16384（2026-10-25）：M3 时 4096 被思考吃光、每次都靠翻倍
+    # 重试爬上去；M3.1 low 实测输出 ~1.7k，16384 ≈ 9 倍富余，
+    # 一次给够、不靠翻倍梯子（同 write_audit/assess 的迁法）。
+    max_output_tokens: 16384
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 16384 }
 
   # ---- 证据生产 ----
 

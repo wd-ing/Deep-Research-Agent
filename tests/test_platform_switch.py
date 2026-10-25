@@ -140,15 +140,16 @@ check("两平台档案的 effort_off 声明符合实测",
       f"internai: {ei_off!r}（实测省略=开思考，要关得显式发 none）｜"
       f"xj189: {ex_off!r}（实测省略=关思考，不声明即不发字段）")
 
-# 单点切换：除四个**有意例外**外所有阶段都不该再硬写 provider。
+# 单点切换：除六个**有意例外**外所有阶段都不该再硬写 provider。
 # write_audit（2026-10-19，坑 77）与 assess/write_plan_spec/
-# write_plan_tasks（2026-10-20，坑 83 的 A/B 实测迁移）要的都是
-# M3.1-Flash 的 effort 旋钮，钉在 `minimax31` 档案上，不跟
+# write_plan_tasks（2026-10-20，坑 83 的 A/B 实测迁移）、
+# outline/probe_outline（2026-10-25，v18 基线载荷 A/B 实测迁移）
+# 要的都是 M3.1-Flash 的 effort 旋钮，钉在 `minimax31` 档案上，不跟
 # defaults.provider 走——换平台时它们也不许漂
 # （M3.1 的能力不是「默认平台」的属性）。
 hardcoded = sorted(k for k, v in raw["stages"].items() if v.get("provider"))
-check("仅 M3.1 四环节硬写 provider（单点切换生效）",
-      hardcoded == ["assess", "write_audit",
+check("仅 M3.1 六环节硬写 provider（单点切换生效）",
+      hardcoded == ["assess", "outline", "probe_outline", "write_audit",
                     "write_plan_spec", "write_plan_tasks"],
       f"仍硬写的: {hardcoded or '无'}"
       f"｜defaults.provider = {(raw.get('defaults') or {}).get('provider')!r}")

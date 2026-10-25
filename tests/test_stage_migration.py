@@ -41,7 +41,7 @@ def main() -> int:
     reg = ModelRegistry()
 
     for stage in ("assess", "write_plan_spec", "write_plan_tasks",
-                  "write_audit"):
+                  "write_audit", "outline", "probe_outline"):
         c = reg.stage(stage)
         check(f"{stage}: M3.1-Flash + low/low + 无 forced_thinking",
               c.provider == "minimax"
@@ -64,24 +64,25 @@ def main() -> int:
     # 按 A/B 实测峰值 2~4 倍富余给；timeout 与 write_audit 同款 420）。
     for stage, want_max, want_to in (
             ("assess", 16384, 300.0),
+            ("outline", 16384, None),
+            ("probe_outline", 16384, None),
             ("write_plan_spec", 24576, 420.0),
             ("write_plan_tasks", 32768, 420.0)):
         c = reg.stage(stage)
         check(f"{stage}: max_output_tokens={want_max} "
-              f"timeout={want_to} guard 同额",
+              f"timeout={want_to or '默认'} guard 同额",
               c.max_output_tokens == want_max
-              and c.timeout_s == want_to
+              and (want_to is None or c.timeout_s == want_to)
               and c.guard.max_output_tokens == want_max,
               f"max={c.max_output_tokens} to={c.timeout_s} "
               f"guard={c.guard.max_output_tokens}")
 
-    # probe_outline 仍在 M3 high（开思考发工具是允许的，
-    # guard 只拦「关思考+发工具」）。
-    c = reg.stage("probe_outline")
-    check("probe_outline: 仍 M3 high、无 forced_thinking",
-          c.model == "MiniMax-M3" and c.reasoning_effort == "high"
-          and c.forced_thinking is None,
-          f"{c.model} {c.reasoning_effort} forced={c.forced_thinking}")
+    # outline/probe_outline 也在上面 M3.1 表里钉死了（2026-10-25 迁移）。
+    # 这里只补一条兜底：它们都不许带 forced_thinking（M3.1 关不掉思考）。
+    for stage in ("outline", "probe_outline"):
+        c = reg.stage(stage)
+        check(f"{stage}: 无 forced_thinking",
+              c.forced_thinking is None, f"forced={c.forced_thinking}")
 
     print()
     if FAILED:

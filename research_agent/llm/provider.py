@@ -1680,6 +1680,62 @@ class LLMClient:
         except Exception:
             pass  # 记账失败不影响主流程
 
+    def _record_guard(self, cfg: StageConfig, prompt: str, cause: str,
+                      attempt_i: int, max_tries: int,
+                      usage: dict | None = None,
+                      latency_ms: int | None = None,
+                      started_at: float | None = None,
+                      budget_from: int | None = None,
+                      budget_to: int | None = None,
+                      detail: str = "") -> None:
+        """记一次**被护栏丢弃的尝试**（2026-10-25 加）。
+
+        `_record_retry` 只管过载；护栏路径（空返回/截断/传输断连/HTTP
+        可重试状态）丢弃的尝试以前**一行都不留** —— outline 那次 52s
+        「静默」就是这么来的：第一次思考吃光预算、正文为空、重试后成功，
+        DB 里只见成功行，第一次的几十秒凭空消失。
+
+        与 `_record_retry` 同一语义：`status='retry'`（不计入 calls、
+        成本与耗时口径照旧收口），`error` 固定前缀便于聚合：
+
+            guard:<cause> | attempt k/n | budget X→Y [| detail]
+
+        `cause` 枚举：empty / truncated / reasoning_overflow / transport
+        （transport 也覆盖 HTTP 可重试状态，detail 里写状态码）。
+        token 拿不到就 NULL——这是「尝试」不是「完成」，留空比编数诚实。
+        """
+        try:
+            from ..db.repo import get_repo
+
+            u = dict(usage or {})
+            err = (f"guard:{cause} | attempt {attempt_i + 1}/{max_tries}"
+                   + (f" | budget {budget_from}→{budget_to}"
+                      if budget_from is not None else "")
+                   + (f" | {detail}" if detail else ""))
+            get_repo().log_llm_call(
+                session_id=_CURRENT_SESSION.get(),
+                stage=cfg.stage,
+                model=f"{cfg.provider}/{cfg.model}",
+                input_tokens=(int(u.get("input_tokens") or 0)
+                              or int(u.get("prompt_tokens") or 0)),
+                output_tokens=(int(u.get("output_tokens") or 0)
+                               or int(u.get("completion_tokens") or 0)),
+                latency_ms=(latency_ms if latency_ms is not None
+                            else u.get("latency_ms")),
+                cache_read_tokens=_cache_read(u),
+                cache_creation_tokens=int(
+                    u.get("cache_creation_input_tokens") or 0),
+                est_input_tokens=_rough_tokens(prompt),
+                status="retry",
+                error=err[:500],
+                started_at=(started_at if started_at is not None
+                            else u.get("started_at")),
+                wait_ms=self._take_wait_ms(),
+                ttfb_ms=u.get("ttfb_ms"),
+            )
+        except Exception:
+            pass  # 记账失败不影响主流程
+
     def _record(self, cfg: StageConfig, prompt: str, out: str,
                 usage: dict | None = None) -> None:
         """记一次调用。usage 是 API 报上来的真实值，缺失时退回本地估算。
@@ -1793,6 +1849,10 @@ class LLMClient:
                             acc.feed(obj)
                 except httpx.TransportError as e:
                     last_reason = f"transport: {type(e).__name__}"
+                    self._record_guard(
+                        cfg, prompt, "transport", attempt, max_tries,
+                        latency_ms=int((time.time() - t0) * 1000),
+                        started_at=t0, detail=type(e).__name__)
                     if net_left <= 0:
                         self.warnings.append(
                             f"[{cfg.stage}] 流式连接中断额度用尽"
@@ -1820,6 +1880,10 @@ class LLMClient:
                 if not txt or _is_truncated(usage, acc.finish_reason, budget):
                     truncated = bool(txt)
                     last_reason = "truncated" if truncated else "empty"
+                    self._record_guard(
+                        cfg, prompt, last_reason, attempt, max_tries,
+                        usage=usage, budget_from=budget, budget_to=budget,
+                        detail=f"finish_reason={acc.finish_reason}")
                     if empty_left <= 0:
                         break
                     nxt = _lower_effort(effort)
@@ -1860,6 +1924,10 @@ class LLMClient:
                 # 由上层降级路径接手，不静默。
                 last_reason = f"transport: {type(e).__name__}"
                 drops += 1
+                self._record_guard(
+                    cfg, prompt, "transport", attempt, max_tries,
+                    latency_ms=int((time.time() - t0) * 1000),
+                    started_at=t0, detail=type(e).__name__)
                 if net_left <= 0:
                     self.warnings.append(
                         f"[{cfg.stage}] 连接中断额度用尽（共 {drops + net_left} 次，"
@@ -1884,6 +1952,11 @@ class LLMClient:
                 # （2026-10-08 实测 relevance 连撞 429，退避到额度剩 0 还在撞）。
                 kind, wait = classify_limit(r.text, dict(r.headers))
                 if retry and limit_left > 0 and kind != "seat_quota":
+                    self._record_guard(
+                        cfg, prompt, "transport", attempt, max_tries,
+                        latency_ms=int((time.time() - t0) * 1000),
+                        started_at=t0,
+                        detail=f"HTTP {r.status_code} {kind}")
                     limit_left -= 1
                     # 排队超时不能等——并发的根源没变，等多久它还会排不下。
                     # 短等一下（让队列自己泄掉一点）就重试，
@@ -1923,6 +1996,10 @@ class LLMClient:
             if not text or _is_truncated(usage, choice0.get("finish_reason"), budget):
                 truncated = bool(text)
                 last_reason = "truncated" if truncated else "empty"
+                self._record_guard(
+                    cfg, prompt, last_reason, attempt, max_tries,
+                    usage=usage, budget_from=budget, budget_to=budget,
+                    detail=f"finish_reason={choice0.get('finish_reason')}")
                 if empty_left <= 0:
                     break
                 nxt = _lower_effort(effort)
@@ -2161,6 +2238,10 @@ class LLMClient:
                 # 吸收偶发抖动，不解决长生成的确定性失败。理由见 _opencode 同一处。
                 drops += 1
                 last_reason = f"transport: {type(e).__name__}"
+                self._record_guard(
+                    cfg, prompt, "transport", attempt, attempts,
+                    latency_ms=int((time.time() - t0) * 1000),
+                    started_at=t0, detail=type(e).__name__)
                 if net_left <= 0:
                     self.warnings.append(
                         f"[{cfg.stage}] 连接中断额度用尽（共 {drops + net_left} 次，"
@@ -2186,6 +2267,10 @@ class LLMClient:
                 # 只有 429 仍按老规矩走 net_left 的短退避（频率限制）。
                 retry, why = _retryable_http(status, body)
                 if status == 429 and retry and net_left > 0:
+                    self._record_guard(
+                        cfg, prompt, "transport", attempt, attempts,
+                        latency_ms=int((time.time() - t0) * 1000),
+                        started_at=t0, detail=f"HTTP {status} {why}")
                     net_left -= 1
                     self.warnings.append(
                         f"[{cfg.stage}] HTTP {status} {why}，退避重试（额度剩 {net_left}）")
@@ -2226,6 +2311,11 @@ class LLMClient:
             if not text or _is_truncated(usage, stop_reason, budget):
                 truncated = bool(text)
                 last_reason = "truncated" if truncated else "empty"
+                new_budget = min(cfg.guard.max_output_tokens, budget * 2)
+                self._record_guard(
+                    cfg, prompt, last_reason, attempt, attempts,
+                    usage=usage, budget_from=budget, budget_to=new_budget,
+                    detail=f"stop_reason={stop_reason}")
                 if empty_left <= 0:
                     break
                 empty_left -= 1
@@ -2233,10 +2323,10 @@ class LLMClient:
                         if truncated else f"无可见输出（思考 {len(think)} 字符）")
                 self.warnings.append(
                     f"[{cfg.stage}] 第 {attempt+1} 次{what}，"
-                    f"预算翻倍至 {min(cfg.guard.max_output_tokens, budget*2)} 后重试"
+                    f"预算翻倍至 {new_budget} 后重试"
                     f"（重试额度还剩 {empty_left}）"
                 )
-                budget = min(cfg.guard.max_output_tokens, budget * 2)
+                budget = new_budget
                 continue
             return text, usage
 

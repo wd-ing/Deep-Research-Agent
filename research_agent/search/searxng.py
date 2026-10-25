@@ -13,6 +13,7 @@ watchdog.sh 进程按文件新鲜度执行。规则与「谁发起的检索」�
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -28,13 +29,16 @@ class SearXNGProvider(SearchProvider):
         self,
         base_url: str = "http://127.0.0.1:8888",
         script: str | Path = ".searxng/searxng.sh",
-        timeout_s: float = 35.0,
+        timeout_s: float | None = None,
         engines: list[str] | None = None,
         idle_shutdown_s: int = 60,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.script = Path(script)
-        self.timeout_s = timeout_s
+        # 单次搜索上限（2026-10-25）：v18 基线 p50 3.2s / max 22.2s。
+        # 默认 25s，RA_SEARCH_TIMEOUT_S 可覆盖；超时按「该查询失败」处理。
+        self.timeout_s = (timeout_s if timeout_s is not None else
+                          float(os.environ.get("RA_SEARCH_TIMEOUT_S", "25")))
         self.engines = engines or ["sogou", "360search", "quark", "bing"]
         # 保留这个字段只为兼容调用方；实际超时由 watchdog.sh 决定，
         # 见 _beat()。这里只用于决定「多久算过期」的自我提醒。
@@ -123,6 +127,8 @@ class SearXNGProvider(SearchProvider):
             )
             r.raise_for_status()
             data = r.json()
+        except httpx.TimeoutException:
+            raise                      # 超时要可见，同 Tavily 的注释
         except Exception:
             return []
 

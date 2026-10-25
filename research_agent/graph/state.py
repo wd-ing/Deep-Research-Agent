@@ -78,6 +78,9 @@ class ResearchState(TypedDict, total=False):
     # 审批时必须让用户知道他批的是一份材料撑得住的框架，
     # 还是一份尽力而为的框架——两者可信度完全不同。
     stop_layer: str
+    # 最近一次 assess 的缺口紧迫度分布（{high: n, ...}）。_predict_stop
+    # 的 urgency 停止线读它；不声明会被 LangGraph 静默丢掉。
+    gaps_by_urgency: dict
     # 已经发出过的检索词。assess 靠它避免第 2 轮原样重发——
     # 重复检索烧配额、产重复段落，还会把 consecutive_no_new 推高导致提前停。
     used_queries: list
