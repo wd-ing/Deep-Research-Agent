@@ -417,7 +417,103 @@ def t_events_and_concurrency():
               "贰句要改的。", "贰句改好。"))
 
 
-# --------------------------------------------------- ⑪ 归一化
+def t_full_parallel_heads():
+    """B2-1（2026-10-25）：补丁段与整节重写段都去掉串行头。
+    porder 全部并发、peak == 补丁任务数；forder 全部并发、
+    peak == 重写任务数；合并结果与串行预期逐项一致。"""
+    import threading
+    import time
+
+    N_PATCH, N_FULL = 5, 4
+    tasks = ([_task(f"t_p{i}", covers=["sec1"]) for i in range(N_PATCH)]
+             + [_task(f"t_f{i}", covers=["sec2"]) for i in range(N_FULL)])
+    drafts = {f"t_p{i}": {"sec1": f"甲句。改点{i}。丙句。"}
+              for i in range(N_PATCH)}
+    drafts.update({f"t_f{i}": {"sec2": f"旧文{i}"} for i in range(N_FULL)})
+    targets = ([_tgt(f"t_p{i}", "sec1", f"改点{i}。") for i in range(N_PATCH)]
+               + [_tgt(f"t_f{i}", "sec2", "", "rewrite_section", "整节重写")
+                  for i in range(N_FULL)])
+    st = _state(tasks, drafts=drafts, audit={"targets": targets})
+
+    class PeakPatch(PatchLLM):
+        def __init__(self):
+            super().__init__()
+            self.active = self.peak = 0
+            self.lock = threading.Lock()
+
+        def complete_json_forced(self, stage, prompt, name, schema,
+                                 system=None):
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            try:
+                time.sleep(0.05)
+                # 并行下调用序 ≠ 任务序：从 prompt 里的 quote 认回
+                # 这是哪个任务的补丁，才能回对它自己的 old。
+                import re as _re
+                m = _re.search(r"改点(\d+)。", prompt)
+                i = int(m.group(1)) if m else -1
+                self.calls.append({"stage": stage, "task_i": i})
+                return {"patches": [{"item": 0, "old": f"改点{i}。",
+                                     "new": f"改好{i}。"}],
+                        "unresolved": []}
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    class PeakRun(ReviseRun):
+        def __init__(self):
+            super().__init__()
+            self.active = self.peak = 0
+            self.lock = threading.Lock()
+
+        def __call__(self, state, task, revise=None):
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            try:
+                time.sleep(0.05)
+                i = int(task["id"].split("_f")[1])
+                return ({"sec2": f"新文{i}"}, None)
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    llm, run = PeakPatch(), PeakRun()
+    o_llm, o_run = W.LLM.complete_json_forced, W._run_task
+    W.LLM.complete_json_forced = llm.complete_json_forced
+    W._run_task = run
+    try:
+        out = W.node_revise(st)
+    finally:
+        W.LLM.complete_json_forced = o_llm
+        W._run_task = o_run
+
+    check("⑩b 补丁段全并发：peak == 任务数",
+          llm.peak == N_PATCH, f"peak={llm.peak} want={N_PATCH}")
+    check("⑩b 补丁调用数 == 任务数（无串行预热）",
+          len(llm.calls) == N_PATCH, str(len(llm.calls)))
+    check("⑩b 重写段全并发：peak == 任务数",
+          run.peak == N_FULL, f"peak={run.peak} want={N_FULL}")
+    check("⑩b 补丁稿逐项合并正确",
+          all(out["drafts"][f"t_p{i}"]["sec1"] == f"甲句。改好{i}。丙句。"
+              for i in range(N_PATCH)),
+          str({k: v for k, v in out["drafts"].items() if k.startswith("t_p")})[:200])
+    check("⑩b 重写稿逐项合并正确",
+          all(out["drafts"][f"t_f{i}"]["sec2"] == f"新文{i}"
+              for i in range(N_FULL)),
+          str({k: v for k, v in out["drafts"].items() if k.startswith("t_f")})[:200])
+    _ev0 = (out.get("events") or [{}])[0]
+    check("⑩b first_serial_s 字段保留且记 0.0",
+          _ev0.get("first_serial_s") == 0.0,
+          str(_ev0)[:200])
+    check("⑩b 无任务漏判（补丁脚本按 quote 认对了任务）",
+          sorted(c.get("task_i") for c in llm.calls)
+          == list(range(N_PATCH)),
+          str([c.get("task_i") for c in llm.calls]))
+
+
+# --------------------------------------------------- ⑫ 归一化
 
 def t_normalize_patch_input():
     good = {"patches": [{"item": 0, "old": "a", "new": "b"}],
@@ -527,6 +623,8 @@ def main() -> int:
     t_violation_items()
     print("\n=== ⑩ 事件与并发 ===")
     t_events_and_concurrency()
+    print("\n=== ⑩b 全并发头（B2-1） ===")
+    t_full_parallel_heads()
     print("\n=== ⑪ 归一化 ===")
     t_normalize_patch_input()
     print("\n=== ⑫ 向后兼容 ===")

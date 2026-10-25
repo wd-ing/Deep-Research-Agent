@@ -2645,21 +2645,16 @@ def node_revise(state: WriteState) -> dict:
         return tid, last
 
     if porder:
-        t0 = _now()
-        _, res = _patch_one(porder[0])
-        patch_results[porder[0]] = res
-        first_cost = round(_now() - t0, 1)
-        rest = porder[1:]
-        if rest:
-            for r in parallel_labelled(rest, _patch_one,
-                                       workers=min(len(rest), WRITE_WORKERS),
-                                       label="revise", first_serial=False):
-                if not r:
-                    continue
-                tid, res = r
-                patch_results[tid] = res
-    else:
-        first_cost = 0.0
+        # 同 node_dispatch 全并发（2026-10-25 B2）：串行头实测不回本，
+        # 结果仍按 porder 顺序逐个进 patch_results，应用阶段顺序不变。
+        for r in parallel_labelled(porder, _patch_one,
+                                   workers=min(len(porder), WRITE_WORKERS),
+                                   label="revise", first_serial=False):
+            if not r:
+                continue
+            tid, res = r
+            patch_results[tid] = res
+    first_cost = 0.0
 
     # ---- 应用补丁（串行，按任务顺序）----
     applied = 0
@@ -2732,28 +2727,17 @@ def node_revise(state: WriteState) -> dict:
                     patched_secs.setdefault(tid, {})[it["section"]] = \
                         cur[it["section"]]
 
-        if not porder:
-            t0 = _now()
-        tid, new, _err = _one(forder[0])
-        drafts[tid] = _merge_sections(drafts.get(tid), new,
-                                      fallback_targets[tid],
-                                      rejected=rejected)
-        if not porder:
-            first_cost = round(_now() - t0, 1)
-
-        rest = forder[1:]
-        if rest:
-            # 同 node_dispatch（2026-10-25 全并发）：预热实测不回本（命中 8.3%）。
-            # parallel_labelled 保证按原顺序返回，逐个合并不影响装配顺序。
-            for r in parallel_labelled(rest, _one,
-                                       workers=min(len(rest), WRITE_WORKERS),
-                                       label="revise", first_serial=False):
-                if not r:
-                    continue
-                tid, new, _err = r
-                drafts[tid] = _merge_sections(drafts.get(tid), new,
-                                              fallback_targets[tid],
-                                              rejected=rejected)
+        # 同 node_dispatch 全并发（2026-10-25 B2）：forder 不再留串行头。
+        # parallel_labelled 按输入顺序返回，逐个 merge 与改前逐项一致。
+        for r in parallel_labelled(forder, _one,
+                                   workers=min(len(forder), WRITE_WORKERS),
+                                   label="revise", first_serial=False):
+            if not r:
+                continue
+            tid, new, _err = r
+            drafts[tid] = _merge_sections(drafts.get(tid), new,
+                                          fallback_targets[tid],
+                                          rejected=rejected)
         # 补丁小节显式写回（merge 的 wanted 覆盖不到它们时保险）
         for tid, secs in patched_secs.items():
             merged = _section_map(drafts.get(tid))

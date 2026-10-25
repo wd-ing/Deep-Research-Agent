@@ -81,6 +81,9 @@ class ResearchState(TypedDict, total=False):
     # 最近一次 assess 的缺口紧迫度分布（{high: n, ...}）。_predict_stop
     # 的 urgency 停止线读它；不声明会被 LangGraph 静默丢掉。
     gaps_by_urgency: dict
+    # 合并闸门（B2-5）：extract 的 summarize 同批产出的 {chunk_id: bool}
+    # relevant 判定，node_gate 规则没放行的段优先采信它。
+    merged_gate: dict
     # 已经发出过的检索词。assess 靠它避免第 2 轮原样重发——
     # 重复检索烧配额、产重复段落，还会把 consecutive_no_new 推高导致提前停。
     used_queries: list

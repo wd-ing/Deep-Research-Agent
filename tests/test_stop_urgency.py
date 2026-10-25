@@ -14,11 +14,16 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+os.environ.setdefault("MINIMAX_API_KEY", "stub-not-used")
+os.environ["RA_DB_PATH"] = str(Path(tempfile.mkdtemp()) / "t.db")
 
 from research_agent.graph import nodes as N   # noqa: E402
 
@@ -103,12 +108,101 @@ def t5_existing_stops_intact():
     check("⑤ 无查询词仍停", N._predict_stop(st) == "没有可用的查询词")
 
 
+def t6_missing_high_key_matrix():
+    """B2-3 修复形态（v19 现场暴露的 bug）：`_count_urgency` 只输出
+    出现过的桶——{medium:3,low:6} 没有 high 键 = 0 个高紧迫缺口，
+    是「最该停」的情形；旧 `.get("high", 99)` 把它放跑了。
+    此处把 _predict_stop 的全部形态钉死。"""
+    URG = "剩余缺口紧迫度低（high≤1），不再追加检索"
+    cases = [
+        ("{medium,low}无high键@2 → 停", 2, {"medium": 3, "low": 6}, URG),
+        ("空dict{}@2 → 停（0 high）", 2, {}, URG),
+        ("{high:1}@2 → 停", 2, {"high": 1, "low": 4}, URG),
+        ("{high:2}@2 → 继续", 2, {"high": 2, "low": 4}, ""),
+        ("{medium,low}@1 → 不触发", 1, {"medium": 3, "low": 6}, ""),
+        ("{}@1 → 不触发", 1, {}, ""),
+        ("字段缺省@2 → 不触发", 2, "__ABSENT__", ""),
+        ("显式None@2 → 不触发", 2, None, ""),
+    ]
+    for label, rnd, gu, want in cases:
+        kw = {"round": rnd}
+        if gu != "__ABSENT__":
+            kw["gaps_by_urgency"] = gu
+        got = N._predict_stop(_st(**kw))
+        check(f"⑥ {label}", got == want, f"got={got!r}")
+
+
+def _assess_state(rnd: int) -> dict:
+    return {"session_id": "s_urg", "round": rnd, "question": "q",
+            "outline": [{"id": "sec1", "title": "固态电池", "question": ""}],
+            "used_queries": [], "plan_queries": {},
+            "consecutive_no_new": 0, "last_round_segments": 1,
+            "plan_approved": False}
+
+
+def _run_assess(data: dict, rnd: int = 2):
+    """桩段落与 assess 模型，跑真 node_assess 拿 stop_* 出参。"""
+    segs = [{"ref": "S1·1", "heading_path": "", "summary": "s1"},
+            {"ref": "S1·2", "heading_path": "", "summary": "s2"}]
+    orig_segs, orig_cj = N._segments_for_assess, N.LLM.complete_json
+    N._segments_for_assess = lambda repo, sid: segs
+    N.LLM.complete_json = lambda stage, prompt, system=None: data
+    try:
+        return N.node_assess(_assess_state(rnd))
+    finally:
+        N._segments_for_assess, N.LLM.complete_json = orig_segs, orig_cj
+
+
+def t7_node_assess_urgency_matrix():
+    """node_assess 停止链同口径（v19 现场数据形态逐行复现）。"""
+    URG = "剩余缺口紧迫度低（high≤1），不再追加检索"
+    gaps_ml = ([{"section_id": "sec1", "urgency": "medium",
+                "what_missing": "x"}] * 3
+               + [{"section_id": "sec1", "urgency": "low",
+                   "what_missing": "y"}] * 6)
+
+    # v19 现场：round=2 gaps {medium:3,low:6}（无 high 键）→ 该停没停
+    out = _run_assess({"has_enough": False, "gaps": gaps_ml,
+                       "next_queries": {"zh": ["新词"], "en": []}})
+    check("⑦ node_assess round=2 无high键 → 停",
+          out.get("stop_reason") == URG
+          and out.get("stop_layer") == "urgency",
+          f"{out.get('stop_reason')!r}/{out.get('stop_layer')!r}")
+
+    # gaps=[] → 0 high → 停
+    out = _run_assess({"has_enough": False, "gaps": [],
+                       "next_queries": {"zh": ["新词"], "en": []}})
+    check("⑦ gaps=[] → 停", out.get("stop_reason") == URG,
+          out.get("stop_reason"))
+
+    # high=2 → 继续
+    out = _run_assess({"has_enough": False,
+                       "gaps": [{"section_id": "s", "urgency": "high",
+                                 "what_missing": "w"}] * 2,
+                       "next_queries": {"zh": ["新词"], "en": []}})
+    check("⑦ high=2 → 继续", out.get("stop_reason") == "",
+          repr(out.get("stop_reason")))
+
+    # data={}（调用失败态）→ 绝不按紧迫度低收工
+    out = _run_assess({})
+    check("⑦ data 空（失败态）→ 不触发", out.get("stop_reason") == "",
+          repr(out.get("stop_reason")))
+
+    # round=1 免疫
+    out = _run_assess({"has_enough": False, "gaps": gaps_ml,
+                       "next_queries": {"zh": ["新词"], "en": []}}, rnd=1)
+    check("⑦ round=1 无high键 → 不触发", out.get("stop_reason") == "",
+          repr(out.get("stop_reason")))
+
+
 if __name__ == "__main__":
     t1_round2_high1_stops()
     t2_high2_continues()
     t3_round1_immune()
     t4_missing_field_safe()
     t5_existing_stops_intact()
+    t6_missing_high_key_matrix()
+    t7_node_assess_urgency_matrix()
     print()
     if FAILED:
         print("失败：" + "、".join(FAILED))

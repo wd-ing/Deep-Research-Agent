@@ -36,9 +36,10 @@ class SearXNGProvider(SearchProvider):
         self.base_url = base_url.rstrip("/")
         self.script = Path(script)
         # 单次搜索上限（2026-10-25）：v18 基线 p50 3.2s / max 22.2s。
-        # 默认 25s，RA_SEARCH_TIMEOUT_S 可覆盖；超时按「该查询失败」处理。
+        # B2-2 收紧到默认 12s，RA_SEARCH_TIMEOUT_S 可覆盖；
+        # 超时按「该查询失败」处理。
         self.timeout_s = (timeout_s if timeout_s is not None else
-                          float(os.environ.get("RA_SEARCH_TIMEOUT_S", "25")))
+                          float(os.environ.get("RA_SEARCH_TIMEOUT_S", "12")))
         self.engines = engines or ["sogou", "360search", "quark", "bing"]
         # 保留这个字段只为兼容调用方；实际超时由 watchdog.sh 决定，
         # 见 _beat()。这里只用于决定「多久算过期」的自我提醒。

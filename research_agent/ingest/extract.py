@@ -20,6 +20,14 @@ import httpx
 from .split import RecursiveSplitter, count_tokens
 from ..trace import record_span
 
+import os
+
+# 单页整体 deadline（2026-10-25 B2-2）：v19 R1 fetch_all 49.8s 是
+# 单页长尾拖的（p50 3.1s / p90 15.0s）。限流等待、抓取、解码全算在内；
+# 超时走现有失败路径 Page(ok=False, reason="deadline")，不重试。
+# RA_FETCH_DEADLINE_S 可覆盖。
+FETCH_DEADLINE_S = float(os.environ.get("RA_FETCH_DEADLINE_S", "20"))
+
 DEFAULT_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
     "(KHTML, like Gecko) Version/17.0 Safari/605.1.15"
@@ -139,10 +147,21 @@ class Fetcher:
                     if cached:
                         return _done(Page(url=url, ok=True, text=cached,
                                           status=200, reason="cache"))
+
+                # deadline 只管「限流等待之外的抓取」：throttle.wait 是
+                # 礼貌等待，同域名连发时等 1s 不该吃掉预算。取消时
+                # async with 保证信号量释放，httpx 请求随取消传播关闭。
+                # 解码/抽取是同步代码、不在 deadline 内也无法抢占——
+                # 长尾全在 client.get（v19 单页 49.8s 就在这段）。
                 async with self.sem:
                     await self.throttle.wait(domain_of(url))
                     try:
-                        r = await client.get(url)
+                        r = await asyncio.wait_for(client.get(url),
+                                                   FETCH_DEADLINE_S)
+                    except TimeoutError:
+                        # 单页超时：走既有失败路径，不重试、不拖累整批。
+                        return _done(Page(url=url, ok=False,
+                                          reason="deadline"))
                     except Exception as e:
                         return _done(Page(url=url, ok=False,
                                           reason=f"{type(e).__name__}"))
@@ -160,7 +179,8 @@ class Fetcher:
                 page = self._extract(html, url, r.status_code)
                 if page.ok and not bypass_cache:
                     self.repo.cache_put(norm, url, page.text,
-                                         content_hash(page.text), r.status_code)
+                                         content_hash(page.text),
+                                         r.status_code)
                 return _done(page)
 
             return await asyncio.gather(*(one(u) for u in urls))

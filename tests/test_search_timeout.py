@@ -2,7 +2,8 @@
 
 2026-10-25 加。v18 基线：Tavily p50 3.2s / p90 5.7s / max 49.3s，
 SearXNG p50 3.2s / max 22.2s——长尾把 retrieve R1 拖到 82s。
-现在默认单次 25s（RA_SEARCH_TIMEOUT_S 覆盖），超时**抛**给
+现在默认单次 12s（2026-10-25 B2-2 由 25s 收紧；RA_SEARCH_TIMEOUT_S
+覆盖），超时**抛**给
 retrieve 的失败路径（该查询记失败、事件可见、其余继续），
 不再被吞成「0 命中」（那会把「慢」伪装成「空」）。
 
@@ -31,7 +32,7 @@ def check(label: str, cond: bool, detail: str = "") -> None:
 
 
 def t1_env_default():
-    """默认 25s，env 可覆盖。"""
+    """默认 12s（B2-2 由 25s 收紧），env 可覆盖。"""
     import importlib
     import os
     import research_agent.search.tavily as tav
@@ -39,7 +40,7 @@ def t1_env_default():
     os.environ.pop("RA_SEARCH_TIMEOUT_S", None)
     importlib.reload(tav)
     p = tav.TavilyProvider(api_key="k")
-    check("① 默认 25s", p.timeout_s == 25.0, str(p.timeout_s))
+    check("① 默认 12s", p.timeout_s == 12.0, str(p.timeout_s))
     os.environ["RA_SEARCH_TIMEOUT_S"] = "7"
     p = tav.TavilyProvider(api_key="k")
     check("① env 覆盖 7s", p.timeout_s == 7.0, str(p.timeout_s))

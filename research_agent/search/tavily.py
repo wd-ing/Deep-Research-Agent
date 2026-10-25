@@ -29,10 +29,11 @@ class TavilyProvider(SearchProvider):
         self.search_depth = search_depth
         self.max_results = max_results
         # 单次搜索上限（2026-10-25）：v18 基线测得 p50 3.2s / p90 5.7s /
-        # max 49.3s——长尾查询把 retrieve R1 拖到 82s。默认 25s，
-        # RA_SEARCH_TIMEOUT_S 可覆盖；超时按「该查询失败」处理。
+        # max 49.3s——长尾查询把 retrieve R1 拖到 82s。B2-2 收紧到默认
+        # 12s（p90 的两倍以上仍有富余），RA_SEARCH_TIMEOUT_S 可覆盖；
+        # 超时按「该查询失败」处理。
         self.timeout_s = (timeout_s if timeout_s is not None else
-                          float(os.environ.get("RA_SEARCH_TIMEOUT_S", "25")))
+                          float(os.environ.get("RA_SEARCH_TIMEOUT_S", "12")))
 
     def health(self) -> bool:
         if not self.api_key:

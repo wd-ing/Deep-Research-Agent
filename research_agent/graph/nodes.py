@@ -709,7 +709,8 @@ def node_extract(state: ResearchState) -> dict:
                 "events": [{"kind": "extract", "round": state.get("round"),
                             "sources": 0}]}
 
-    out = extract_batch.extract_all(items)
+    out = extract_batch.extract_all(items,
+                                    topic_label=state["question"][:80])
     results = out.get("results") or []
 
     # 相关性闸门：claims 已经抽出来了，此刻判断几乎零成本
@@ -768,6 +769,9 @@ def node_extract(state: ResearchState) -> dict:
     return {
         "pending_extract": [],
         "all_evidence": results,
+        # 合并闸门（B2-5）：summarize 同批产出的 relevant 判定，
+        # node_gate 里规则没放行的段优先用它，缺的才回退 LLM 补判。
+        "merged_gate": out.get("relevant") or {},
         "events": (out.get("events") or []) + [{
             "kind": "extract", "round": state.get("round"),
             "sources": len(items), "ok": n_ok, "errors": n_err,
@@ -814,13 +818,15 @@ def node_gate(state: ResearchState) -> dict:
         return {"events": [{"kind": "gate", "round": state.get("round"),
                             "segments_total": 0, "segments_kept": 0}]}
 
-    gate = relevance.gate_segments(segs, kws, state["question"][:80])
+    gate = relevance.gate_segments(segs, kws, state["question"][:80],
+                                   prejudged=state.get("merged_gate") or {})
     repo.mark_chunk_topic(sid, gate["marks"])
 
     return {"events": [{
         "kind": "gate", "round": state.get("round"),
         "segments_total": gate["stats"]["segments"],
         "segments_kept": gate["stats"]["on_topic"],
+        "merged_gate": bool(state.get("merged_gate")),
         "gate": gate["stats"],
     }]}
 
@@ -849,10 +855,13 @@ def _predict_stop(state: ResearchState) -> str:
     if not q.get("zh") and not q.get("en"):
         return "没有可用的查询词"
     # 与 node_assess 的停止链同一条：≥2 轮后 high≤1 → 材料够用。
-    # 只在 state 里真有最近一次 assess 的分布时才触发（字段缺省 →
-    # high 取 99，不会把「没跑过 assess」误判成「紧迫度低」）。
+    # 只在 state 里真有最近一次 assess 的分布时才触发；`_count_urgency`
+    # 只输出出现过的桶，**缺 high 键就是 0 个高紧迫缺口**——v19 实测
+    # round 2 的 {medium:3,low:6} 正是 0 high，旧写法给它默认值 99
+    # 放跑了整条停止线。字段缺省（没跑过 assess）才不触发。
+    _gu = state.get("gaps_by_urgency")
     if (state.get("round", 0) >= 2
-            and (state.get("gaps_by_urgency") or {}).get("high", 99) <= 1):
+            and _gu is not None and _gu.get("high", 0) <= 1):
         return "剩余缺口紧迫度低（high≤1），不再追加检索"
     checks = [
         (state.get("consecutive_no_new", 0) >= HARD["no_new_streak"],
@@ -1024,10 +1033,12 @@ def node_assess(state: ResearchState) -> dict:
                          f"阈值 {MIN_ROUND_GAIN:.0%}）")
         stop_layer = "mechanism"
     elif (rnd >= 2 and data
-          and gaps_by_urgency.get("high", 99) <= 1):
+          and gaps_by_urgency.get("high", 0) <= 1):
         # 2026-10-25 新增（时间优化）：第 3 轮起，若高紧迫缺口 ≤1，
         # 剩下的 medium/low 多半是「网上没有」——再搜只是在烧配额。
         # v18 基线：第 2 轮 high=1，第 3 轮只新增 9 段、0 段相关。
+        # `_count_urgency` 只输出出现过的桶：缺 high 键=0 high（最该停），
+        # 取 0 不取 99——v19 的 {medium:3,low:6} 被旧默认值放跑过。
         # `data` 真值门槛：assess 调用失败时 gaps 是空表，high 会假成 0，
         # 那时绝不能按「紧迫度低」收工（静默早停）。
         stop_would_be = "剩余缺口紧迫度低（high≤1），不再追加检索"
@@ -1490,6 +1501,11 @@ def _run_health(repo, sid: str, state: ResearchState) -> dict:
     ev["gate_degraded_chunks"] = repo.q1(
         "SELECT COUNT(*) n FROM chunk WHERE session_id=? "
         "AND gate_method LIKE '%degraded%'", (sid,))["n"]
+    # 合并闸门（B2-5）：summarize 同批判 relevant 的段数——
+    # 这些段省掉了 relevance 的 LLM 调用。
+    ev["merged_gate_segments"] = repo.q1(
+        "SELECT COUNT(*) n FROM chunk WHERE session_id=? "
+        "AND gate_method='merged'", (sid,))["n"]
     ev["unjudged_sources"] = repo.q1(
         "SELECT COUNT(*) n FROM source WHERE session_id=? "
         "AND (source_nature IS NULL OR source_nature='')", (sid,))["n"]

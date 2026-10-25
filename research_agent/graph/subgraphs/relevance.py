@@ -190,7 +190,8 @@ def gate_all(results: list[dict], kws: list[str], topic_label: str) -> dict:
     return stats
 
 
-def gate_segments(segments: list[dict], kw: list[str], topic_label: str) -> dict:
+def gate_segments(segments: list[dict], kw: list[str], topic_label: str,
+                  prejudged: dict | None = None) -> dict:
     """段级相关性闸门。
 
     原先在来源级判，一页里「前半讲技术、后半讲融资」只能整篇进出。
@@ -223,19 +224,37 @@ def gate_segments(segments: list[dict], kw: list[str], topic_label: str) -> dict
         ])[:3000]
 
     # ---- 第一阶段：规则层，同步、零成本 ----
+    # `prejudged`（2026-10-25 B2-5 合并闸门）：summarize 同批产出的
+    # {chunk_id: bool} relevant 判定。规则优先——规则已放行的段
+    # **不采信** prejudged；只有规则没放行的段才用它，缺 key 的
+    # 照旧落 LLM 批量判定兜底。
+    pre = prejudged or {}
     for i, seg in enumerate(segments):
-        if no_kw:
+        if not no_kw:
+            blob = _blob(seg)
+            hits = _match(blob, strong)
+            if hits >= 1:
+                verdicts[i] = {"on_topic": True, "method": "rule",
+                               "hits": hits, "total": len(strong),
+                               "reason": f"命中专有名词 {hits}/{len(strong)}"}
+                continue
+            if (weak and len(strong) == 0
+                    and _match(blob, weak) / len(weak) >= 0.4):
+                verdicts[i] = {"on_topic": True, "method": "rule_weak",
+                               "reason": "仅有通用词密集出现"}
+                continue
+            if isinstance(pre.get(seg["id"]), bool):
+                verdicts[i] = {"on_topic": pre[seg["id"]],
+                               "method": "merged",
+                               "hits": hits, "total": len(strong),
+                               "reason": "合并判定（概括同批产出）"}
+                continue
             todo.append(i)
             continue
-        blob = _blob(seg)
-        hits = _match(blob, strong)
-        if hits >= 1:
-            verdicts[i] = {"on_topic": True, "method": "rule", "hits": hits,
-                           "total": len(strong),
-                           "reason": f"命中专有名词 {hits}/{len(strong)}"}
-        elif weak and len(strong) == 0 and _match(blob, weak) / len(weak) >= 0.4:
-            verdicts[i] = {"on_topic": True, "method": "rule_weak",
-                           "reason": "仅有通用词密集出现"}
+        # no_kw：规则词全空时 prejudged 仍能兜底一批
+        if isinstance(pre.get(seg["id"]), bool):
+            verdicts[i] = {"on_topic": pre[seg["id"]], "method": "merged",
+                           "reason": "合并判定（概括同批产出）"}
         else:
             todo.append(i)
 

@@ -244,7 +244,7 @@ def build_extract_graph():
     return g
 
 
-def extract_all(items: list[dict]) -> dict:
+def extract_all(items: list[dict], topic_label: str | None = None) -> dict:
     """批量抽取入口。
 
     items: 每项一个来源，形如
@@ -268,7 +268,8 @@ def extract_all(items: list[dict]) -> dict:
     #    summarize 在子图外面跑（不进 langgraph 节点），单独一个 span。
     with span("subnode", "extract.summarize") as sd:
         sum_out = summarize_segments(
-            [s for it in items for s in (it.get("segments") or [])])
+            [s for it in items for s in (it.get("segments") or [])],
+            topic_label=topic_label)
         sd["segments"] = len(sum_out.get("summaries") or {})
         sd["failed"] = sum_out.get("failed")
     for it in items:
@@ -281,7 +282,18 @@ def extract_all(items: list[dict]) -> dict:
     out = g.invoke({"batches": batches})
     out.update(sum_out)
     return out
-def summarize_segments(items: list[dict]) -> dict:
+def _norm_relevant(v) -> bool | None:
+    """`relevant` 字段的归一化：bool 原样收、"true"/"false" 字符串
+    收下，其余一律算偏离——缺 verdict 的段交给闸门补判，不猜。"""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str) and v.strip().lower() in ("true", "false"):
+        return v.strip().lower() == "true"
+    return None
+
+
+def summarize_segments(items: list[dict],
+                       topic_label: str | None = None) -> dict:
     """为每个段落写一句话概括。
 
     **从 node_finalize 搬到这里。** 原先它在报告写完之后才跑，产出只进
@@ -291,12 +303,20 @@ def summarize_segments(items: list[dict]) -> dict:
 
     段落是写作取材的最小单位：约 700 token，一个完整论述单元，
     概括完随时能展开回原文。
+
+    `topic_label` 给定时（2026-10-25 B2-5 合并闸门）：同一次调用里
+    每段多判一个 `relevant` 布尔——概括与相关性判定读的是同一份段落
+    输入，分开跑是把同一批段落喂两遍。判定口径复用 RELEVANCE 原文
+    （prompts.SUMMARIZE_GATE_NOTE）。返回里多 `relevant: {cid: bool}`；
+    给了 label 但模型某段没交 verdict → 该段缺 key，下游按既有
+    「判不了就走 LLM 兜底」处理，不算失败。
     """
     segs = [{"chunk_id": it["chunk_id"], "text": it.get("text") or "",
              "heading": it.get("heading_path") or ""}
             for it in items if (it.get("text") or "").strip()]
     if not segs:
-        return {"summaries": {}, "failed": 0, "events": []}
+        return {"summaries": {}, "relevant": {},
+                "failed": 0, "events": []}
 
     batches: list[list[dict]] = []
     cur: list[dict] = []
@@ -317,6 +337,22 @@ def summarize_segments(items: list[dict]) -> dict:
     # 实测串行时 18 批 × 7.9 秒 ≈ 142 秒，占 extract 节点的八成。
     # 第一个批次仍串行：冷缓存下并发会一起打空，命中率反而掉
     # （write 阶段实测过：冷缓存 8 并发只 3 命中，预热后 7/8）。
+    _item_props = {
+        "index": {"type": "integer",
+                 "description": "段落下标，对应输入里的 [n]"},
+        "summary": {"type": "string", "description": "一句话概括"}}
+    _required = ["index", "summary"]
+    if topic_label:
+        _item_props["relevant"] = {
+            "type": "boolean",
+            "description": "这段是否在讲研究对象"}
+        _required = ["index", "summary", "relevant"]
+    _schema = {"type": "object", "properties": {"summaries": {
+        "type": "array", "description": "与输入段落一一对应的概括",
+        "items": {"type": "object", "properties": _item_props,
+                  "required": _required}}},
+        "required": ["summaries"]}
+
     def _one(item) -> dict | None:
         bi, batch = item
         blob = "\n\n".join(
@@ -329,19 +365,16 @@ def summarize_segments(items: list[dict]) -> dict:
         # 同一组数据实测 3/3 通过、5.2~8.8 秒。
         data = LLM.complete_json_forced(
             "summarize",
-            f"以下是 {len(batch)} 个报告段落，请为每段写一句话概括：\n\n{blob}",
+            (f"研究对象：{topic_label}\n\n" if topic_label else "")
+            + f"以下是 {len(batch)} 个报告段落，请为每段写一句话概括"
+              f"{'并判定 relevant' if topic_label else ''}：\n\n{blob}",
             name="emit_summaries",
-            schema={"type": "object", "properties": {"summaries": {
-                "type": "array", "description": "与输入段落一一对应的概括",
-                "items": {"type": "object", "properties": {
-                    "index": {"type": "integer",
-                             "description": "段落下标，对应输入里的 [n]"},
-                    "summary": {"type": "string", "description": "一句话概括"}},
-                    "required": ["index", "summary"]}}},
-                "required": ["summaries"]},
-            system=prompts.SUMMARIZE,
+            schema=_schema,
+            system=(prompts.SUMMARIZE + prompts.SUMMARIZE_GATE_NOTE
+                    if topic_label else prompts.SUMMARIZE),
         )
         got: dict[str, str] = {}
+        rel: dict[str, bool] = {}
         for it in ((data or {}).get("summaries") or []):
             idx = it.get("index")
             # 模型给错下标就跳过，不猜
@@ -349,11 +382,15 @@ def summarize_segments(items: list[dict]) -> dict:
                 txt = (it.get("summary") or "").strip()
                 if txt:
                     got[batch[idx]["chunk_id"]] = txt
+                if topic_label:
+                    rv = _norm_relevant(it.get("relevant"))
+                    if rv is not None:
+                        rel[batch[idx]["chunk_id"]] = rv
         # 环节内进度：每批完成推一行（partial 也推——done < of 前端标黄）
         fire_progress("extract", {"kind": "summarize_batch", "batch": bi + 1,
                                   "batches": len(batches), "done": len(got),
                                   "of": len(batch)})
-        return got
+        return {"summ": got, "rel": rel}
 
     results = parallel_labelled(
         list(enumerate(batches)), _one, workers=SUMM_WORKERS,
@@ -380,7 +417,7 @@ def summarize_segments(items: list[dict]) -> dict:
     # 无界重试会把「模型就是交不出来」放大成时间与 token 的黑洞。
     # ⚠️ 重试不改变失败语义：两次都不成的照旧计入 `failed`。
     def _short(r, b) -> bool:
-        return r is None or len(r) < len(b)
+        return r is None or len(r["summ"]) < len(b)
 
     retry_idx = [i for i, (r, b) in enumerate(zip(results, batches)) if _short(r, b)]
     retried = recovered = 0
@@ -405,6 +442,7 @@ def summarize_segments(items: list[dict]) -> dict:
                 break
 
     out: dict[str, str] = {}
+    rel_all: dict[str, bool] = {}
     failed = 0
     for bi, got in enumerate(results):
         if got is None:
@@ -415,11 +453,15 @@ def summarize_segments(items: list[dict]) -> dict:
             print(f"⚠️  段落概括批次 {bi} 彻底失败（抛异常且重试仍不成），"
                   f"这一批的 {len(batches[bi])} 段进不了写作阶段", flush=True)
             continue
-        out.update(got)
+        out.update(got["summ"])
+        rel_all.update(got["rel"])
 
-    return {"summaries": out, "failed": failed,
+    return {"summaries": out, "relevant": rel_all,
+            "failed": failed,
             "events": [{"kind": "segment_summary", "segments": len(segs),
                         "batches": len(batches), "done": len(out),
                         "failed": failed,
                         "retried": retried, "recovered": recovered,
+                        "merged_gate": bool(topic_label),
+                        "relevant_judged": len(rel_all),
                         "still_incomplete": retry_idx}]}
