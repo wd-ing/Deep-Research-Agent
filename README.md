@@ -156,11 +156,27 @@ Markdown / PDF（浏览器打印）/ Word（前端生成 .docx）。
 | `probe_relevance_model.py` | `relevance` 闸门判定换模型对跑 |
 | `probe_assess_run.py <问题> <db>` | 只到 assess（write 打桩），改规划/检索类先跑这个 |
 | `cost_report.py <db> <session_id>` | 钱花在哪、时间花在哪、流程有没有空转 |
+| `e2e_http.py <问题> <db>` | **走真实 server + SSE + 异步图**跑完整研究（自动审批），结束打 timeline 与 cost 报告；测时间一律用它，别用 `e2e_run.py`（同步图，checkpoint 路径不同）|
+| `timeline_report.py <db> [sid]` | 阶段瀑布、LLM 并发度剖面、静默区间及「未解释秒数」、checkpoint 汇总（只读，老库也能跑）|
+| `exp_write_preload.py` / `exp_outline_ab.py` / `exp_merge_gate.py` | 时间优化期间的 A/B 实验驱动（真 API；对照组口径见 CONTEXT 坑 87，`exp_merge_gate` 的对照组是坏的）|
 | `test_toolloop_protocol.py` | **一半在线**：① 协议转换是离线的，② 会真跑两轮工具循环 |
 | `replay_server.py` | 前端回放服务器（零 API 调用、零搜索额度）|
 | `verify_nature_e2e.py` | 端到端验来源性质判定不再整批丢 |
 | `probe_call_failure.py` | 验「失败调用也留痕」（`_record_error` + 三条失败路径）|
 | `probe_session_summary.py` | 会话摘要 stage 的真实数据探针 |
+
+### 时间相关的环境变量（模块加载时读；默认值即当前生产值）
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `RA_WRITE_WORKERS` | 12 | 写作/返修并行度（一次全并发，无批次/串行头）|
+| `RA_MAX_REWORK` | 1 | 返修轮数；返修用完后末轮不再调模型，只做程序检查。2=旧行为 |
+| `RA_WRITE_PRELOAD` | 1 | 写作任务把分配段全文附进 prompt、只发 1 次强制交卷；0=多轮读证据 |
+| `RA_SEARCH_TIMEOUT_S` | 12 | 单次搜索超时 |
+| `RA_FETCH_DEADLINE_S` | 20 | 单个页面抓取整体 deadline |
+| `RA_OVERLOAD_RETRIES` / `RA_OVERLOAD_BASE_S` | 5 / 10 | MiniMax 过载重试 |
+
+这些旋钮就是将来「快速 / 标准」两档的落点。每次真跑会花额度，MiniMax 额度用尽时返回 `429 … (2056)`，先用一次极小调用确认。
 
 ### 怎么确认一个脚本是不是真的离线
 
