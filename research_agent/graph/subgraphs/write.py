@@ -25,7 +25,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from ...llm.provider import (LLMClient, ConfigError, _parse_json,
+from ...llm.provider import (LLMClient, ConfigError, EmptyOutput, _parse_json,
                              fire_progress, parallel_labelled)
 from ...llm.toolloop import run_tool_loop
 from ...trace import span, traced
@@ -2128,6 +2128,46 @@ def _audit_skip_final(state: WriteState) -> dict:
     }
 
 
+def _violation_rework_targets(violations: dict, by_task: dict,
+                              targets: list) -> int:
+    """程序检出的残留违规 → 直接变返修目标（坑 79）。
+
+    这类缺陷机械可查，不该消耗模型的判断力：违规列表是给模型看的
+    背景（提示词已叫它别重复提 finding），这里程序自己转成目标。
+    就地修改 `targets`：模型已点名的任务把违规文本并进它的第一条
+    target（返修按任务跑，不另立、也不计数）；其余任务追加
+    `_violation` 目标（`section=None` 时 node_revise 用
+    `_violation_items` 把整句定位成补丁项，而不是退成
+    「任务原始 covers 整节重写」，坑 80）。
+    审查失败的降级路径（targets 为空）产出的就全是 `_violation` 目标。
+    返回新增的程序目标数。
+    """
+    count = 0
+    high_tasks = {t["task"] for t in targets}
+    for tid, bads in (violations or {}).items():
+        if not bads or tid not in by_task:
+            continue
+        sample = ";".join(
+            f"{b.get('kind')}:{b.get('found')}" for b in bads[:5])
+        problem = f"程序检出 {len(bads)} 处引用/编号问题:{sample}"
+        fix = ("逐处处理:越界引用——改成你被分配的段号中真正支撑该句的一条,"
+               "找不到支撑就删去该句断言,不要保留无出处的数字;"
+               "自创写法——改成规范的 [S3·5] 形式;"
+               "正文里出现的 t1/sec3 之类内部编号——删掉整句元说明。"
+               "只改这些处,不要动其他文字。")
+        if tid in high_tasks:
+            tgt = next(t for t in targets if t["task"] == tid)
+            tgt["problem"] = tgt["problem"] + "\n" + problem
+            tgt["fix"] = tgt["fix"] + "\n" + fix
+            continue
+        targets.append({
+            "task": tid, "problem": problem, "fix": fix, "section": None,
+            "_violation": True, "quote": "", "action": "edit",
+        })
+        count += 1
+    return count
+
+
 def node_audit(state: WriteState) -> dict:
     """主 agent 通读全稿。返回是否返修、返修谁、以及返修有没有真的解决问题。
 
@@ -2237,16 +2277,32 @@ def node_audit(state: WriteState) -> dict:
         break
 
     if d is None:
-        # 审查失败不阻断：保留现状，把问题暴露出来而不是假装没问题
+        # 审查失败不阻断：保留现状，把问题暴露出来而不是假装没问题。
+        # 但「模型偏离/空返回」类失败（归一化失败、EmptyOutput、JSON 解析错）
+        # 且程序已检出违规时，降级为「只修违规」的返修轮（2026-10-25）：
+        # 违规是确定性可修的，不该因审查模型挂了就原样进存疑节。
+        # HTTP 类失败（429/额度/5xx/超时/ConfigError）不触发——
+        # 此时 revise 的模型调用多半同样失败，白烧。
         msg = f"{err}（已尝试 {attempts} 次）"[:200]
-        return {"audit": {"need_rework": False, "error": msg,
-                          "findings": [], "targets": [], "blocked": [],
+        model_deviated = (
+            err == "submit_audit 入参偏离 schema，无法归一化"
+            or isinstance(err, (EmptyOutput, json.JSONDecodeError)))
+        vtargets: list[dict] = []
+        violation_only = 0
+        if model_deviated and violations:
+            by_task_v = {t["id"]: t for t in state.get("tasks") or []}
+            violation_only = _violation_rework_targets(
+                violations, by_task_v, vtargets)
+        return {"audit": {"need_rework": violation_only > 0, "error": msg,
+                          "findings": [], "targets": vtargets, "blocked": [],
                           "rework_check": [], "checked": 0, "still_open": 0,
                           "rework_effective": True,
+                          "violation_targets": violation_only,
                           "remaining_issues": ["审查环节失败，未能核查"]},
                 "rework_effective": True,
                 "events": [{"kind": "write_audit_error", "error": msg,
-                            "normalize_fail": normalize_fails}]}
+                            "normalize_fail": normalize_fails,
+                            "violation_only_rework": violation_only}]}
 
     findings = [f for f in (d.get("findings") or []) if isinstance(f, dict)]
     by_task = {t["id"]: t for t in state.get("tasks") or []}
@@ -2271,38 +2327,7 @@ def node_audit(state: WriteState) -> dict:
     model_high = len(targets)          # 模型 high——在追加程序违规目标之前取，
                                        # 免得程序目标扰动 rework_effective 判定
     # ---- 程序检出的残留违规 → 直接变返修目标（坑 79）----
-    # 这类缺陷机械可查，不该消耗模型的判断力：违规列表是给模型看的
-    # 背景（提示词已叫它别重复提 finding），这里程序自己转成目标。
-    # `section=None` 时 node_revise 会退回任务原始 covers，merge 按新稿键并。
-    violation_targets = 0
-    high_tasks = {t["task"] for t in targets}
-    for tid, bads in (violations or {}).items():
-        if not bads or tid not in by_task:
-            continue
-        sample = ";".join(
-            f"{b.get('kind')}:{b.get('found')}" for b in bads[:5])
-        problem = f"程序检出 {len(bads)} 处引用/编号问题:{sample}"
-        fix = ("逐处处理:越界引用——改成你被分配的段号中真正支撑该句的一条,"
-               "找不到支撑就删去该句断言,不要保留无出处的数字;"
-               "自创写法——改成规范的 [S3·5] 形式;"
-               "正文里出现的 t1/sec3 之类内部编号——删掉整句元说明。"
-               "只改这些处,不要动其他文字。")
-        if tid in high_tasks:
-            # 已被模型点名的任务：违规文本并进它的第一条 target，
-            # 不另立 target（返修按任务跑，同任务的意见本就该一起问）、
-            # 也不计 violation_targets——这条返修本来就是模型要的。
-            tgt = next(t for t in targets if t["task"] == tid)
-            tgt["problem"] = tgt["problem"] + "\n" + problem
-            tgt["fix"] = tgt["fix"] + "\n" + fix
-            continue
-        targets.append({
-            "task": tid, "problem": problem, "fix": fix, "section": None,
-            # `_violation` 标记给 node_revise：遇到它就用
-            # `_violation_items` 把整句定位成补丁项，而不是退成
-            # 「任务原始 covers 整节重写」（坑 80）。
-            "_violation": True, "quote": "", "action": "edit",
-        })
-        violation_targets += 1
+    violation_targets = _violation_rework_targets(violations, by_task, targets)
     # ---- blocked：返修解决不了的，独立成一栏 ----
     # 原来这类内容混在 `remaining_issues` 里，和「本轮不该解决」混在一起，
     # 路由看不出来，于是模型被迫把它们判成 high 才不会漏掉。

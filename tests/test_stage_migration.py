@@ -77,6 +77,19 @@ def main() -> int:
               f"max={c.max_output_tokens} to={c.timeout_s} "
               f"guard={c.guard.max_output_tokens}")
 
+    # write_section 强制交卷轮预算 16384（2026-10-27 批 4：v21 预加载
+    # 一次写完整节，t14 的 submit_section 入参在 8192 顶断白烧 55s）。
+    # round_max_tokens 2048 同样是 P2 压上限设计，不许跟着涨；
+    # timeout_s 继承 defaults 300s：16384 ÷ 最慢 62 tok/s ≈ 264s 够。
+    c = reg.stage("write_section")
+    check("write_section: max_output_tokens=16384 + round 2048",
+          c.max_output_tokens == 16384
+          and c.round_max_tokens == 2048
+          and c.guard.max_output_tokens == 16384
+          and c.timeout_s == 300.0,
+          f"max={c.max_output_tokens} round={c.round_max_tokens} "
+          f"guard={c.guard.max_output_tokens} to={c.timeout_s}")
+
     # write_revise 强制交卷轮预算 8192（2026-10-25 批 3：v20 里
     # submit_section 入参两次被 4096 顶断）；round_max_tokens 2048 是
     # P2 的读证据轮压上限设计，不许跟着涨。

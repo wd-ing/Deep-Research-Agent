@@ -627,7 +627,12 @@ stages:
     # （用精度换成本，属预期）。强制交卷轮不受此上限。
     round_max_tokens: 2048
     temperature: 0.2
-    max_output_tokens: 8192
+    # 8192 → 16384（2026-10-27）：v21 实测预加载模式下一次写完整节，
+    # t14 的 submit_section 入参在 8192 顶断（finish_reason=tool_use
+    # 截断），forced_retry 白烧 55s 且在 dispatch 关键路径上。
+    # timeout 不随动：16384 tok ÷ 最慢吞吐 62 tok/s ≈ 264s，
+    # 仍低于继承的 defaults timeout_s: 300，余量够。
+    max_output_tokens: 16384
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 16384 }
 
   # 子 agent 定点返修。同角色，温度略低以免它把没问题的部分也重写。
