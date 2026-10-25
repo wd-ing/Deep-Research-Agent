@@ -14,7 +14,26 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Callable, Protocol
+
+from ..trace import record_span
+
+
+def _toolround(stage: str, meta: dict | None, round_no, t0: float,
+               llm_ms: int | None, tool_ms: int | None) -> None:
+    """记一轮工具循环：LLM 多久、工具执行多久，分开记。
+
+    `via`（自愿/强制交卷）在交卷发生的那一轮才被写进 `meta`——
+    早几轮记 None 是正常的，靠任务级 span 或末尾轮次的 via 对齐。
+    """
+    record_span("toolround", stage, t0, time.time(), {
+        "task": (meta or {}).get("task_id"),
+        "round": round_no,
+        "llm_ms": llm_ms,
+        "tool_ms": tool_ms,
+        "via": (meta or {}).get("via"),
+    })
 
 
 class ToolProvider(Protocol):
@@ -171,9 +190,14 @@ def run_tool_loop(
             #   · 之前几轮给「证据工具 + submit_tasks」，让模型自己判断够了没。
             tools = ([final_tool] if last_round
                      else list(provider.specs()) + [final_tool])
+        _rt0 = time.time()
+        _llm_ms = _tool_ms = None
         try:
+            _ct0 = time.time()
             resp = llm.complete_with_tools(stage, system, messages, tools)
+            _llm_ms = int((time.time() - _ct0) * 1000)
         except Exception as e:
+            _toolround(stage, meta, round_no, _rt0, _llm_ms, _tool_ms)
             if final_tool is None:
                 # 老路径没有结构化交卷兜底，异常照常向上传播。
                 raise
@@ -200,16 +224,21 @@ def run_tool_loop(
                     if done:
                         if meta is not None:
                             meta["via"] = "voluntary"
+                        _toolround(stage, meta, round_no, _rt0,
+                                   _llm_ms, _tool_ms)
                         return done, messages, log
 
         log.append(calls)
         if not calls:
+            _toolround(stage, meta, round_no, _rt0, _llm_ms, _tool_ms)
             break
 
         messages.append({"role": "assistant", "content": blocks})
         # 协议硬要求：assistant 里有 tool_use，user 就必须紧跟 tool_result，
         # 数量与顺序一一对应，少一个就 400。
+        _dt0 = time.time()
         results = list(provider.dispatch(calls))
+        _tool_ms = int((time.time() - _dt0) * 1000)
         if last_round:
             # 额度用尽要说清楚。但**不能另起一个纯文本 user 消息**——
             # tool_use 之后只接受 tool_result，纯文本会被判
@@ -219,6 +248,7 @@ def run_tool_loop(
                            f"工具调用次数已用尽（{max_rounds} 轮）。请基于已获得的信息"
                            f"给出最终结果，不要再要求读证据。"})
         messages.append({"role": "user", "content": results})
+        _toolround(stage, meta, round_no, _rt0, _llm_ms, _tool_ms)
 
     if final_tool is None:
         return text, messages, log
@@ -240,12 +270,16 @@ def run_tool_loop(
             _content = f"{_content or ''}\n\n{final_nudge}"
         b_msgs = list(messages[:-1]) + [{**_last, "content": _content}]
     err: Exception | None = None
+    _bt0 = time.time()
+    _b_ms = None
     try:
         # ⚠️ 第一次刻意**不传 `thinking`**：交给 provider 按环节配置决定
         # （`forced_thinking: disabled` 的环节这一轮会关思考）。
         # 也让不认 `thinking` 形参的老测试桩不受影响。
+        _ct0 = time.time()
         resp = llm.complete_with_tools(stage, system, b_msgs, [final_tool],
                                        tool_choice=final_name)
+        _b_ms = int((time.time() - _ct0) * 1000)
         blocks = resp.get("blocks") or []
         for b in blocks:
             if b.get("type") == "tool_use" and b.get("name") == final_name:
@@ -253,12 +287,14 @@ def run_tool_loop(
                 if done:
                     if meta is not None:
                         meta["via"] = "forced"
+                    _toolround(stage, meta, "submit", _bt0, _b_ms, None)
                     return done, messages, log
         # 强制了却没拿到工具调用——平台无视了 tool_choice。保留上一轮的文本。
         text = "".join(x.get("text", "") for x in blocks
                        if x.get("type") == "text") or text
     except Exception as e:
         err = e
+    _toolround(stage, meta, "submit", _bt0, _b_ms, None)
 
     # 强制轮没交卷 → 只在环节**显式配了** `forced_thinking: disabled` 时
     # 用**同一档位**重试**一次**（2026-10-19 加，当日真实验收数据订正）。
@@ -277,11 +313,15 @@ def run_tool_loop(
     except Exception:
         retry = False
     if retry:
+        _rt0 = time.time()
+        _r_ms = None
         try:
+            _ct0 = time.time()
             resp = llm.complete_with_tools(stage, system, b_msgs,
                                            [final_tool],
                                            tool_choice=final_name,
                                            thinking=False)
+            _r_ms = int((time.time() - _ct0) * 1000)
             blocks = resp.get("blocks") or []
             for b in blocks:
                 if b.get("type") == "tool_use" and b.get("name") == final_name:
@@ -289,11 +329,14 @@ def run_tool_loop(
                     if done:
                         if meta is not None:
                             meta["via"] = "forced_retry"
+                        _toolround(stage, meta, "submit_retry", _rt0,
+                                   _r_ms, None)
                         return done, messages, log
             text = "".join(x.get("text", "") for x in blocks
                            if x.get("type") == "text") or text
         except Exception as e2:
             err = e2
+        _toolround(stage, meta, "submit_retry", _rt0, _r_ms, None)
         if err is None:
             err = RuntimeError(f"两轮强制交卷都没拿到 {final_name}")
 

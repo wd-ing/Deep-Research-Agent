@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import httpx
 
 from .split import RecursiveSplitter, count_tokens
+from ..trace import record_span
 
 DEFAULT_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
@@ -120,32 +121,47 @@ class Fetcher:
             headers={"User-Agent": DEFAULT_UA, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"},
         ) as client:
             async def one(url: str) -> Page:
+                # 每页一个 span：检索节点里「抓」占多少、缓存命中多少，
+                # 靠这些行和 retrieve.fetch_all 对出来。
+                t0 = time.time()
+
+                def _done(page: Page) -> Page:
+                    record_span("retrieve", "fetch", t0, time.time(), {
+                        "url": url, "ok": page.ok, "status": page.status,
+                        "cached": page.reason == "cache",
+                        "bytes": len(page.text or ""),
+                        "reason": page.reason or None})
+                    return page
+
                 norm = normalize_url(url)
                 if not bypass_cache:
                     cached = self.repo.cache_get(norm, self.cache_ttl_days)
                     if cached:
-                        return Page(url=url, ok=True, text=cached, status=200, reason="cache")
+                        return _done(Page(url=url, ok=True, text=cached,
+                                          status=200, reason="cache"))
                 async with self.sem:
                     await self.throttle.wait(domain_of(url))
                     try:
                         r = await client.get(url)
                     except Exception as e:
-                        return Page(url=url, ok=False, reason=f"{type(e).__name__}")
+                        return _done(Page(url=url, ok=False,
+                                          reason=f"{type(e).__name__}"))
                 if r.status_code in BLOCK_STATUS:
                     # 明确不重试、不换 IP。记录下来供 UI 展示
-                    return Page(url=url, ok=False, status=r.status_code,
-                                reason=f"blocked:{r.status_code}")
+                    return _done(Page(url=url, ok=False, status=r.status_code,
+                                      reason=f"blocked:{r.status_code}"))
                 if r.status_code >= 400:
-                    return Page(url=url, ok=False, status=r.status_code,
-                                reason=f"http:{r.status_code}")
+                    return _done(Page(url=url, ok=False, status=r.status_code,
+                                      reason=f"http:{r.status_code}"))
                 html = _decode(r)
                 if CAPTCHA_HINTS.search(html[:8000]):
-                    return Page(url=url, ok=False, status=r.status_code, reason="captcha")
+                    return _done(Page(url=url, ok=False, status=r.status_code,
+                                      reason="captcha"))
                 page = self._extract(html, url, r.status_code)
                 if page.ok and not bypass_cache:
                     self.repo.cache_put(norm, url, page.text,
                                          content_hash(page.text), r.status_code)
-                return page
+                return _done(page)
 
             return await asyncio.gather(*(one(u) for u in urls))
 

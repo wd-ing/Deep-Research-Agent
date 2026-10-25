@@ -27,6 +27,7 @@ from langgraph.graph import END, START, StateGraph
 from ...llm.provider import (LLMClient, ConfigError, _parse_json,
                              fire_progress, parallel_labelled)
 from ...llm.toolloop import run_tool_loop
+from ...trace import span, traced
 from .. import prompts
 from ..state import WriteState
 # 重试判据/工具入参归一与 probe.py 共用（2026-10-20 抽）；名字仍挂在
@@ -661,12 +662,19 @@ def node_dispatch(state: WriteState) -> dict:
 
     # 程序护栏在审查之前（坑 79）：能机械修的引用/编号缺陷先修掉，
     # 审查和残留检查看到的都是修过的稿子；修不了的才进 violations。
-    ev["drafts"], auto_fixes = _auto_fix_drafts(state, ev["drafts"])
+    # 这两步是 dispatch 收尾的非 LLM 段，各记一个 span（正则扫全稿有成本）。
+    _sid = state.get("session_id")
+    with span("subnode", "write.auto_fix", session_id=_sid) as _sp:
+        ev["drafts"], auto_fixes = _auto_fix_drafts(state, ev["drafts"])
+        _sp["fixes"] = len(auto_fixes)
+    with span("subnode", "write.check_citations", session_id=_sid) as _sp:
+        violations = _check_all_citations(state, ev["drafts"])
+        _sp["tasks_flagged"] = len(violations or {})
 
     return {
         "drafts": ev["drafts"],
         "failed": ev["failed"],
-        "violations": _check_all_citations(state, ev["drafts"]),
+        "violations": violations,
         "events": [{"kind": "write_dispatch", "ran": len(todo),
                     "first_serial_s": first_cost,
                     "retried": retried, "recovered": recovered,
@@ -1015,7 +1023,8 @@ def _run_task(state: WriteState, task: dict, revise: dict | None) -> tuple[dict,
         from ...db.repo import get_repo
         from ...tools.evidence import EvidenceTools
         tools = EvidenceTools(get_repo(), sid)
-        meta: dict = {}
+        # task_id 挂进 meta 让 run_tool_loop 的 toolround span 认得出是哪条任务
+        meta: dict = {"task_id": task["id"]}
         try:
             # `final_tool=SUBMIT_SECTION`：正文走工具参数而不是对话文本，
             # 否则最后一轮的 text 块会把前言/英文推理/伪工具调用一起当正文
@@ -1943,52 +1952,56 @@ def node_audit(state: WriteState) -> dict:
     模型要回答的是「上轮那几条现在还在吗」（稿子里能查），
     而不是「返修整体有没有用」（没有依据，只能猜）。
     """
-    draft = state.get("assembled") or ""
-    spec = state.get("spec") or {}
-    violations = state.get("violations") or {}
-    rounds = state.get("rework_rounds", 0)
+    # 构造 prompt（含读上一轮 findings）一段一个 span——静默对账时要能
+    # 把「dispatch 结束 → audit 请求发出」之间的非 LLM 时间拆开看。
+    with span("subnode", "write.audit_prompt") as _sp:
+        draft = state.get("assembled") or ""
+        spec = state.get("spec") or {}
+        violations = state.get("violations") or {}
+        rounds = state.get("rework_rounds", 0)
 
-    payload = {
-        "研究问题": state.get("question", ""),
-        "写作规约": spec,
-        "草稿": draft,
-    }
-    # 任务分派摘要：只有段号和条数，不给正文。
-    # 没有它，审阅人判断不了「这节做得不好」是写砸了还是**根本没材料可写**——
-    # 而这两者的正确处置完全相反：前者该返修，后者重写一万遍也写不出来。
-    tasks = state.get("tasks") or []
-    if tasks:
-        payload["任务分派（每个任务分到了几段证据）"] = [
-            {"task": t.get("id"), "covers": t.get("covers"),
-             "证据段数": len(t.get("segments") or []),
-             "要求写到": len(t.get("must_cover") or [])}
-            for t in tasks]
-    if violations:
-        payload["程序已查出的引用问题"] = violations
-    if rounds:
-        payload["这是第几轮返修后的草稿"] = rounds
-        # ⚠️ 这一段是 rework_effective 从「不可靠」变成「可核对」的关键。
-        #
-        # 原来只告诉模型「这是第 N 轮」，却**不告诉它上一轮说了什么**——
-        # 于是它只能对「有没有用」笼统自评。实测两个独立 session 都出现了
-        # 同一个形状：reason 里写「已有明显改善」，字段却填 false，
-        # 代码采信了 false，于是 high 问题一个没解决就收工。
-        #
-        # 把上一轮它自己写的 problem / fix 原文喂回去，
-        # 它要回答的问题就从「整体有没有用」（无依据，只能猜）
-        # 变成「这 4 个具体问题现在各自还在不在」（稿子里能查）。
-        prev = _last_high_findings(state.get("session_id"))
-        if prev:
-            payload["上一轮你提出的问题（逐条核对，现在还在吗）"] = prev
+        payload = {
+            "研究问题": state.get("question", ""),
+            "写作规约": spec,
+            "草稿": draft,
+        }
+        # 任务分派摘要：只有段号和条数，不给正文。
+        # 没有它，审阅人判断不了「这节做得不好」是写砸了还是**根本没材料可写**——
+        # 而这两者的正确处置完全相反：前者该返修，后者重写一万遍也写不出来。
+        tasks = state.get("tasks") or []
+        if tasks:
+            payload["任务分派（每个任务分到了几段证据）"] = [
+                {"task": t.get("id"), "covers": t.get("covers"),
+                 "证据段数": len(t.get("segments") or []),
+                 "要求写到": len(t.get("must_cover") or [])}
+                for t in tasks]
+        if violations:
+            payload["程序已查出的引用问题"] = violations
+        if rounds:
+            payload["这是第几轮返修后的草稿"] = rounds
+            # ⚠️ 这一段是 rework_effective 从「不可靠」变成「可核对」的关键。
+            #
+            # 原来只告诉模型「这是第 N 轮」，却**不告诉它上一轮说了什么**——
+            # 于是它只能对「有没有用」笼统自评。实测两个独立 session 都出现了
+            # 同一个形状：reason 里写「已有明显改善」，字段却填 false，
+            # 代码采信了 false，于是 high 问题一个没解决就收工。
+            #
+            # 把上一轮它自己写的 problem / fix 原文喂回去，
+            # 它要回答的问题就从「整体有没有用」（无依据，只能猜）
+            # 变成「这 4 个具体问题现在各自还在不在」（稿子里能查）。
+            prev = _last_high_findings(state.get("session_id"))
+            if prev:
+                payload["上一轮你提出的问题（逐条核对，现在还在吗）"] = prev
 
-    # 2026-10-19 起结论走强制工具 `submit_audit`（坑 77）：M3 开思考
-    # 手写 JSON 太长必被截断；M3.1-Flash low 单次 7~12k 接得住，
-    # 但它的工具入参有约 2/18 偏离 schema → 必须过
-    # `_normalize_audit_input`，归一不了当失败重试。
-    # 点名工具的话术与 tests/exp_audit_nothink.py 的实测版本逐字一致。
-    prompt = (_clip(_dumps(payload), 120000)
-              + "\n\n审完后**调用 `submit_audit` 工具**提交结论，"
-                "结论只放在工具参数里，不要在对话文本里写 JSON。")
+        # 2026-10-19 起结论走强制工具 `submit_audit`（坑 77）：M3 开思考
+        # 手写 JSON 太长必被截断；M3.1-Flash low 单次 7~12k 接得住，
+        # 但它的工具入参有约 2/18 偏离 schema → 必须过
+        # `_normalize_audit_input`，归一不了当失败重试。
+        # 点名工具的话术与 tests/exp_audit_nothink.py 的实测版本逐字一致。
+        prompt = (_clip(_dumps(payload), 120000)
+                  + "\n\n审完后**调用 `submit_audit` 工具**提交结论，"
+                    "结论只放在工具参数里，不要在对话文本里写 JSON。")
+        _sp["prompt_chars"] = len(prompt)
     d: dict | None = None
     err: object = ""
     attempts = 0
@@ -2990,13 +3003,15 @@ def node_final(state: WriteState) -> dict:
 
 def build_write_graph():
     g = StateGraph(WriteState)
-    g.add_node("plan_spec", node_plan_spec)
-    g.add_node("plan_tasks", node_plan_tasks)
-    g.add_node("dispatch", node_dispatch)
-    g.add_node("assemble", node_assemble)
-    g.add_node("audit", node_audit)
-    g.add_node("revise", node_revise)
-    g.add_node("final", node_final)
+    # traced()：子图节点的绝对起止进 trace_span——主图 node:write 只有一个
+    # 总耗时，45~50s 的「非 LLM 静默」藏在哪两个子节点之间要靠这些行看出来。
+    g.add_node("plan_spec", traced("write.plan_spec", node_plan_spec))
+    g.add_node("plan_tasks", traced("write.plan_tasks", node_plan_tasks))
+    g.add_node("dispatch", traced("write.dispatch", node_dispatch))
+    g.add_node("assemble", traced("write.assemble", node_assemble))
+    g.add_node("audit", traced("write.audit", node_audit))
+    g.add_node("revise", traced("write.revise", node_revise))
+    g.add_node("final", traced("write.final", node_final))
 
     g.add_edge(START, "plan_spec")
     g.add_conditional_edges("plan_spec", route_after_spec,

@@ -19,6 +19,7 @@ from ..db.repo import get_repo
 from ..ingest.extract import Fetcher
 from ..ingest.split import RecursiveSplitter
 from ..llm.provider import LLMClient, fire_progress, session_scope
+from ..trace import span
 from ..search.base import SearchHit
 from ..search.normalize import content_hash, domain_of, guess_source_type, normalize_url
 from ..search.searxng import SearXNGProvider
@@ -107,7 +108,11 @@ def _timed_node(name: str):
             sid = state.get("session_id") or ""
             t0 = time.time()
             try:
-                out = fn(state)
+                # node span：把绝对起止落进 trace_span，离线对账用。
+                # run_trace 那行照旧——已有读取方（save_node_timing）不动。
+                with span("node", name, session_id=sid,
+                          round=int(state.get("round", 0) or 0)):
+                    out = fn(state)
                 # 累计**机器时间**，这是 `_predict_stop` 的超时判据唯一的数据来源。
                 # ⚠️ 不用「`started_at` 到现在」的墙钟：`await_approval` 是
                 # `interrupt()`，人去审批可能挂几个小时，那段不该算进预算。
@@ -540,7 +545,13 @@ def node_retrieve(state: ResearchState) -> dict:
         ev = {"kind": "search_query", "i": i + 1, "of": len(all_q),
               "lang": lang, "query": q}
         try:
-            res = await asyncio.to_thread(prov.search, q, language=lang, limit=lim)
+            # 每条搜索调用一个 span：retrieve 节点 ~19s/轮到底花在
+            # 搜、抓还是写库，靠它和下面的 fetch/split 对出来。
+            with span("retrieve", "search", session_id=sid,
+                      provider=type(prov).__name__, query=q, lang=lang) as sd:
+                res = await asyncio.to_thread(prov.search, q,
+                                              language=lang, limit=lim)
+                sd["hits"] = len(res)
             ev["hits"] = len(res)
             return res
         except Exception as e:
@@ -560,71 +571,91 @@ def node_retrieve(state: ResearchState) -> dict:
                 flat.extend(r)
         return _collect(flat)
 
-    hits = seeded + asyncio.run(run())
+    # 本节点没有 @scoped（它自己不调 LLM），但检索/抓取的 span 要认得出
+    # 会话——asyncio.run 的协程与 gather 的 Task 都继承这里的 contextvar。
+    with session_scope(sid):
+        hits = seeded + asyncio.run(run())
     budget_left = max(0, HARD["max_urls"] - _fetched_count(state))
     if budget_left <= 0:
         # 额度用完就别再抓了——原来这里抓完再截，白白花掉一次网络往返
-        events.append({"kind": "retrieve", "round": rnd, "queries": queries,
-                       "hits": 0, "accepted": 0,
-                       "note": f"URL 预算已用尽（{_fetched_count(state)}/"
-                               f"{HARD['max_urls']}），本轮不再抓取",
-                       "repeat_queries": 0, "skipped": [],
-                       "seeded_from_probe": len(seeded)})
-        return {"round": rnd, "events": events}
+        return {"round": rnd, "events": [{
+            "kind": "retrieve", "round": rnd, "queries": queries,
+            "hits": 0, "accepted": 0,
+            "note": f"URL 预算已用尽（{_fetched_count(state)}/"
+                    f"{HARD['max_urls']}），本轮不再抓取",
+            "repeat_queries": 0, "skipped": [],
+            "seeded_from_probe": len(seeded)}]}
     hits = hits[:budget_left]
 
     bypass = bool(state.get("time_sensitive"))
-    pages = asyncio.run(Fetcher(repo).fetch_many([h.url for h in hits],
-                                               bypass_cache=bypass))
+    with session_scope(sid):
+        with span("retrieve", "fetch_all", session_id=sid,
+                  urls=len(hits)) as sd:
+            pages = asyncio.run(Fetcher(repo).fetch_many(
+                [h.url for h in hits], bypass_cache=bypass))
+            sd["pages_ok"] = sum(1 for p in pages if p.ok)
     page_by_url = {p.url: p for p in pages}
 
     new_sources, pending, events, skipped = [], [], [], []
 
-    for h in hits:
-        p = page_by_url.get(h.url)
-        if p is None or not p.ok:
-            skipped.append({"url": h.url, "reason": p.reason if p else "no_page"})
-            continue
-        ch = content_hash(p.text)
-        if ch in known_hashes:
-            repo.x("UPDATE source SET superseded_by=? WHERE session_id=? AND url=?",
-                   (known_hashes[ch], sid, h.url))
-            skipped.append({"url": h.url, "reason": f"dup:{known_hashes[ch]}"})
-            continue
-        stype = guess_source_type(h.url, p.title or h.title, p.text)
-        if stype == "repost":
-            skipped.append({"url": h.url, "reason": "repost"})
-            continue
+    # 逐来源：哈希去重 + guess_source_type + add_source 写库。整体一个 span
+    # （逐条的粒度在 fetch span 里已经有了）。
+    with span("retrieve", "sources", session_id=sid,
+              hits=len(hits)) as sd:
+        for h in hits:
+            p = page_by_url.get(h.url)
+            if p is None or not p.ok:
+                skipped.append({"url": h.url,
+                                "reason": p.reason if p else "no_page"})
+                continue
+            ch = content_hash(p.text)
+            if ch in known_hashes:
+                repo.x("UPDATE source SET superseded_by=? WHERE session_id=? AND url=?",
+                       (known_hashes[ch], sid, h.url))
+                skipped.append({"url": h.url,
+                                "reason": f"dup:{known_hashes[ch]}"})
+                continue
+            stype = guess_source_type(h.url, p.title or h.title, p.text)
+            if stype == "repost":
+                skipped.append({"url": h.url, "reason": "repost"})
+                continue
 
-        src_id = repo.add_source(
-            session_id=sid, url=h.url, url_normalized=normalize_url(h.url),
-            domain=domain_of(h.url), title=p.title or h.title,
-            source_type=stype, engine=h.engine, source_date=p.published,
-            content_hash=ch, char_count=len(p.text), http_status=p.status,
-        )
-        known_hashes[ch] = src_id
-        new_sources.append({"id": src_id, "url": h.url, "title": p.title or h.title,
-                            "domain": domain_of(h.url), "source_type": stype,
-                            "engine": h.engine, "source_date": p.published,
-                            "char_count": len(p.text)})
-        pending.append({"source_id": src_id, "title": p.title or h.title,
-                        "url": h.url, "published": p.published, "text": p.text})
+            src_id = repo.add_source(
+                session_id=sid, url=h.url, url_normalized=normalize_url(h.url),
+                domain=domain_of(h.url), title=p.title or h.title,
+                source_type=stype, engine=h.engine, source_date=p.published,
+                content_hash=ch, char_count=len(p.text), http_status=p.status,
+            )
+            known_hashes[ch] = src_id
+            new_sources.append({"id": src_id, "url": h.url,
+                                "title": p.title or h.title,
+                                "domain": domain_of(h.url), "source_type": stype,
+                                "engine": h.engine, "source_date": p.published,
+                                "char_count": len(p.text)})
+            pending.append({"source_id": src_id, "title": p.title or h.title,
+                            "url": h.url, "published": p.published,
+                            "text": p.text})
+        sd["accepted"] = len(new_sources)
+        sd["skipped"] = len(skipped)
 
     # 段落先落库（status=pending），extract 阶段补概括句与来源性质，
     # finalize 阶段只补向量。概括句从 finalize 搬到 extract 之后，
     # 写作阶段才看得到它——原先它在报告写完之后才生成，只进召回索引。
-    for it in pending:
-        segments = []
-        for c in SPLITTER.split(it["text"]):
-            cid = repo.add_chunk(
-                session_id=sid, source_id=it["source_id"], origin="web",
-                content=c.content, heading_path=c.heading_path,
-                token_count=c.token_count, source_date=it["published"],
-            )
-            segments.append({"chunk_id": cid, "text": c.content,
-                             "heading_path": c.heading_path,
-                             "token_count": c.token_count})
-        it["segments"] = segments
+    with span("retrieve", "split_write", session_id=sid,
+              sources=len(pending)) as sd:
+        for it in pending:
+            segments = []
+            for c in SPLITTER.split(it["text"]):
+                cid = repo.add_chunk(
+                    session_id=sid, source_id=it["source_id"], origin="web",
+                    content=c.content, heading_path=c.heading_path,
+                    token_count=c.token_count, source_date=it["published"],
+                )
+                segments.append({"chunk_id": cid, "text": c.content,
+                                 "heading_path": c.heading_path,
+                                 "token_count": c.token_count})
+            it["segments"] = segments
+        sd["segments"] = sum(len(it["segments"]) for it in pending)
 
     # 本轮实际搜的词里，有几个是**更早的轮次已经搜过的**。
     # 重复检索烧配额、产重复段落、还会把 no_new_streak 推高导致提前停。
@@ -1475,7 +1506,8 @@ def node_finalize(state: ResearchState) -> dict:
     """
     repo = get_repo()
     sid = state["session_id"]
-    health = _run_health(repo, sid, state)
+    with span("subnode", "finalize.run_health", session_id=sid):
+        health = _run_health(repo, sid, state)
     rep = repo.q1("SELECT id FROM report WHERE session_id=?", (sid,))
     if not rep:
         return {"events": [health,

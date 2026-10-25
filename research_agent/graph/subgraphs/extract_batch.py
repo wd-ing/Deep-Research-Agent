@@ -16,6 +16,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from ...llm.provider import EmptyOutput, LLMClient, fire_progress, parallel_labelled
+from ...trace import span, traced
 from .. import prompts
 from ..state import ExtractBatchState
 
@@ -235,7 +236,7 @@ def _node_extract(state: ExtractBatchState) -> dict:
 
 def build_extract_graph():
     g = StateGraph(ExtractBatchState)
-    g.add_node("extract", _node_extract)
+    g.add_node("extract", traced("extract.extract", _node_extract))
     g.add_edge(START, "extract")
     g.add_edge("extract", END)
     return g
@@ -262,8 +263,12 @@ def extract_all(items: list[dict]) -> dict:
                 "unjudged_sources": [], "events": []}
 
     # 1) 先概括，并挂回 segments，后面的 nature 才有「概括」可用
-    sum_out = summarize_segments(
-        [s for it in items for s in (it.get("segments") or [])])
+    #    summarize 在子图外面跑（不进 langgraph 节点），单独一个 span。
+    with span("subnode", "extract.summarize") as sd:
+        sum_out = summarize_segments(
+            [s for it in items for s in (it.get("segments") or [])])
+        sd["segments"] = len(sum_out.get("summaries") or {})
+        sd["failed"] = sum_out.get("failed")
     for it in items:
         for s in (it.get("segments") or []):
             s["summary"] = (sum_out["summaries"] or {}).get(s["chunk_id"], "")

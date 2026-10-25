@@ -500,7 +500,8 @@ class Repo:
     def log_llm_call(self, session_id, stage, model, input_tokens, output_tokens,
                      latency_ms=None, cache_read_tokens=0,
                      cache_creation_tokens=0, est_input_tokens=None,
-                     status="ok", error=None) -> None:
+                     status="ok", error=None,
+                     started_at=None, wait_ms=None, ttfb_ms=None) -> None:
         """记一次调用。
 
         input_tokens / output_tokens 必须是 API 报上来的真实值。
@@ -522,15 +523,20 @@ class Repo:
         失败时照常记一行，`status='error'`、`error='类型: 消息'`，
         token 全 0、只有 `est_input_tokens` 留下这次尝试的规模。
         """
+        # started_at/wait_ms/ttfb_ms（0011）：绝对开始时刻、限流排队、
+        # 首字延迟——timeline_report 靠它们把 latency_ms 拆成
+        # 「排队 vs 在飞」、把 span 与 llm_call 对上同一根时间轴。
         self.x(
             "INSERT INTO llm_call (id,session_id,stage,model,input_tokens,"
             "output_tokens,latency_ms,cache_read_tokens,cache_creation_tokens,"
-            "est_input_tokens,status,error,created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "est_input_tokens,status,error,created_at,"
+            "started_at,wait_ms,ttfb_ms) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (new_id("l_"), session_id, stage, model, input_tokens,
              output_tokens, latency_ms, cache_read_tokens or 0,
              cache_creation_tokens or 0, est_input_tokens,
-             status or "ok", (error or None), now()),
+             status or "ok", (error or None), now(),
+             started_at, wait_ms, ttfb_ms),
         )
 
     def cache_stats(self, session_id: str) -> dict:

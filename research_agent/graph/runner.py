@@ -27,6 +27,8 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -90,6 +92,114 @@ def build_graph(checkpointer):
     return g.compile(checkpointer=checkpointer)
 
 
+def _ckpt_detail(config: dict, extra: dict | None = None) -> dict:
+    """从 langgraph 的 config 里抠 thread_id / checkpoint_ns。"""
+    cfg = (config or {}).get("configurable") or {}
+    d = {"thread_id": cfg.get("thread_id"),
+         "checkpoint_ns": cfg.get("checkpoint_ns")}
+    if extra:
+        d.update(extra)
+    return d
+
+
+def _serde_bytes_probe(saver) -> object:
+    """给 saver.serde.dumps_typed 包一层，把序列化出的字节数记进 thread-local。
+
+    不包的话拿字节数只能把 checkpoint 再序列化一遍——**而序列化本身正是
+    要测的东西**（1.1MB 级的 state），为观测付出一倍序列化开销是本末倒置。
+    包 serde 是零成本旁路：原本就要跑的那次 dumps_typed 顺手报个数。
+
+    ⚠️ 只对「同一个对象只会被序列化一次」的调用读数——put 一次 dumps
+    一次 checkpoint，多读会拿到别人的数。
+    """
+    tl = threading.local()
+    orig = saver.serde.dumps_typed
+
+    def dumps_typed(obj):
+        out = orig(obj)
+        try:
+            tl.last_bytes = len(out[1]) if isinstance(out[1], (bytes, str)) else None
+        except Exception:
+            tl.last_bytes = None
+        return out
+
+    saver.serde.dumps_typed = dumps_typed
+    return tl
+
+
+def wrap_sync_saver(saver):
+    """给 SqliteSaver 的 put/put_writes 记 checkpoint span（2026-10-21）。
+
+    子类化而不是 monkey-patch 实例方法：put_writes 是批量写，单独计时。
+    返回类型是 SqliteSaver 子类，`compile()` 的校验与行为不变。
+    """
+    from ..trace import record_span
+
+    tl = _serde_bytes_probe(saver)
+
+    class TracedSqliteSaver(type(saver)):
+        def put(self, config, checkpoint, metadata, new_versions):
+            t0 = time.time()
+            tl.last_bytes = None
+            try:
+                return super().put(config, checkpoint, metadata, new_versions)
+            finally:
+                d = _ckpt_detail(config, {"bytes": tl.last_bytes})
+                record_span("checkpoint", "put", t0, time.time(), d,
+                            session_id=d.get("thread_id"))
+
+        def put_writes(self, config, writes, task_id, task_path=""):
+            t0 = time.time()
+            tl.last_bytes = None
+            try:
+                return super().put_writes(config, writes, task_id, task_path)
+            finally:
+                d = _ckpt_detail(config, {"bytes": tl.last_bytes,
+                                          "writes": len(writes or [])})
+                record_span("checkpoint", "put_writes", t0, time.time(), d,
+                            session_id=d.get("thread_id"))
+
+    saver.__class__ = TracedSqliteSaver
+    return saver
+
+
+def wrap_async_saver(saver):
+    """`get_agraph()` 的 AsyncSqliteSaver 版。测的是 **await 的真实耗时**——
+    异步 saver 在事件循环里写，同步节点里的 span 写入在 worker 线程里写，
+    两边抢同一个 SQLite，等不等的真相就是要看等的部分，不排除。"""
+    from ..trace import record_span
+
+    tl = _serde_bytes_probe(saver)
+
+    class TracedAsyncSaver(type(saver)):
+        async def aput(self, config, checkpoint, metadata, new_versions):
+            t0 = time.time()
+            tl.last_bytes = None
+            try:
+                return await super().aput(config, checkpoint, metadata,
+                                          new_versions)
+            finally:
+                d = _ckpt_detail(config, {"bytes": tl.last_bytes,
+                                          "loop_thread": threading.current_thread().name})
+                record_span("checkpoint", "aput", t0, time.time(), d,
+                            session_id=d.get("thread_id"))
+
+        async def aput_writes(self, config, writes, task_id, task_path=""):
+            t0 = time.time()
+            tl.last_bytes = None
+            try:
+                return await super().aput_writes(config, writes, task_id,
+                                                 task_path)
+            finally:
+                d = _ckpt_detail(config, {"bytes": tl.last_bytes,
+                                          "writes": len(writes or [])})
+                record_span("checkpoint", "aput_writes", t0, time.time(), d,
+                            session_id=d.get("thread_id"))
+
+    saver.__class__ = TracedAsyncSaver
+    return saver
+
+
 def get_graph():
     """编译带 SQLite checkpointer 的主图。
 
@@ -104,7 +214,7 @@ def get_graph():
     CKPT_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(CKPT_DB), check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
-    return build_graph(SqliteSaver(conn))
+    return build_graph(wrap_sync_saver(SqliteSaver(conn)))
 
 
 _AGRAPH = None
@@ -130,7 +240,7 @@ async def get_agraph():
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
         CKPT_DB.parent.mkdir(parents=True, exist_ok=True)
         cm = AsyncSqliteSaver.from_conn_string(str(CKPT_DB))
-        saver = await cm.__aenter__()
+        saver = wrap_async_saver(await cm.__aenter__())
         _AGRAPH_CM = cm          # 持有引用，别被 GC 掉把连接关了
         _AGRAPH = build_graph(saver)
     return _AGRAPH

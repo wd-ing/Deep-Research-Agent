@@ -266,6 +266,15 @@ def _limiter_key(base_url: str) -> str:
 _LIMITERS: dict[str, SendRateLimiter] = {}
 _LIMITERS_LOCK = threading.Lock()
 
+# 发送时序埋点的线外通道（2026-10-21，llm_call 的 wait_ms/ttfb_ms）。
+# httpx 的 event hook 在**发起调用的那个线程**里同步执行（sync client），
+# 所以 thread-local 天然按调用方分桶：并行子 agent 各占各的，不互相串。
+#   _TL.wait_s    本次逻辑调用内 _throttle 累计排队秒数（重试会多发，累加）
+#   _TL.sent_at   最近一次真实发出的 epoch（限流等待**之后**）
+#   _TL.headers_at 最近一次收到响应头的 epoch（response hook 记）
+#   _TL.chunk_at  流式：首个内容块到达的 epoch（在各 iter 循环里记）
+_TL = threading.local()
+
 
 def get_limiter(base_url: str, per_minute: int) -> SendRateLimiter:
     key = _limiter_key(base_url)
@@ -1272,7 +1281,8 @@ class LLMClient:
         #   · event hook 是**每一次真实发送**，包括重试和流式，一处覆盖全部
         self._limit_notice_at = 0.0
         self._client = httpx.Client(timeout=180.0,
-                                    event_hooks={"request": [self._throttle]})
+                                    event_hooks={"request": [self._throttle],
+                                                 "response": [self._mark_headers]})
         self.warnings: list[str] = []
         # 排队超时的累计次数。**不是重试能解决的问题**——并发降不下来它还会来，
         # 所以单独记一个计数：`cost_report.py` 读它来判断该不该调 GATE_WORKERS。
@@ -1287,8 +1297,19 @@ class LLMClient:
         """
         lim = _LIMITERS.get(_limiter_key(str(request.url)))
         if lim is None or lim.per_minute <= 0:
+            _TL.sent_at = time.time()     # 没限流也要记发送时刻，ttfb 要用它
             return
+        t_wait0 = time.time()
         waited = lim.acquire()
+        _TL.wait_s = getattr(_TL, "wait_s", 0.0) + waited
+        _TL.sent_at = time.time()
+        if waited:
+            # 限流排队落成独立 span：静默分析靠它把「没 LLM 在飞」的
+            # 区间解释成「在排队」而不是「真静默」。
+            from ..trace import record_span
+            record_span("llm_wait", _limiter_key(str(request.url)),
+                        t_wait0, _TL.sent_at,
+                        detail={"wait_s": round(waited, 3)})
         if waited > 0.5:
             # 等超过半秒才说一句，且一分钟最多一句 —— 限流是常态，
             # 每等一次就打印会把日志淹掉，而没人看的告警等于没有。
@@ -1300,6 +1321,44 @@ class LLMClient:
                        f"（累计 {lim.waits} 次 / {lim.waited_s:.0f}s）")
                 self.warnings.append(msg)
                 print(f"⚠️  {msg}", flush=True)
+
+    @staticmethod
+    def _mark_headers(response) -> None:
+        """response 事件 hook：收到的只是**响应头**，body 还没读。
+
+        httpx 里 hook 在 `transport.handle_request` 返回后立刻跑，
+        流式的 SSE 迭代、非流式的 `response.read()` 都在它之后——
+        所以这一个点就同时是两种口径的「响应头时刻」。
+        """
+        _TL.headers_at = time.time()
+
+    def _take_wait_ms(self) -> int | None:
+        """取走本线程累计的限流排队毫秒数并清零。
+
+        一次逻辑调用可能有多次真实发送（各层重试），`_throttle` 只负责
+        往里加，`_record*` 记账时取走——每行 llm_call 记的是
+        「距上一行记账之间排了多久」，总和等于这次调用的总排队。
+        """
+        w = getattr(_TL, "wait_s", 0.0)
+        _TL.wait_s = 0.0
+        return int(round(w * 1000))
+
+    def _ttfb_headers(self) -> int | None:
+        """非流式：请求发出 → 响应头。同一 send 里 `_throttle` 记
+        sent_at、`_mark_headers` 记 headers_at，都在本线程。"""
+        sent = getattr(_TL, "sent_at", None)
+        hdr = getattr(_TL, "headers_at", None)
+        if sent is None or hdr is None or hdr < sent:
+            return None
+        return int(round((hdr - sent) * 1000))
+
+    def _ttfb_first_chunk(self) -> int | None:
+        """流式：请求发出 → 首个内容块（各 SSE 迭代循环记 `_TL.chunk_at`）。"""
+        sent = getattr(_TL, "sent_at", None)
+        chk = getattr(_TL, "chunk_at", None)
+        if sent is None or chk is None or chk < sent:
+            return None
+        return int(round((chk - sent) * 1000))
 
     def limiter_stats(self) -> dict:
         """限流统计。**限流是主动引入的等待，必须能被查**，否则
@@ -1333,7 +1392,7 @@ class LLMClient:
             # 抛出去之前先把这次失败记下来——重试是调用方的事，
             # 记账是这里的事，两者不能因为一个挂掉另一个。
             self._record_error(cfg, prompt, e,
-                               int((time.time() - t0) * 1000))
+                               int((time.time() - t0) * 1000), started_at=t0)
             raise
         self._record(cfg, prompt, text, usage)
         return text
@@ -1403,7 +1462,8 @@ class LLMClient:
                     f"环节 {stage} 的 provider {cfg.provider} "
                     f"暂不支持强制 JSON 输出")
         except Exception as e:
-            self._record_error(cfg, prompt, e, int((time.time() - t0) * 1000))
+            self._record_error(cfg, prompt, e, int((time.time() - t0) * 1000),
+                               started_at=t0)
             raise
         for b in blocks:
             if b.get("type") == "tool_use":
@@ -1413,7 +1473,8 @@ class LLMClient:
                 return b.get("input")
         self._record_error(cfg, prompt, EmptyOutput(
             f"环节 {stage} 要求调用 {name}，但模型返回了文本而不是工具调用。"
-            "检查是不是漏传 tool_choice。"), int((time.time() - t0) * 1000))
+            "检查是不是漏传 tool_choice。"), int((time.time() - t0) * 1000),
+            started_at=t0)
         raise EmptyOutput(
             f"环节 {stage} 要求调用 {name}，但模型返回了文本而不是工具调用。"
             "检查是不是漏传 tool_choice。")
@@ -1508,7 +1569,7 @@ class LLMClient:
                     f"环节 {stage} 的 provider {cfg.provider} 暂不支持工具调用")
         except Exception as e:
             self._record_error(cfg, _msgs_chars(messages), e,
-                               int((time.time() - t0) * 1000))
+                               int((time.time() - t0) * 1000), started_at=t0)
             raise
         text = "".join(b.get("text", "") for b in blocks
                        if b.get("type") == "text")
@@ -1558,7 +1619,7 @@ class LLMClient:
     # ---------- 记账（P7：只记不告警） ----------
 
     def _record_error(self, cfg: StageConfig, prompt: str, exc: BaseException,
-                      ms: int | None = None) -> None:
+                      ms: int | None = None, started_at: float | None = None) -> None:
         """记一次**失败的**调用（2026-10-13 加）。
 
         为什么必须有：`_record` 只在成功路径上调用，所以 504 / 429 /
@@ -1581,13 +1642,15 @@ class LLMClient:
                 est_input_tokens=_rough_tokens(prompt),
                 status="error",
                 error=f"{type(exc).__name__}: {exc}"[:500],
+                started_at=started_at,
+                wait_ms=self._take_wait_ms(),
             )
         except Exception:
             pass  # 记账失败不影响主流程
 
     def _record_retry(self, cfg: StageConfig, prompt: str,
                       attempt: int, max_retries: int, wait_s: float,
-                      cause: str, ms: int) -> None:
+                      cause: str, ms: int, started_at: float | None = None) -> None:
         """记一次**过载重试**（2026-10-20，平台拥堵期加）。
 
         `status='retry'` 与 `ok`/`error` 区分：它不是一次完成的调用
@@ -1611,6 +1674,8 @@ class LLMClient:
                 status="retry",
                 error=f"{cause} | attempt {attempt}/{max_retries} "
                       f"| wait {wait_s:.0f}s"[:500],
+                started_at=started_at,
+                wait_ms=self._take_wait_ms(),
             )
         except Exception:
             pass  # 记账失败不影响主流程
@@ -1641,6 +1706,9 @@ class LLMClient:
                 cache_read_tokens=_cache_read(u),
                 cache_creation_tokens=int(u.get("cache_creation_input_tokens") or 0),
                 est_input_tokens=_rough_tokens(prompt),
+                started_at=u.get("started_at"),
+                wait_ms=self._take_wait_ms(),
+                ttfb_ms=u.get("ttfb_ms"),
             )
         except Exception:
             pass  # 记账失败不影响主流程
@@ -1720,6 +1788,8 @@ class LLMClient:
                                 f"{cfg.provider} {resp.status_code}: {body[:300]}")
                         acc = SSEAccum(_hook_for(cfg.stage), cfg.stage)
                         for obj in _sse_lines(resp):
+                            if "chunk_at" not in getattr(_TL, "__dict__", {}):
+                                _TL.chunk_at = time.time()   # 首个内容块
                             acc.feed(obj)
                 except httpx.TransportError as e:
                     last_reason = f"transport: {type(e).__name__}"
@@ -1734,6 +1804,8 @@ class LLMClient:
                 txt = acc.text_only()
                 usage = dict(acc.usage or {})
                 usage["latency_ms"] = int((time.time() - t0) * 1000)
+                usage["started_at"] = t0
+                usage["ttfb_ms"] = self._ttfb_first_chunk()
                 self._warn_reasoning_ratio(
                     cfg, usage, "".join(acc.reasoning))
                 # 截断与空返回**共用额度与降档逻辑**（2026-10-17 加、改）。
@@ -1839,6 +1911,8 @@ class LLMClient:
             text = (msg.get("content") or "").strip()
             usage = data.get("usage") or {}
             usage["latency_ms"] = int((time.time() - t0) * 1000)
+            usage["started_at"] = t0
+            usage["ttfb_ms"] = self._ttfb_headers()
 
             # 防线二：思考占比告警（流式与非流式走同一个入口）
             self._warn_reasoning_ratio(
@@ -1927,7 +2001,11 @@ class LLMClient:
             if resp.status_code != 200:
                 return resp.status_code, resp.read().decode("utf-8", "replace"), None
             acc = AnthropicSSEAccum(_hook_for(cfg.stage), cfg.stage)
+            first_chunk = True
             for obj in _sse_lines(resp):
+                if first_chunk:
+                    first_chunk = False
+                    _TL.chunk_at = time.time()               # 首个内容块
                 acc.feed(obj)
         if acc.error:
             # `event: error` 必须响：吞掉就变成「流到一半没下文」，
@@ -1993,7 +2071,7 @@ class LLMClient:
             cause = ("MiniMax 流式错误 api_error" if status == -1
                      else f"MiniMax {status} {why}")
             self._record_retry(cfg, prompt, attempt + 1, ovr.max_retries,
-                               wait, cause, ms)
+                               wait, cause, ms, started_at=t0)
             msg_w = (f"[{cfg.stage}] 服务过载（{cause}），"
                      f"{wait:.0f}s 后重试（第 {attempt + 1}/{ovr.max_retries} 次）")
             self.warnings.append(msg_w)
@@ -2125,6 +2203,9 @@ class LLMClient:
             usage = parsed.get("usage") or {}
             out_tok = usage.get("output_tokens") or 0
             usage["latency_ms"] = int((time.time() - t0) * 1000)
+            usage["started_at"] = t0
+            usage["ttfb_ms"] = (self._ttfb_first_chunk()
+                                if payload.get("stream") else self._ttfb_headers())
 
             if think and out_tok:
                 ratio = len(think) / max(1, len(text) + len(think))
@@ -2276,6 +2357,9 @@ class LLMClient:
             raise RuntimeError(f"MiniMax {status}: {body[:300]}")
         usage = (parsed or {}).get("usage") or {}
         usage["latency_ms"] = int((time.time() - t0) * 1000)
+        usage["started_at"] = t0
+        usage["ttfb_ms"] = (self._ttfb_first_chunk()
+                            if payload.get("stream") else self._ttfb_headers())
         blocks_out = (parsed or {}).get("content") or []
         # ⚠️ **工具参数被截断，这里只告警不失败**（2026-10-17）。
         # `_openai_compat_forced` 那条路靠 `_reject_broken_args` 硬失败，
@@ -2348,10 +2432,16 @@ class LLMClient:
                     raise RuntimeError(
                         f"{cfg.provider} {resp.status_code}: {body[:300]}")
                 acc = SSEAccum(_hook_for(cfg.stage), cfg.stage)
+                first_chunk = True
                 for obj in _sse_lines(resp):
+                    if first_chunk:
+                        first_chunk = False
+                        _TL.chunk_at = time.time()           # 首个内容块
                     acc.feed(obj)
             usage = dict(acc.usage or {})
             usage["latency_ms"] = int((time.time() - t0) * 1000)
+            usage["started_at"] = t0
+            usage["ttfb_ms"] = self._ttfb_first_chunk()
             return acc.blocks(), usage
 
         r = self._client.post(
@@ -2382,6 +2472,8 @@ class LLMClient:
             blocks.append({"type": "text", "text": msg["content"]})
         u = j.get("usage") or {}
         u["latency_ms"] = int((time.time() - t0) * 1000)
+        u["started_at"] = t0
+        u["ttfb_ms"] = self._ttfb_headers()
         return blocks, u
 
     def _openai_compat_forced(self, cfg: StageConfig, system: str | None,
@@ -2436,10 +2528,16 @@ class LLMClient:
                     raise RuntimeError(
                         f"{cfg.provider} {resp.status_code}: {body[:300]}")
                 acc = SSEAccum(_hook_for(cfg.stage), cfg.stage)
+                first_chunk = True
                 for obj in _sse_lines(resp):
+                    if first_chunk:
+                        first_chunk = False
+                        _TL.chunk_at = time.time()           # 首个内容块
                     acc.feed(obj)
             usage = dict(acc.usage or {})
             usage["latency_ms"] = int((time.time() - t0) * 1000)
+            usage["started_at"] = t0
+            usage["ttfb_ms"] = self._ttfb_first_chunk()
             blocks = acc.blocks()
             # ⚠️ 参数被截断 → `{}` 会伪装成「成功的空结果」。这里必须响。
             _reject_broken_args(blocks, cfg.stage, acc.finish_reason)
@@ -2473,6 +2571,8 @@ class LLMClient:
             blocks.append({"type": "text", "text": msg["content"]})
         u = j.get("usage") or {}
         u["latency_ms"] = int((time.time() - t0) * 1000)
+        u["started_at"] = t0
+        u["ttfb_ms"] = self._ttfb_headers()
         _reject_broken_args(blocks, cfg.stage,
                             (j["choices"][0].get("finish_reason") or None))
         return blocks, u
@@ -2515,6 +2615,8 @@ class LLMClient:
             "output_tokens": u.get("candidatesTokenCount") or 0,
             "cache_read_input_tokens": u.get("cachedContentTokenCount") or 0,
             "latency_ms": int((time.time() - t0) * 1000),
+            "started_at": t0,
+            "ttfb_ms": self._ttfb_headers(),
         }
 
 

@@ -17,6 +17,7 @@ from langgraph.types import interrupt
 
 from ...ingest.extract import Fetcher
 from ...llm.provider import LLMClient
+from ...trace import traced
 from ...search.base import SearchHit
 from ...search.searxng import SearXNGProvider
 from ...search.tavily import TavilyProvider
@@ -547,12 +548,13 @@ def node_retry(state: ProbeState) -> dict:
 
 def build_probe_graph():
     g = StateGraph(ProbeState)
-    g.add_node("light", node_probe_light)
-    g.add_node("clarify", node_clarify)
-    g.add_node("check_quality", node_check_quality)
-    g.add_node("retry", node_retry)
-    g.add_node("deep", node_probe_deep)
-    g.add_node("outline", node_probe_outline)
+    # traced()：子图节点的绝对起止进 trace_span（主图只有 node:probe 总耗时）。
+    g.add_node("light", traced("probe.light", node_probe_light))
+    g.add_node("clarify", traced("probe.clarify", node_clarify))
+    g.add_node("check_quality", traced("probe.check_quality", node_check_quality))
+    g.add_node("retry", traced("probe.retry", node_retry))
+    g.add_node("deep", traced("probe.deep", node_probe_deep))
+    g.add_node("outline", traced("probe.outline", node_probe_outline))
 
     g.add_edge(START, "light")
     g.add_conditional_edges("light", route_after_light,
