@@ -38,6 +38,7 @@ os.environ["RA_DB_PATH"] = "/tmp/ra_submit_section_test.db"
 from research_agent.llm import provider as P            # noqa: E402
 from research_agent.llm.toolloop import run_tool_loop   # noqa: E402
 from research_agent.graph.subgraphs import write as W   # noqa: E402
+W._WRITE_PRELOAD = False   # 本测试钉的是多轮读证据路径；预加载默认开，见 test_write_preload
 from research_agent.db.repo import get_repo             # noqa: E402
 
 # /tmp 是全新库：`get_repo()` 只建连接，表结构要靠迁移脚本落地

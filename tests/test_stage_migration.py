@@ -77,6 +77,17 @@ def main() -> int:
               f"max={c.max_output_tokens} to={c.timeout_s} "
               f"guard={c.guard.max_output_tokens}")
 
+    # write_revise 强制交卷轮预算 8192（2026-10-25 批 3：v20 里
+    # submit_section 入参两次被 4096 顶断）；round_max_tokens 2048 是
+    # P2 的读证据轮压上限设计，不许跟着涨。
+    c = reg.stage("write_revise")
+    check("write_revise: max_output_tokens=8192 + round 2048",
+          c.max_output_tokens == 8192
+          and c.round_max_tokens == 2048
+          and c.guard.max_output_tokens == 8192,
+          f"max={c.max_output_tokens} round={c.round_max_tokens} "
+          f"guard={c.guard.max_output_tokens}")
+
     # outline/probe_outline 也在上面 M3.1 表里钉死了（2026-10-25 迁移）。
     # 这里只补一条兜底：它们都不许带 forced_thinking（M3.1 关不掉思考）。
     for stage in ("outline", "probe_outline"):

@@ -644,7 +644,11 @@ stages:
     # 返修输入更短，浪费轮更狠——烧 4096 上限纯亏。
     round_max_tokens: 2048
     temperature: 0.1
-    max_output_tokens: 4096
+    # 4096 → 8192（2026-10-25）：v20 实测整节重写的 submit_section
+    # 入参两次被 4096 顶断（EmptyOutput「工具参数拼不成合法 JSON」，
+    # stdout 有 max_tokens 截断警告）。与 write_section 同档——
+    # 抬上限不花钱，一次截断浪费一整轮。
+    max_output_tokens: 8192
     guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 8192 }
 
   # 定点补丁返修（2026-10-19，坑 80）：审查给出 quote+action 后，

@@ -11,6 +11,9 @@ v18 基线三次审查 127/62/162s，末次是纯等待。
   ② 存疑节照常收 violations 与返修残留（返修后重算的 violations 在
      state 里——node_revise 已是重算版）；
   ③ rounds<MAX_REWORK → 行为与现状完全一致（模型照常被调，回归）。
+  ④ MAX_REWORK=2（RA_MAX_REWORK=2 的旧行为）下 rounds=1 仍走
+     模型路径——默认 1 是 2026-10-25 用户决定（v19/v20 末轮审查
+     113~155s 只换 2~4 个返修目标），旋钮退回 2 必须仍可用。
 
 用法：.venv/bin/python tests/test_audit_skip.py
 """
@@ -125,13 +128,13 @@ def t1_final_audit_skipped():
 
 
 def t2_mid_round_unchanged():
-    """rounds=1 < MAX_REWORK：模型照常调，返回什么算什么（回归）。"""
+    """rounds=0 < MAX_REWORK(默认 1)：模型照常调，返回什么算什么（回归）。"""
     stub = CountLLM([{"need_rework": False, "reason": "好",
                       "findings": [], "blocked": [],
                       "rework_check": [{"task": "t1", "section": "sec1",
                                         "status": "fixed"}],
                       "remaining_issues": []}])
-    st = _state(1, audit={"model_high": 1, "targets": [{"task": "t1"}]})
+    st = _state(0, audit={"model_high": 1, "targets": [{"task": "t1"}]})
     out = _with_llm(stub, lambda: W.node_audit(st))
     ev = (out.get("events") or [{}])[0]
     check("② 模型被调一次", stub.calls == 1)
@@ -141,9 +144,31 @@ def t2_mid_round_unchanged():
           out["audit"].get("skipped") is not True)
 
 
+def t3_max_rework_2_legacy():
+    """MAX_REWORK=2（旋钮回旧行为）：rounds=1 仍调模型；rounds=2 才跳过。"""
+    orig = W.MAX_REWORK
+    W.MAX_REWORK = 2
+    try:
+        stub = CountLLM([{"need_rework": False, "reason": "好",
+                          "findings": [], "blocked": [],
+                          "rework_check": [], "remaining_issues": []}])
+        st = _state(1, audit={"model_high": 1})
+        out = _with_llm(stub, lambda: W.node_audit(st))
+        check("④ MAX_REWORK=2 时 rounds=1 仍调模型",
+              stub.calls == 1 and out["audit"].get("skipped") is not True)
+        # rounds=2 到顶 → 跳过分支
+        stub2 = CountLLM()
+        out2 = _with_llm(stub2, lambda: W.node_audit(_state(2)))
+        check("④ MAX_REWORK=2 时 rounds=2 跳过",
+              stub2.calls == 0 and out2["audit"].get("skipped") is True)
+    finally:
+        W.MAX_REWORK = orig
+
+
 if __name__ == "__main__":
     t1_final_audit_skipped()
     t2_mid_round_unchanged()
+    t3_max_rework_2_legacy()
     print()
     if FAILED:
         print("失败：" + "、".join(FAILED))

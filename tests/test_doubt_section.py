@@ -176,11 +176,17 @@ def _run_audit(checks, unres=None, prev_high=8, cur_findings=3):
     raw = {"need_rework": True, "reason": "r", "findings": _findings(cur_findings),
            "blocked": [], "rework_check": checks}
     orig_llm = W.LLM.complete_json_forced
+    # 这些用例测的是「返修后审查」的 rework_effective 计算——必须走
+    # 模型路径。MAX_REWORK 默认已改 1（2026-10-25 批 3），rounds=1
+    # 会撞上合成结论分支，这里显式钉回 2。
+    orig_max = W.MAX_REWORK
     W.LLM.complete_json_forced = StubAuditLLM(raw).complete_json_forced
+    W.MAX_REWORK = 2
     try:
         return W.node_audit(state)
     finally:
         W.LLM.complete_json_forced = orig_llm
+        W.MAX_REWORK = orig_max
 
 
 # 真实形状：fixed 4 + changed_form 1 + still_there 3，

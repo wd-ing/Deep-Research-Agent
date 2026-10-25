@@ -42,7 +42,23 @@ CONCURRENCY = 4             # 并发子 agent 上限
 # dispatch 540s vs 单任务最长 ~120s——分批+串行头纯属内耗，改为一次全并发。
 # 环境变量 RA_WRITE_WORKERS 可压低（比如限流紧张时）。
 WRITE_WORKERS = max(1, int(os.environ.get("RA_WRITE_WORKERS", "12") or 12))
-MAX_REWORK = 2              # 返修轮数上限
+# 返修轮数上限（默认 1 是用户 2026-10-25 的决定）：v19/v20 实测第 2 次
+# 审查 113~155s 只换来 2~4 个返修目标（v19 返修 4s、v20 返修 120s 且
+# 3 个仍未解决）。以后「快速/标准」档的区分由这个旋钮承担：
+# RA_MAX_REWORK=2 即恢复旧行为（审查→返修→审查→返修→合成结论）。
+# =0 时 node_audit 首轮就走 _audit_skip_final——不调模型直接 final，
+# 等于关掉审查返修环节（保留程序检查：violations 是 revise 后重算的）。
+MAX_REWORK = max(0, int(os.environ.get("RA_MAX_REWORK", "1") or 1))
+# 预加载开关（RA_WRITE_PRELOAD，2026-10-25 批 3，默认开）：=1 时首稿
+# 任务把分配段原文整块附进用户消息、跳过读证据轮直接强制交卷
+# （v20 实测每个任务 3 轮读证据 + 限流排队 ~30-45s）。
+# 落地依据 tests/exp_write_preload.py（v20 证据，n=3×2，13 任务）：
+# dispatch 145→95s、调用 51→13、violations 23.3→1.7、证据外数字
+# 27.3→6.7、总字数 -7%；块超 70k 字符的任务回退旧路径。
+# RA_WRITE_PRELOAD=0 即回到多轮读证据。
+_WRITE_PRELOAD = os.environ.get("RA_WRITE_PRELOAD", "1") == "1"
+PRELOAD_SEG_CHARS = 2500       # 预加载单段全文字符上限
+PRELOAD_BLOCK_CHARS = 70000    # 预加载整块字符上限，超出回退工具轮
 MAX_TOOL_ROUNDS = 3         # plan 取全文的工具循环上限
 TASK_MARK_RE = re.compile(r"<!--\s*task:(\S+)\s+section:(\S+)\s*-->")
 # 子 agent 分节输出用的标记。`covers` 多于一节时必须逐节标注，否则无法归位。
@@ -1013,6 +1029,10 @@ def _run_task(state: WriteState, task: dict, revise: dict | None) -> tuple[dict,
         for g in segs])
     tail = (f"【你的证据段落（只有概括，不足以判断就调工具看全文）】\n{listing}\n")
 
+    # 预加载块（实验）：非 None 时替代 tail 进用户消息，并跳过读证据轮。
+    preload_block = (_preload_evidence(state, segs)
+                     if _WRITE_PRELOAD and revise is None else None)
+
     # 返修信息并进同一条 user 消息，而不是再追加一条。
     # 两个 user 消息连续既不合协议，也会把「规约前缀」和「返修内容」隔开，
     # 缓存前缀就断了。
@@ -1029,16 +1049,41 @@ def _run_task(state: WriteState, task: dict, revise: dict | None) -> tuple[dict,
         tools = EvidenceTools(get_repo(), sid)
         # task_id 挂进 meta 让 run_tool_loop 的 toolround span 认得出是哪条任务
         meta: dict = {"task_id": task["id"]}
+        # 预加载开关开着但块超限 → 回退旧多轮路径，meta 里记一笔，
+        # 不许截断证据块假装读全了。同时落 write_trace 让一场跑完
+        # 能数出多少任务没走成预加载。
+        if _WRITE_PRELOAD and revise is None and preload_block is None:
+            meta["preload_fallback"] = True
+            _record_preload_fallback(state, task["id"])
         try:
             # `final_tool=SUBMIT_SECTION`：正文走工具参数而不是对话文本，
             # 否则最后一轮的 text 块会把前言/英文推理/伪工具调用一起当正文
             # （v13 实测四类污染，见 SUBMIT_SECTION 的注释与坑 75）。
-            text, _, log = run_tool_loop(
-                LLM, stage, prompts.WRITE_RULES, messages, tools,
-                max_rounds=2, final_tool=SUBMIT_SECTION, meta=meta,
-                final_nudge=SUBMIT_NUDGE)
+            if preload_block is not None:
+                # 预加载：max_rounds=-1 跳过 Phase A 读证据轮，
+                # 直接进 Phase B 强制交卷（forced_thinking/final_nudge/
+                # 失败重试全都复用）。
+                meta["preload"] = True
+                text, _, log = run_tool_loop(
+                    LLM, stage,
+                    prompts.WRITE_RULES + prompts.WRITE_PRELOAD_NOTE,
+                    [{"role": "user", "content": head + preload_block}],
+                    tools, max_rounds=-1, final_tool=SUBMIT_SECTION,
+                    meta=meta, final_nudge=SUBMIT_NUDGE)
+            else:
+                text, _, log = run_tool_loop(
+                    LLM, stage, prompts.WRITE_RULES, messages, tools,
+                    max_rounds=2, final_tool=SUBMIT_SECTION, meta=meta,
+                    final_nudge=SUBMIT_NUDGE)
             _record_tool_use(state, task["id"], log)
-            via = meta.get("via") or "fallback"
+            mech = meta.get("via") or "fallback"
+            # 预加载成功的交卷记 via="preload"；真实机制（forced/
+            # forced_retry）留在 via_mech 里备查。
+            via = ("preload" if (preload_block is not None
+                                 and mech != "fallback") else mech)
+            meta["via"] = via
+            if preload_block is not None:
+                meta["via_mech"] = mech
             if via != "fallback":
                 secs, note, notes = _parse_submission(text, covers)
                 _record_submit(state, task["id"], via, notes)
@@ -1067,6 +1112,57 @@ def _task_segments(state: WriteState, task: dict) -> list[dict]:
     allowed = set(task.get("segments") or [])
     segs = state.get("on_topic") or state.get("segments") or []
     return [g for g in segs if g.get("ref") in allowed]
+
+
+def _preload_evidence(state: WriteState, segs: list[dict]) -> str | None:
+    """把任务分配段的**原文**拼成证据块（预加载实验，2026-10-25 批 3）。
+
+    段号头与 `EvidenceTools` 的编号一致（`[S3·5]`），后面跟该来源的
+    标题/性质/日期行（从 `src_lines` 取，与给模型看的来源清单同源）。
+    每段正文上限 `PRELOAD_SEG_CHARS`（超出截断并明说给了多少）；
+    **整块**超过 `PRELOAD_BLOCK_CHARS` 时返回 None——任务回退旧的
+    多轮工具路径，而不是截掉尾巴假装读全了。
+    """
+    src_lines = {}
+    for ln in (state.get("src_lines") or []):
+        m = re.match(r"\[S\d+\]", ln or "")
+        if m:
+            src_lines[m.group(0)] = ln
+    parts: list[str] = []
+    total = 0
+    for g in segs:
+        ref = g.get("ref") or ""
+        sref = ref.split("·")[0]
+        meta_ln = src_lines.get(f"[{sref}]", "")
+        body = g.get("content") or ""
+        clip = ""
+        if len(body) > PRELOAD_SEG_CHARS:
+            clip = (f"（这段共 {len(body):,} 字符，此处只给了前 "
+                    f"{PRELOAD_SEG_CHARS:,}）")
+            body = body[:PRELOAD_SEG_CHARS]
+        part = f"[{ref}] {meta_ln}\n{body}{clip}"
+        total += len(part)
+        parts.append(part)
+    head = ("【你的证据段落（原文已全部附上，"
+            "不足以判断的部分已注明截断）】\n")
+    if total + len(head) > PRELOAD_BLOCK_CHARS:
+        return None
+    return head + "\n\n".join(parts)
+
+
+def _record_preload_fallback(state: WriteState, task_id: str) -> None:
+    """预加载块超限回退旧路径的任务记账（best-effort，同 _record_submit）。"""
+    sid = state.get("session_id")
+    if not sid:
+        return
+    try:
+        from ...db.repo import get_repo
+        repo = get_repo()
+        tr = repo.write_trace(sid).get("stats") or {}
+        tr["preload_fallback"] = tr.get("preload_fallback", 0) + 1
+        repo.save_write_trace(sid, stats=tr)
+    except Exception:
+        pass
 
 
 def _record_tool_use(state: WriteState, task_id: str, log: list) -> None:
@@ -1837,7 +1933,7 @@ def _prev_high_from_state(state: WriteState, rounds: int) -> int | None:
 _AUDIT_KEYS = {"need_rework", "findings", "blocked", "reason"}
 
 
-def _normalize_audit_input(raw) -> dict | None:
+def _normalize_audit_input(raw, fail: dict | None = None) -> dict | None:
     """把 `submit_audit` 的工具入参归一成下游读的 dict；归一不了返回 None。
 
     为什么需要它（2026-10-19，18 个真实样本里 2 个偏离 schema）：
@@ -1846,14 +1942,29 @@ def _normalize_audit_input(raw) -> dict | None:
     `{"reason":…,"rework_check":…,"$text":"true"}` 的 dict。
     **把这类结果当「审查通过」会静默放过问题**——所以归一化不了就判无效，
     让上层重试一次，而不是拿半残的结构往下走。
+
+    `fail`（2026-10-25，可诊断性）：传一个 dict 进来，归一失败时往里
+    写 `why`（哪一条没过/缺哪个键）与 `raw`（原始入参 JSON 截 4000）——
+    v20 实测一次归一化失败重试白烧 ~100s，而当时拿不到失败入参，
+    连是哪类漂移都只能猜。归一规则本身不变（严格、不设别名白名单）。
     """
+    def _fail(why: str):
+        if fail is not None:
+            fail["why"] = why
+            try:
+                fail["raw"] = json.dumps(raw, ensure_ascii=False,
+                                         default=str)[:4000]
+            except Exception:
+                fail["raw"] = repr(raw)[:4000]
+        return None
+
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
         except ValueError:
-            return None
+            return _fail("入参是字符串但不是合法 JSON")
     if not isinstance(raw, dict):
-        return None
+        return _fail(f"顶层类型 {type(raw).__name__}，不是 dict")
     # 解包：顶层不含任何期望键、且恰好只有一个值为 dict 的键 → 剥开。
     # 最多解两层（样本里出现过套娃）。
     d = raw
@@ -1885,7 +1996,14 @@ def _normalize_audit_input(raw) -> dict | None:
         # 让上层重试：宁可多花一次调用，也不能让 blocked 整栏静默丢。
         # 注意 `need_rework=False, findings=[], blocked=[]` 是合法的
         # 「审查通过」，不能误杀——缺的只是字段才算无效。
-        return None
+        why = []
+        if not isinstance(nr, bool):
+            why.append(f"need_rework 给不出 bool（解包后是 "
+                       f"{type(nr).__name__}: {str(nr)[:80]}）")
+        missing = [k for k in ("findings", "blocked") if k not in d]
+        if missing:
+            why.append(f"缺键 {missing}（实际键: {sorted(d.keys())[:12]}）")
+        return _fail("；".join(why))
     out = dict(d)
     out.update(lifted)
     out["need_rework"] = nr
@@ -2076,6 +2194,9 @@ def node_audit(state: WriteState) -> dict:
     d: dict | None = None
     err: object = ""
     attempts = 0
+    # 归一化失败的可诊断记录（2026-10-25）：每次失败记 {attempt, why, raw}
+    # 进 write_audit 事件 + write.audit_normalize_fail span。
+    normalize_fails: list[dict] = []
     for _attempt in (1, 2, 3):
         attempts = _attempt
         try:
@@ -2097,9 +2218,18 @@ def node_audit(state: WriteState) -> dict:
                               flush=True)
                     continue
             break
-        d = _normalize_audit_input(raw)
+        nf: dict = {}
+        d = _normalize_audit_input(raw, nf)
         if d is None:
             err = "submit_audit 入参偏离 schema，无法归一化"
+            rec = {"attempt": _attempt, "why": nf.get("why"),
+                   "raw": nf.get("raw")}
+            normalize_fails.append(rec)
+            with span("subnode", "write.audit_normalize_fail",
+                      session_id=state.get("session_id"),
+                      attempt=_attempt, why=nf.get("why"),
+                      raw=nf.get("raw")):
+                pass
             if _attempt == 1:
                 print("⚠️  [write_audit] 返回结构无法归一化，重试一次",
                       flush=True)
@@ -2115,7 +2245,8 @@ def node_audit(state: WriteState) -> dict:
                           "rework_effective": True,
                           "remaining_issues": ["审查环节失败，未能核查"]},
                 "rework_effective": True,
-                "events": [{"kind": "write_audit_error", "error": msg}]}
+                "events": [{"kind": "write_audit_error", "error": msg,
+                            "normalize_fail": normalize_fails}]}
 
     findings = [f for f in (d.get("findings") or []) if isinstance(f, dict)]
     by_task = {t["id"]: t for t in state.get("tasks") or []}
@@ -2289,6 +2420,7 @@ def node_audit(state: WriteState) -> dict:
         "rework_effective": rework_effective,
         "events": [{"kind": "write_audit", "rounds": rounds,
                     "attempts": attempts,
+                    "normalize_fail": normalize_fails,
                     "high": len(targets), "findings": len(findings),
                     "blocked": len(blocked),
                     "violation_targets": violation_targets,

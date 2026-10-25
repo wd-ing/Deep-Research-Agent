@@ -116,6 +116,27 @@ def t_normalize():
     check("① 双层包装可解",
           d is not None and len(d["findings"]) == 12, str(type(d)))
 
+    # ①b 失败可诊断（2026-10-25）：fail dict 记 why + 原始入参，
+    #     归一结果仍是 None（规则不变）。
+    fail: dict = {}
+    d = W._normalize_audit_input({"blocker": [], "need_rework": True},
+                                 fail)
+    check("①b 缺 findings/blocked → None + why 点出缺键",
+          d is None and "blocked" in (fail.get("why") or "")
+          and "findings" in (fail.get("why") or ""), str(fail.get("why")))
+    check("①b raw 记原始入参",
+          "blocker" in (fail.get("raw") or ""), str(fail.get("raw"))[:80])
+    fail = {}
+    d = W._normalize_audit_input({"need_rework": {"x": 1},
+                                  "findings": [], "blocked": []}, fail)
+    check("①b need_rework 给不出 bool → why 点出它",
+          d is None and "need_rework" in (fail.get("why") or ""),
+          str(fail.get("why")))
+    fail = {}
+    d = W._normalize_audit_input("{不是 json", fail)
+    check("①b 坏 JSON 字符串 → why 说明类型",
+          d is None and fail.get("why"), str(fail.get("why")))
+
 
 # --------------------------------------------------------------- ② node_audit
 
@@ -183,6 +204,12 @@ def t_node_audit():
           len(stub.seen) == 2 and ev.get("attempts") == 2
           and ev.get("kind") == "write_audit",
           f"{len(stub.seen)} {ev.get('attempts')}")
+    check("② normalize_fail 记了第一次的 why+raw",
+          isinstance(ev.get("normalize_fail"), list)
+          and len(ev["normalize_fail"]) == 1
+          and ev["normalize_fail"][0].get("attempt") == 1
+          and "foo" in (ev["normalize_fail"][0].get("raw") or ""),
+          str(ev.get("normalize_fail"))[:160])
 
     # (c) 两次都无效 → 走 write_audit_error，不阻断。
     stub, out = _run_audit([{"foo": 1}, [1, 2]])
@@ -194,6 +221,9 @@ def t_node_audit():
     check("② 失败时 audit 兜底形状不变",
           out["audit"].get("need_rework") is False
           and out["audit"].get("findings") == [])
+    check("② error 事件也带 normalize_fail（2 条）",
+          len(ev.get("normalize_fail") or []) == 2,
+          str(ev.get("normalize_fail"))[:120])
 
     # (d) MiniMax 429/HTTP 类错误**不重试**（额度问题重发没意义）。
     stub, out = _run_audit([RuntimeError("MiniMax 429: Token Plan 速率限制")])
