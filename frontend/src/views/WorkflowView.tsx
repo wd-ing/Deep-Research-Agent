@@ -215,6 +215,9 @@ function StepRow({
 /* ------------------------------------------------------------------ */
 
 const ORDER = ['规划', '审批', '写作', '收尾'] as const
+// 快速档（C2）没有审批环节：审批点只在标准档的 apply_revision 路由里，
+// 快速档的事件流永远走不到它——阶段条给它留一格等于撒谎。
+const FAST_ORDER = ['规划', '写作', '收尾'] as const
 
 function num(e: ProgressEntry, k: string): number | undefined {
   return typeof e[k] === 'number' ? (e[k] as number) : undefined
@@ -311,7 +314,7 @@ function deriveFlow(progress: ProgressEntry[], writingNow: boolean) {
  *  - 当前环节只有写作能算比例（完成任务/计划任务），
  *    其它环节没有可量化依据就空着、靠绿点说「在跑」。 */
 function TrackRail({
-  phases, activeIdx, doneAll, writeFrac, writeDone, writeTotal, onJump,
+  phases, activeIdx, doneAll, writeFrac, writeDone, writeTotal, onJump, order,
 }: {
   phases: Phase[]
   activeIdx: number
@@ -324,16 +327,20 @@ function TrackRail({
   writeTotal: number | null
   /** 点环节名 = 展开并滚过去（沿用旧轨的交互） */
   onJump: (key: string) => void
+  /** 环节序列（C2）：标准档 4 段、快速档 3 段——列数和占比都跟它走 */
+  order: readonly string[]
 }) {
+  const segPct = 100 / order.length
   const fill = doneAll
     ? 100
     : Math.min(100, Math.max(0,
         activeIdx < 0 ? 0
-        : activeIdx * 25 + (ORDER[activeIdx] === '写作' ? writeFrac * 25 : 0)))
+        : activeIdx * segPct + (order[activeIdx] === '写作' ? writeFrac * segPct : 0)))
   return (
     <div className="mt-6">
-      <div className="grid grid-cols-4 pb-2 text-[12.5px]">
-        {ORDER.map((k, i) => {
+      <div className="grid pb-2 text-[12.5px]"
+           style={{ gridTemplateColumns: `repeat(${order.length}, minmax(0, 1fr))` }}>
+        {order.map((k, i) => {
           const p = phases.find((x) => x.key === k)
           const done = doneAll || i < activeIdx
           const cur = !doneAll && i === activeIdx
@@ -531,13 +538,16 @@ function PhaseBlock({
  */
 export function WorkflowView({
   phases, progress, running, runningSince, cost, flow,
-  histLoaded, truncated, question, startedAt, onOpenReport,
+  histLoaded, truncated, question, startedAt, onOpenReport, mode,
 }: {
   phases: Phase[]
   progress: ProgressEntry[]
   running: boolean
   runningSince: number | null
   cost: number | null
+  /** 档位（C2）：'fast' 时阶段条用 FAST_ORDER（无审批）；
+   *  缺省=standard 四段。 */
+  mode?: string
   /** flow = 回看完已成的流程 */
   flow: boolean
   /** /events 历史已拉取完成（区分「还在拉」和「真的没有历史」） */
@@ -560,7 +570,8 @@ export function WorkflowView({
   const activeKey =
     phases.find((p) => p.steps.some((s) => s.state === 'running'))?.key
     ?? phases[phases.length - 1]?.key
-  const activeIdx = ORDER.indexOf(activeKey as (typeof ORDER)[number])
+  const order: readonly string[] = mode === 'fast' ? FAST_ORDER : ORDER
+  const activeIdx = order.indexOf(activeKey ?? '')
   // 「写作中」状态只该出现在真的写作环节——done/flow 里不能拿
   // 历史最后一个事件的 node 去猜（收尾前最后一条往往也是 write）
   const writingNow = running && activeKey === '写作'
@@ -670,6 +681,7 @@ export function WorkflowView({
         <TrackRail
           phases={phases}
           activeIdx={activeIdx}
+          order={order}
           doneAll={flow}
           writeFrac={writeFrac}
           writeDone={fdata.doneTasks}

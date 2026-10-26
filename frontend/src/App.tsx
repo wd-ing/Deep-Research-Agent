@@ -8,6 +8,7 @@ import { WorkflowView } from './views/WorkflowView'
 import { buildPhases } from './views/workflow'
 import { SegDrawer, NatureBadge } from './components/SegDrawer'
 import { DebugPanel } from './components/DebugPanel'
+import type { ResearchMode } from './lib/mode'
 import { RoundChart } from './components/RoundChart'
 import { Sidebar, type Pane } from './components/Sidebar'
 import { SourceDetail } from './components/SourceDetail'
@@ -182,7 +183,7 @@ export default function App() {
     void refreshLib('')
   }, [refreshLib])
 
-  async function start(question: string) {
+  async function start(question: string, mode: ResearchMode = 'standard') {
     // ⚠️ 建会话失败**不能**让对话框自己关掉、更不能默默 reject。
     // 原来 `onSubmit={(q) => void start(q)}` + `await s.create()` 无 catch，
     // 网络一抖就是 unhandled rejection：对面上卡在「正在创建…」，
@@ -190,7 +191,7 @@ export default function App() {
     // 现在失败就**留在原地 + 说原因**，用户改个问题重试即可。
     let id: string
     try {
-      id = await s.create(question)
+      id = await s.create(question, mode)
     } catch (e) {
       s.notify(`建不了这场研究：${(e as Error).message}`)
       return
@@ -597,6 +598,7 @@ export default function App() {
               truncated={s.histTruncated}
               question={d?.title || d?.question}
               startedAt={d?.created_at}
+              mode={d?.mode}
               onOpenReport={report ? () => s.setView('done') : undefined}
             />
             {debug && <DebugPanel thinking={s.thinking} draft={s.draft} />}
@@ -626,6 +628,7 @@ export default function App() {
               review={review}
               marksOn={marksOn}
               sources={d?.sources}
+              mode={d?.mode}
             />
           </div>
         )}
@@ -684,7 +687,7 @@ export default function App() {
           recent={list.filter((x) => !x.archived_at).slice(0, 4)
             .map((x) => ({ id: x.id, question: x.question }))}
           onCancel={() => setNewOpen(false)}
-          onSubmit={(q) => void start(q)}
+          onSubmit={(q, mode) => void start(q, mode)}
         />
       )}
 

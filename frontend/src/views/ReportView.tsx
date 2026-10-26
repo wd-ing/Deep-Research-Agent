@@ -583,7 +583,7 @@ function doubtCount(doubt: string): number {
 
 export function ReportView({
   markdown, onRef, ignoredCitations = [], onOpenSource, previews = {}, scrollRef,
-  review, marksOn = false, sources,
+  review, marksOn = false, sources, mode,
 }: {
   markdown: string
   onRef: (ref: string) => void
@@ -599,6 +599,9 @@ export function ReportView({
   review?: ReviewResp | null
   /** 「修订痕迹」开关（顶栏按钮控制，默认关）。 */
   marksOn?: boolean
+  /** 档位（C2）：'fast' 时头部显示「快速简报」标签+提示；
+   *  老库行没有这个字段，=== 'fast' 判假就什么都不渲。 */
+  mode?: string
   /** 会话来源列表（健康条的「来源 · 一手」）。 */
   sources?: SourceRow[]
 }) {
@@ -929,6 +932,17 @@ export function ReportView({
               仍然保留是因为它是唯一一处告诉用户「这份报告引用了你后来
               标为不可信的材料」的地方，直接删掉等于让不可信结论悄悄留着。 */}
           <IgnoredBanner items={ignoredCitations} onOpenSource={onOpenSource ?? (() => {})} />
+
+          {/* 快速档头注（C2）：档位说明不是警告——中性灰章+淡色行，
+              不用 seal（存疑/降级才归朱红）。 */}
+          {mode === 'fast' && (
+            <div className="mb-5 flex items-start gap-2 print:hidden">
+              <span className="tag-fast mt-0.5">快速简报</span>
+              <p className="text-2xs leading-relaxed text-faint">
+                检索一轮后一次成文，未经模型审查；来源质量请自行甄别。
+              </p>
+            </div>
+          )}
 
           {/* 运行状况条：真数据才列项，一项都没有整条不渲染。
               打印不出现——纸质件不需要运行指标。 */}

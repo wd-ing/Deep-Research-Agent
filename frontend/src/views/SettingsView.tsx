@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../useSession'
+import { MODES, loadDefaultMode, saveDefaultMode, type ResearchMode } from '../lib/mode'
 
 interface ConfigResp {
   path: string
@@ -30,6 +31,7 @@ function defaultModel(yamlText: string): string | null {
  */
 export function SettingsView({ onNotify }: { onNotify: (m: string, kind?: 'err' | 'ok') => void }) {
   const [cfg, setCfg] = useState<ConfigResp | null>(null)
+  const [defMode, setDefMode] = useState<ResearchMode>(() => loadDefaultMode())
   const [text, setText] = useState('')
   const [loadErr, setLoadErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -67,6 +69,48 @@ export function SettingsView({ onNotify }: { onNotify: (m: string, kind?: 'err' 
         模型与环节的映射来自 <code className="font-mono text-xs">{cfg?.path ?? 'config/models.yaml'}</code>。
         改动保存后<b>重启后端服务才生效</b>——进程里的配置是启动时读的那一份。
       </p>
+
+      {/* 默认档位是浏览器偏好（localStorage），不进 models.yaml——
+          它和「重启生效」的服务端配置不是一个生命周期，放最上面。 */}
+      <div className="card mt-5">
+        <div className="border-b border-line px-4 py-2.5 text-xs font-medium text-muted">
+          默认研究档位
+        </div>
+        <div className="px-4 py-3">
+          <div className="grid grid-cols-2 gap-2 max-sm:grid-cols-1" role="radiogroup" aria-label="默认研究档位">
+            {MODES.map((m) => {
+              const on = defMode === m.key
+              return (
+                <button
+                  key={m.key}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  onClick={() => { setDefMode(m.key); saveDefaultMode(m.key) }}
+                  className={[
+                    'rounded-lg border px-3 py-2 text-left outline-none transition-colors',
+                    on ? 'border-accent bg-accent/5' : 'border-line hover:bg-gray-50',
+                  ].join(' ')}
+                >
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-sm font-medium text-ink">
+                      {m.label}
+                      <span className="ml-1.5 text-2xs font-normal text-muted">{m.tagline}</span>
+                    </span>
+                    <span className={['shrink-0 text-2xs tabular-nums', on ? 'text-accent' : 'text-faint'].join(' ')}>
+                      {m.eta}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-2xs leading-relaxed text-muted">{m.bullets}</div>
+                </button>
+              )
+            })}
+          </div>
+          <p className="mt-2 text-2xs text-faint">
+            新建研究时默认选中的档位，每次仍可在对话框里改。
+          </p>
+        </div>
+      </div>
 
       {loadErr && (
         <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">

@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { useDialog } from './useDialog'
+import { MODES, loadDefaultMode, type ResearchMode } from '../lib/mode'
 
 /** 新建研究。不是 `window.prompt()`——
  *  原生弹窗没法显示历史问题、不能多行、样式不可控，移动端更是难用。
@@ -12,9 +13,12 @@ export function NewResearchDialog({
   /** 创建请求在飞：禁掉按钮，防止连点建出两条一样的会话 */
   busy: boolean
   onCancel: () => void
-  onSubmit: (question: string) => void
+  onSubmit: (question: string, mode: ResearchMode) => void
 }) {
   const [q, setQ] = useState('')
+  // 初始选中 = 设置页存的默认档；这次选择只影响本次，
+  // 不在这里写回默认值（默认值归设置页管）。
+  const [mode, setMode] = useState<ResearchMode>(() => loadDefaultMode())
 
   // Esc / Tab 陷阱 / 背景锁滚 / 关闭后归还焦点——三个对话框共用一套
   const panel = useRef<HTMLDivElement>(null)
@@ -22,7 +26,7 @@ export function NewResearchDialog({
 
   const text = q.trim()
   const ok = text.length > 0 && !busy
-  const submit = () => { if (ok) onSubmit(text) }
+  const submit = () => { if (ok) onSubmit(text, mode) }
 
   return (
     // 遮罩点击关闭（和 SegDrawer / ConfirmDialog 统一）。
@@ -57,6 +61,55 @@ export function NewResearchDialog({
           className="mt-3 w-full resize-y rounded-md border border-line bg-white px-2.5 py-2
                      text-sm leading-relaxed outline-none focus:border-accent"
         />
+
+        {/* 档位卡：标准=完整流程，快速=检索+一次成文简报。
+            role=radiogroup + ←/→ 切换，与分段控件同一套键盘语义。 */}
+        <div className="mt-3" role="radiogroup" aria-label="研究档位">
+          <div className="text-2xs text-muted">档位</div>
+          <div className="mt-1.5 grid grid-cols-2 gap-2 max-sm:grid-cols-1">
+            {MODES.map((m) => {
+              const on = mode === m.key
+              return (
+                <button
+                  key={m.key}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  tabIndex={on ? 0 : -1}
+                  onClick={() => setMode(m.key)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                      e.preventDefault()
+                      const i = MODES.findIndex((x) => x.key === mode)
+                      const nxt = MODES[(i + (e.key === 'ArrowRight' ? 1 : MODES.length - 1)) % MODES.length]
+                      setMode(nxt.key)
+                      ;(e.currentTarget.parentElement?.querySelector(
+                        `[data-mode="${nxt.key}"]`) as HTMLElement | null)?.focus()
+                    }
+                  }}
+                  data-mode={m.key}
+                  className={[
+                    'rounded-lg border px-3 py-2.5 text-left outline-none transition-colors',
+                    on
+                      ? 'border-accent bg-accent/5 text-ink focus-visible:ring-2 focus-visible:ring-accent/40'
+                      : 'border-line bg-white text-ink hover:bg-gray-50 focus-visible:ring-2 focus-visible:ring-accent/40',
+                  ].join(' ')}
+                >
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-sm font-medium">
+                      {m.label}
+                      <span className="ml-1.5 text-2xs font-normal text-muted">{m.tagline}</span>
+                    </span>
+                    <span className={['shrink-0 text-2xs tabular-nums', on ? 'text-accent' : 'text-faint'].join(' ')}>
+                      {m.eta}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-2xs leading-relaxed text-muted">{m.bullets}</div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
 
         {recent.length > 0 && (
           <div className="mt-3">

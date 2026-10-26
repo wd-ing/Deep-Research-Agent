@@ -77,8 +77,11 @@ function phaseOf(node: string | null, view: string): PhaseName {
   if (view === 'awaiting') return '审批'
   // ⚠️ `summary` 必须跟 `finalize` 同属「收尾」——
   // 漏了它会 fall through 到「规划」，收尾时环节高亮闪回规划。
-  if (node === 'write' || node === 'finalize' || node === 'summary')
-    return node === 'write' ? '写作' : '收尾'
+  if (node === 'write' || node === 'answer'
+      || node === 'finalize' || node === 'summary')
+    // answer（快速档一次成文）归「写作」——它是内容生成步骤，
+    // 丢进「收尾」会和 run_health/摘要挤成行政杂项。
+    return (node === 'write' || node === 'answer') ? '写作' : '收尾'
   return '规划'
 }
 
@@ -340,6 +343,26 @@ function toStep(e: ProgressEntry, seq: number): Step | null {
         ],
       }
     }
+    case 'answer': {
+      // 快速档收口（C2）：检索一轮后一次成文。与 kind:"write" 同级的
+      // 产物事件，但字段是简报口径——segments_used/citations_total。
+      if (s(e, 'note') === 'empty') {
+        return { id, label: '整理作答', summary: '没有可用来源', warn: true }
+      }
+      const rm = n(e, 'citations_removed') ?? 0
+      const deg = e.degraded === true
+      return {
+        id, label: '整理作答',
+        summary: `${n(e, 'segments_used') ?? '?'} 段证据 · ${n(e, 'citations_total') ?? '?'} 处引用`
+          + (rm > 0 ? ` · 移除 ${rm} 处无效引用` : ''),
+        warn: rm > 0 || deg,
+        detail: [
+          ...(rm > 0 ? [`移除 ${rm} 处无法对应来源的引用`] : []),
+          ...(deg ? ['简报未能生成，已降级为来源清单'] : []),
+          ...(s(e, 'error') ? [`${s(e, 'error')}`] : []),
+        ],
+      }
+    }
     case 'summary':
       // 摘要成功不占版面（4 秒的活儿，用户不需要盯着）；
       // `skipped`（没报告 / 已有摘要）也是正常的。
@@ -486,7 +509,11 @@ export function buildPhases(
       phases[cur].steps.push({
         // ⚠️ 摘要**留空**：原来写「进行中…」，于是同一行里「进行中」出现了三次
         // （大环节摘要 + 步骤摘要 + 右侧标签）。右侧那个标签已经够了。
-        id: `run-${cur}`, label: phaseRunningLabel(cur), summary: '',
+        // answer 节点的运行标签说「正在作答」而不是「写作中」——
+        // 快速档没有写作子图，「写作中」会让用户等一个不存在的环节。
+        id: `run-${cur}`,
+        label: currentNode === 'answer' ? '正在作答' : phaseRunningLabel(cur),
+        summary: '',
         state: 'running',
       })
     }

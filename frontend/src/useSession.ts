@@ -3,6 +3,7 @@ import type {
   ApprovalPayload, ProgressEntry, SegmentRow, SessionDetail,
   SseEvent, View,
 } from './types'
+import type { ResearchMode } from './lib/mode'
 
 /** 把后端的错误体翻成人能读的一句话。
  *
@@ -414,8 +415,12 @@ export function useSession(sid: string | null) {
     await track(jpost(`/api/sessions/${id}/approve`, { approved: true }))
   }, [])
 
-  const create = useCallback(async (question: string) => {
-    const r = await track(jpost<{ session_id: string }>('/api/sessions', { question }))
+  const create = useCallback(async (question: string,
+                                   mode: ResearchMode = 'standard') => {
+    // mode 对 standard 也显式带上——后端缺省是 standard，
+    // 显式传参把「选了默认」和「没选」区分开，以后改默认不踩旧行为。
+    const r = await track(jpost<{ session_id: string }>(
+      '/api/sessions', { question, mode }))
     return r.session_id
   }, [])
 

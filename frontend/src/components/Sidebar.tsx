@@ -115,6 +115,8 @@ function SessionRow({
           <div className="mt-1 flex items-center gap-1.5 text-2xs text-faint">
             <span className={['dot', s.status === 'running' ? 'live' : ''].join(' ')} />
             <span>{s.status === 'running' ? '进行中' : s.status === 'done' ? '已完成' : s.status}</span>
+            {/* 快速档识别章（C2）：老库行没 mode 字段 === 'fast' 判假 */}
+            {s.mode === 'fast' && <span className="tag-fast">快速</span>}
             {s.archived_at && <span>· 已归档</span>}
             {s.cost_tokens > 0 && <span>· {tokens(s.cost_tokens)}</span>}
             <span>· {ago(s.created_at)}</span>

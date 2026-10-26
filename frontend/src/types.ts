@@ -51,6 +51,9 @@ export interface SessionSummary {
   /** 降级产出原因（C3）：写作规约失败 / 主题信息稀薄 / 没有来源。
    *  status 是 done 但报告没走正常写作线时，这个字段就是那个真相。 */
   degraded?: string | null
+  /** 研究档位（C1/C2）：'fast' = 检索整理简报，无审批/写作子图/审查。
+   *  0012 迁移前的老库行没有这列——读取处一律用 === 'fast' 判断。 */
+  mode?: 'standard' | 'fast'
 }
 
 /** `GET /api/sessions/search` 的一条命中（D2 跨会话搜索）。 */
