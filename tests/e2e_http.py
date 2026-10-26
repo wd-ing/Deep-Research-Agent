@@ -103,18 +103,19 @@ def main() -> None:
     tick(f"uvicorn 子进程 pid={proc.pid}（8011，RA_DB_PATH={db}）")
     try:
         # 等服务起来
-        # /api/health 会同步探 searxng(3s 超时)+tavily(网络)，慢网下 >2s，
-        # 所以超时给 20s；循环耗尽必须报错，不能假装就绪。
-        for i in range(30):
+        # 不用 /api/health：它同步探 searxng+tavily 网络，慢网下一次就
+        # 5~20s+，会把就绪窗口耗光。/api/trash 只读本地库，足够证明服务起来；
+        # 循环耗尽必须报错，不能假装就绪（冷启动实测偶发 100s+，给 300 次）。
+        for i in range(300):
             try:
-                urllib.request.urlopen(BASE + "/api/health", timeout=20)
+                urllib.request.urlopen(BASE + "/api/trash", timeout=5)
                 break
             except Exception:
                 if proc.poll() is not None:
                     raise RuntimeError("uvicorn 启动失败（进程已退出）")
                 time.sleep(1)
         else:
-            raise RuntimeError("uvicorn 启动后 /api/health 始终无响应")
+            raise RuntimeError("uvicorn 启动后 /api/trash 始终无响应")
         tick("服务就绪")
 
         s = _req("POST", "/api/sessions", {"question": question})

@@ -146,8 +146,12 @@ def t_submit_spec():
           out["spec"].get("thesis") == "T"
           and out["spec"].get("spec_uncertainty") == "u")
     c = stub.calls[0]
-    check("走 complete_json_forced + submit_spec + SCHEMA",
-          c["name"] == "submit_spec" and c["schema"] is W.SPEC_SCHEMA)
+    # 批 6 起 schema 是按大纲 n 深拷贝加 minItems 的副本，不是常量本体
+    check("走 complete_json_forced + submit_spec + SCHEMA 副本",
+          c["name"] == "submit_spec"
+          and c["schema"]["properties"]["sections"].get("minItems") == 1
+          and "minItems" not in
+          W.SPEC_SCHEMA["properties"]["sections"])
     check("系统提示词默认不含 SLIM_NOTE",
           prompts.WRITE_PLAN_SPEC_SLIM_NOTE not in c["system"])
     # 缺必填键 → 重试一次救回

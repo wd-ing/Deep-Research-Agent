@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import re
@@ -310,6 +311,32 @@ def _spec_valid(data) -> bool:
         k in data for k in _SPEC_REQUIRED)
 
 
+def _spec_missing_ids(spec: dict, want_ids: list[str]) -> list[str]:
+    """spec.sections 的 id 集合缺哪些已批大纲 id（按大纲顺序报）。"""
+    got = {str(s.get("id")) for s in (spec.get("sections") or [])
+           if isinstance(s, dict)}
+    return [i for i in want_ids if i not in got]
+
+
+def _spec_stub(data: dict, want_ids: list[str],
+               missing: list[str]) -> dict:
+    """对缺失小节补占位项（顺序按大纲），返回补好的 data 副本。
+
+    v24 实弹：submit_spec 只给 8 节大纲交了 1 项 sections——缺覆盖的小节
+    就没有 role/must_cover/not_yours，审查报的 spec_issue 重叠分派
+    也与此相关。重试仍缺时宁可用空占位保住下游结构，也不整步降级。
+    """
+    secs = list(data.get("sections") or [])
+    have = {str(s.get("id")) for s in secs if isinstance(s, dict)}
+    for i in want_ids:
+        if i in missing and i not in have:
+            secs.append({"id": i, "role": "",
+                         "must_cover": [], "not_yours": []})
+    out = dict(data)
+    out["sections"] = secs
+    return out
+
+
 # ================================================================ 规划
 
 def node_plan_spec(state: WriteState) -> dict:
@@ -328,10 +355,24 @@ def node_plan_spec(state: WriteState) -> dict:
     prompt = _clip(_dumps(_brief(state)), 40000)
     system = prompts.WRITE_PLAN_SPEC + (
         prompts.WRITE_PLAN_SPEC_SLIM_NOTE if _SPEC_SLIM else "")
+    # ---- 覆盖保险三层（2026-10-26，v24 回归：8 节大纲只交 1 项 sections）----
+    # 1) 提示词：无论 SLIM 开关，末尾动态钉上本次大纲的全部 id。
+    # 2) schema：按 n 动态深拷贝加 minItems（不动全局 SPEC_SCHEMA）。
+    # 3) 代码：重试仍缺 id 时不降级 plan_failed——补空占位保住下游。
+    want_ids = [str(s.get("id")) for s in (state.get("outline") or [])
+                if s.get("id")]
+    schema = SPEC_SCHEMA
+    if want_ids:
+        schema = copy.deepcopy(SPEC_SCHEMA)
+        schema["properties"]["sections"]["minItems"] = len(want_ids)
+        system += (f"\n\n**`sections` 必须逐个覆盖已批框架的全部小节"
+                   f"（共 {len(want_ids)} 个：{'、'.join(want_ids)}），"
+                   f"每个 id 都要有一项，缺任何一个这份规约就算无效。**")
+    missing: list[str] = []
     for _ in range(2):
         try:
             raw = LLM.complete_json_forced(
-                "write_plan_spec", prompt, "submit_spec", SPEC_SCHEMA,
+                "write_plan_spec", prompt, "submit_spec", schema,
                 system=system)
             if not _spec_valid(raw):
                 raise ValueError(
@@ -340,7 +381,11 @@ def node_plan_spec(state: WriteState) -> dict:
                            if not isinstance(raw, dict) or k not in raw]))
             data = raw
             err = None
-            break
+            missing = _spec_missing_ids(raw, want_ids) if want_ids else []
+            if not missing:
+                break
+            print(f"⚠️  写作规约 sections 缺小节 {missing}，重试一次",
+                  flush=True)
         except Exception as e:
             err = e
             print(f"⚠️  写作规约提交失败，重试一次: {str(e)[:120]}",
@@ -349,12 +394,19 @@ def node_plan_spec(state: WriteState) -> dict:
         return {"plan_failed": _clip_sentence(str(err), 200),
                 "events": [{"kind": "write_plan_error", "stage": "spec",
                             "error": _clip_sentence(str(err), 200)}]}
+    stubbed = bool(missing)
+    if missing:
+        data = _spec_stub(data, want_ids, missing)
+        print(f"⚠️  写作规约重试仍缺小节 {missing}，已补占位项",
+              flush=True)
     spec = {k: v for k, v in data.items() if k in _SPEC_KEYS}
     return {"spec": spec,
             "events": [{"kind": "write_plan_spec",
                         "thesis": (spec.get("thesis") or "")[:120],
                         "glossary": len(spec.get("glossary") or []),
                         "cautions": len(spec.get("cautions") or []),
+                        "sections_missing": missing,
+                        "sections_stubbed": stubbed,
                         "fallback_summary_segments": _seg_fallback_count(
                             state.get("on_topic")
                             or state.get("segments") or []),
@@ -2829,6 +2881,8 @@ def node_revise(state: WriteState) -> dict:
     # ---- 补丁阶段：每个任务一次强制调用，任务间并发 ----
     patch_results: dict[str, dict | None] = {}
     patch_errs: dict[str, str] = {}
+    # 归一化失败的原始工具入参（task → raw），供 patch_reject 事件/span 存档。
+    patch_call_raws: dict = {}
     patch_calls = 0
     porder = list(patch_items)
 
@@ -2863,6 +2917,9 @@ def node_revise(state: WriteState) -> dict:
                           "重试一次", flush=True)
                     continue
                 patch_errs[tid] = "submit_patches 入参偏离 schema"
+                # 留证据（批 6-B）：v24 两条 rejected 全是这句，
+                # 原始入参没存库根本没法诊断模型写坏了什么。
+                patch_call_raws[tid] = raw
                 return tid, None
             return tid, last
         return tid, last
@@ -2882,6 +2939,7 @@ def node_revise(state: WriteState) -> dict:
     # ---- 应用补丁（串行，按任务顺序）----
     applied = 0
     patch_rejected: list[dict] = []
+    patch_reject: list[dict] = []
     revise_unresolved: list[dict] = []
     applied_items: list[dict] = []
     for tid in porder:
@@ -2893,12 +2951,26 @@ def node_revise(state: WriteState) -> dict:
         if res is None:
             # 调用本身没拿到可用结构：该任务全部补丁项回退旧路径
             reason = patch_errs.get(tid) or "调用失败"
+            raw_arg = patch_call_raws.get(tid)
+            raw_txt = _clip(
+                raw_arg if isinstance(raw_arg, str)
+                else (_dumps(raw_arg) if raw_arg is not None else ""),
+                3000)
             for it in patch_items[tid]:
                 if it["section"] not in fb_secs:
                     secs.append(it)
                     fb_secs.add(it["section"])
-                    patch_rejected.append({"task": tid, "section": it["section"],
-                                           "reason": f"补丁调用失败：{reason}"})
+                    rj = {"task": tid, "section": it["section"],
+                          "reason": f"补丁调用失败：{reason}"}
+                    patch_rejected.append(rj)
+                    # 拒绝留证（批 6-B）：事件字段 + span 双通道，
+                    # raw 截 3000 字符；无入参（异常路径）raw 为空串。
+                    patch_reject.append({**rj, "raw": raw_txt})
+                    with span("subnode", "write.patch_reject",
+                              session_id=state.get("session_id"),
+                              task=tid, section=it["section"],
+                              reason=reason, raw=raw_txt):
+                        pass
             continue
         applied += _apply_patches(state, tid, patch_items[tid], res, drafts,
                                   patch_rejected, revise_unresolved, fb_secs,
@@ -3007,6 +3079,7 @@ def node_revise(state: WriteState) -> dict:
                               "applied_truncated":
                                   max(0, len(applied_items) - 60),
                               "rejected": patch_rejected[:10],
+                              "patch_reject": patch_reject[:10],
                               "unresolved": len(revise_unresolved),
                               "fallback_sections":
                                   [[t, s] for t, s in fallback_secs]},
