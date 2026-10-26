@@ -121,13 +121,18 @@ class Repo:
 
     # ---------- 会话 ----------
 
-    def create_session(self, title: str, question: str) -> str:
+    def create_session(self, title: str, question: str,
+                       mode: str = "standard") -> str:
         sid = new_id("s_")
         t = now()
+        # mode 列 0012 之后才有；缺省按 standard，未知值也记 standard。
+        if mode not in ("standard", "fast"):
+            mode = "standard"
         self.x(
-            "INSERT INTO session (id,title,question,status,created_at,updated_at) "
-            "VALUES (?,?,?, 'running', ?, ?)",
-            (sid, title, question, t, t),
+            "INSERT INTO session (id,title,question,status,mode,"
+            "created_at,updated_at) "
+            "VALUES (?,?,?, 'running', ?, ?, ?)",
+            (sid, title, question, mode, t, t),
         )
         return sid
 

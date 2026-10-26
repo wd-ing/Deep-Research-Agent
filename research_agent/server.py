@@ -11,7 +11,7 @@ import queue
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -82,6 +82,9 @@ def _emit(thread_id: str, event: dict) -> None:
 class CreateIn(BaseModel):
     question: str = Field(min_length=1)
     title: str | None = None
+    # 快速档（2026-10-27，C1）：'fast' = 检索+整理简报，
+    # 无审批/无评估循环/无写作子图；非法值 pydantic 直接 422。
+    mode: Literal["standard", "fast"] = "standard"
 
 
 class ApproveIn(BaseModel):
@@ -95,7 +98,7 @@ class ApproveIn(BaseModel):
 def create_session(body: CreateIn) -> dict:
     repo = get_repo()
     title = body.title or body.question[:40]
-    sid = repo.create_session(title, body.question)
+    sid = repo.create_session(title, body.question, mode=body.mode)
     return {"session_id": sid, "thread_id": sid}
 
 
@@ -1010,7 +1013,8 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
     _subs[sid].add(q)
 
     inp = {"session_id": sid, "question": s["question"],
-           "title": s["title"], "elapsed_s": 0.0, "cost_tokens": 0}
+           "title": s["title"], "mode": s["mode"],
+           "elapsed_s": 0.0, "cost_tokens": 0}
     cfg = {"configurable": {"thread_id": sid}}
 
     def _finish(out: dict) -> None:

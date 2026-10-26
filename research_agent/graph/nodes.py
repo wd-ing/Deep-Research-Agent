@@ -487,6 +487,17 @@ def _entities_from(state: ResearchState, zh_only: bool) -> list[str]:
     return out
 
 
+def _mode_caps(state: ResearchState) -> tuple[int, int]:
+    """档位预算 (max_urls, max_queries_per_lang)。
+
+    快速档（2026-10-27）：一轮搜完直接 answer，url 上限 24、每语种
+    查询 3 条——比标准档 (50, 5) 收紧一档，目标是 ~4–5 分钟出简报。
+    """
+    if state.get("mode") == "fast":
+        return 24, 3
+    return HARD["max_urls"], MAX_QUERIES_PER_LANG
+
+
 def _fetched_count(state: ResearchState) -> int:
     """**真正抓下来的**来源数，用来卡 max_urls 预算。
 
@@ -513,7 +524,12 @@ def node_retrieve(state: ResearchState) -> dict:
     # 「进入时已完成几轮」，本节点是唯一执行中就推进 round 的）。
     # 两个口径都对、都不能改，详见 `repo.save_node_timing` 的 docstring。
     rnd = state.get("round", 0) + 1
+    # 档位预算（2026-10-27，C1）：快速档只搜一轮、上限更小；
+    # 标准档返回值与原常量逐字一致，行为不变。
+    max_urls, max_qpl = _mode_caps(state)
     queries = _collect_queries(state)
+    queries = {"zh": (queries.get("zh") or [])[:max_qpl],
+               "en": (queries.get("en") or [])[:max_qpl]}
 
     visited = set(state.get("visited_urls") or [])
     seen_norms = set(visited)
@@ -581,14 +597,14 @@ def node_retrieve(state: ResearchState) -> dict:
     # 会话——asyncio.run 的协程与 gather 的 Task 都继承这里的 contextvar。
     with session_scope(sid):
         hits = seeded + asyncio.run(run())
-    budget_left = max(0, HARD["max_urls"] - _fetched_count(state))
+    budget_left = max(0, max_urls - _fetched_count(state))
     if budget_left <= 0:
         # 额度用完就别再抓了——原来这里抓完再截，白白花掉一次网络往返
         return {"round": rnd, "events": [{
             "kind": "retrieve", "round": rnd, "queries": queries,
             "hits": 0, "accepted": 0,
             "note": f"URL 预算已用尽（{_fetched_count(state)}/"
-                    f"{HARD['max_urls']}），本轮不再抓取",
+                    f"{max_urls}），本轮不再抓取",
             "repeat_queries": 0, "skipped": [],
             "seeded_from_probe": len(seeded)}]}
     hits = hits[:budget_left]
@@ -1320,6 +1336,15 @@ def _should_stop(state: ResearchState) -> bool:
     return bool(_predict_stop(state))
 
 
+def route_after_gate(state: ResearchState) -> str:
+    """快速档在 gate 后直接进 answer；标准档照旧进 assess。
+
+    判断只看 `mode`：缺省/未知一律走 standard 老路——快速档必须是
+    显式 opt-in，否则建图拓扑的任何改动都会波及存量行为。
+    """
+    return "answer" if state.get("mode") == "fast" else "assess"
+
+
 def route_after_assess(state: ResearchState) -> str:
     """assess 之后：没审批过就先校准框架，已审批就只决定继续还是收工。
 
@@ -1350,6 +1375,228 @@ def route_after_revision(state: ResearchState) -> str:
 
 # ================================================================ 写报告
 
+def _load_numbered_evidence(repo, sid: str) -> dict:
+    """来源/段编号 + 来源清单 + 过闸门段——write 与 answer 两条线共用。
+
+    抽出来共用（2026-10-27，C1）的原因写在下面原注释里：段号方案必须
+    与 EvidenceTools 一致，两处各写一遍会让引用指错，而且不会报错。
+    """
+    # 来源与编号一律以库里的 rowid 为准——EvidenceTools 也是这么编的。
+    # 早先这里用的是 state["sources"]（检索轮次累积的顺序），两者一旦不一致，
+    # 子 agent 拿到的段号就和工具返回的对不上，引用会指错。单一真相在数据库。
+    all_sources = [dict(r) for r in repo.q(
+        "SELECT id, title, domain, url, source_type, source_date, char_count, "
+        "       source_nature FROM source WHERE session_id=? ORDER BY rowid", (sid,))]
+    # 段号方案必须与 EvidenceTools 一致：来源按入库顺序（rowid）编号，
+    # 段按来源内顺序编号，写成 S3·5。引用粒度因此是「哪一段」而不是「哪一篇」。
+    src_no: dict[str, int] = {s["id"]: i for i, s in enumerate(all_sources, 1)}
+    # Row 是只读的，要挂 ref 必须先转 dict
+    repo_segments = [dict(r) for r in repo.q(
+        "SELECT id, source_id, heading_path, content, summary, token_count, on_topic "
+        "FROM chunk WHERE session_id=? ORDER BY rowid", (sid,))]
+    seg_no: dict[str, int] = {}
+    for c in repo_segments:
+        n = seg_no.get(c["source_id"], 0) + 1
+        seg_no[c["source_id"]] = n
+        c["ref"] = f"S{src_no.get(c['source_id'], 0)}·{n}"
+
+    segs = [c for c in repo_segments if src_no.get(c["source_id"])]
+    n_no_summary = sum(1 for c in segs if not (c.get("summary") or "").strip())
+    keep = [c for c in segs if c.get("on_topic")]
+
+    # 来源清单也从 src_no 反过来编号。两处各写一遍 enumerate 的话，
+    # 改了一处忘了另一处，报告里每个 [Sn·m] 就会指向清单里下一行的来源——
+    # 而且不会报任何错，只能靠肉眼看引用对不对。
+    src_lines = [f"[S{src_no[s['id']]}] {s.get('title') or s['domain']} | {s['domain']} "
+                 f"| {s.get('source_type')} | {s.get('source_date') or '日期未知'}"
+                 f" | {s.get('source_nature') or '性质未判'}"
+                 f" | 正文 {s.get('char_count') or 0} 字"
+                 for s in all_sources]
+    return {"all_sources": all_sources, "src_no": src_no, "segs": segs,
+            "keep": keep, "src_lines": src_lines,
+            "n_no_summary": n_no_summary}
+
+
+_ANSWER_EVIDENCE_CAP = 80000   # 交给一次调用的证据行总字符上限
+_ANSWER_SUMMARY_CAP = 450      # 每段概括截断
+
+
+def _answer_evidence_lines(keep: list[dict]) -> tuple[list[str], int, int]:
+    """每段一行 `[S3·5] heading | summary[:450]`，总字符 ≤ cap。
+
+    超限时反复从「段数最多的那个来源」的末尾去掉一段，直到不超——
+    保留小来源的完整证据，砍的是覆盖最厚的部分。没有概括的段不放。
+    返回 (lines, used, dropped)。
+    """
+    by_src: dict[str, list[dict]] = {}
+    for c in keep:
+        if (c.get("summary") or "").strip():
+            by_src.setdefault(c["source_id"], []).append(c)
+    lines: list[str] = []
+    used = 0
+    for sid_, segs in by_src.items():
+        for c in segs:
+            lines.append(f"[{c['ref']}] {c.get('heading_path') or ''} | "
+                         f"{(c.get('summary') or '').strip()[:_ANSWER_SUMMARY_CAP]}")
+            used += 1
+    dropped = 0
+
+    def _total(ls):
+        return sum(len(x) for x in ls)
+
+    while _total(lines) > _ANSWER_EVIDENCE_CAP and by_src:
+        # 找当前剩余段数最多的来源，去掉它的最后一段
+        big = max(by_src, key=lambda k: len(by_src[k]))
+        gone = by_src[big].pop()
+        if not by_src[big]:
+            del by_src[big]
+        dropped += 1
+        # 删对应行（该段的行按来源+段序唯一）
+        want = f"[{gone['ref']}]"
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i].startswith(want):
+                del lines[i]
+                break
+    return lines, used - dropped, dropped
+
+
+@scoped
+@_timed_node("answer")
+def node_answer(state: ResearchState) -> dict:
+    """快速档收尾：一轮检索后把过闸门证据概括一次交给 LLM 写简报。
+
+    不走写作子图、不做审查返修：引用校验与自动修复仍由程序机械跑——
+    和写作线同一套 `_auto_fix_text`/`_check_citations`，修不掉的
+    引用标记直接从正文删除并进存疑节，绝不让坏引用活着进报告。
+    """
+    repo = get_repo()
+    sid = state["session_id"]
+    ev = _load_numbered_evidence(repo, sid)
+    all_sources, keep = ev["all_sources"], ev["keep"]
+    src_lines, n_no_summary = ev["src_lines"], ev["n_no_summary"]
+
+    head = ""
+    if state.get("probe_degraded"):
+        head = prompts.DEGRADED_HEADER.format(
+            quality=(state.get("probe") or {}).get("quality", "thin"),
+            notice=state.get("probe_headline", "该主题的公开信息稀薄。"))
+
+    if not all_sources:
+        md = (head + "\n# 检索结果\n\n本轮没有可用来源。"
+              "可尝试调整检索词或换检索后端。\n")
+        repo.save_report(sid, md)
+        repo.x("UPDATE session SET degraded=? WHERE id=?",
+               ("没有可用来源", sid))
+        return {"report_markdown": md,
+                "events": [{"kind": "answer", "note": "empty",
+                            "chars": len(md), "sources": 0,
+                            "segments_used": 0, "segments_dropped": 0,
+                            "segments_without_summary": n_no_summary,
+                            "citations_total": 0, "citations_removed": 0,
+                            "degraded": True}]}
+
+    def _fallback(reason: str, err: str = "") -> dict:
+        # 模型没给成稿也要留可读的检索清单——会话不能失败。
+        md = (head + f"\n# 检索结果\n\n研究简报未能生成：{reason}。"
+              f"以下为已检索到的来源清单。\n\n"
+              + "\n".join(f"- {l}" for l in src_lines) + "\n")
+        repo.save_report(sid, md)
+        repo.x("UPDATE session SET degraded=? WHERE id=?",
+               (f"简报生成失败：{reason}", sid))
+        return {"report_markdown": md,
+                "events": [{"kind": "answer", "chars": len(md),
+                            "sources": len(all_sources),
+                            "segments_used": 0,
+                            "segments_dropped": 0,
+                            "segments_without_summary": n_no_summary,
+                            "citations_total": 0, "citations_removed": 0,
+                            "degraded": True, "error": err[:200]}]}
+
+    with span("answer", "prepare", session_id=sid) as sd:
+        lines, used, dropped = _answer_evidence_lines(keep)
+        outline_lines = [f"- {s.get('title')}：{s.get('question')}"
+                         for s in (state.get("outline") or [])
+                         if s.get("title")]
+        parts = [f"# 研究问题\n{state['question']}"]
+        if outline_lines:
+            parts.append("# 可参考的提纲（可合并、可调整，不必逐条覆盖）\n"
+                         + "\n".join(outline_lines))
+        parts.append("# 证据\n" + "\n".join(lines))
+        parts.append("# 来源清单\n" + "\n".join(src_lines))
+        prompt = "\n\n".join(parts)
+        sd.update({"segments_used": used, "dropped": dropped,
+                   "prompt_chars": len(prompt)})
+
+    text = ""
+    err = ""
+    try:
+        with span("answer", "llm", session_id=sid):
+            with session_scope(sid):
+                text = LLM.complete("fast_answer", prompt,
+                                    system=prompts.FAST_ANSWER_SYSTEM)
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+    if not (text or "").strip():
+        return _fallback(err or "模型返回为空", err)
+
+    with span("answer", "postcheck", session_id=sid) as sd:
+        allowed = {c["ref"] for c in keep}
+        text, fixes = write_subgraph._auto_fix_text(text, allowed)
+        bad = (write_subgraph._check_citations(text, allowed)
+               + write_subgraph._check_internal_ids(text))
+        removed: list[dict] = []
+        for b in bad:
+            f = b["found"]
+            before_len = len(text)
+            if b["kind"] == "自创写法":
+                text = text.replace(f, "")
+            elif b["kind"] == "越界引用":
+                text = text.replace(f"[{f}]", "")
+            else:  # 内部编号：found 是上下文片段，删 token 本身
+                m = re.search(r"\bt\d+\b|\bsec\d+\b", f)
+                if m:
+                    text = text.replace(m.group(0), "", 1)
+            if len(text) != before_len:
+                removed.append({"kind": b["kind"], "found": f})
+        cites = len(write_subgraph.SEG_REF_RE.findall(text)) + \
+            len(write_subgraph.SRC_REF_RE.findall(text))
+        sd.update({"fixes": len(fixes), "removed": len(removed),
+                   "citations": cites})
+
+    doubt = []
+    if removed:
+        kinds = "、".join(sorted({r["kind"] for r in removed}))
+        founds = "、".join(sorted({r["found"] for r in removed}))[:400]
+        doubt.append(
+            f"已移除 {len(removed)} 处无法对应来源的引用（{kinds}）：{founds}")
+    if fixes:
+        doubt.append(f"程序自动修复 {len(fixes)} 处引用写法"
+                     "（区间/来源级改写/内部编号）。")
+    if n_no_summary:
+        doubt.append(
+            f"有 {n_no_summary} 个证据段落没能生成概括"
+            f"（概括环节失败），它们未进入整理材料。")
+    md_body = re.sub(r"\n{3,}", "\n\n", text.strip())
+    md = head + md_body
+    if doubt:
+        md += ("\n\n## 存疑与未完成\n\n"
+               + "\n".join(f"- {d}" for d in doubt) + "\n")
+    md += "\n---\n\n### 来源\n" + "\n".join(src_lines) + "\n"
+    repo.save_report(sid, md)
+    if head:
+        repo.x("UPDATE session SET degraded=? WHERE id=?",
+               ("探针判定：主题公开信息稀薄", sid))
+    return {"report_markdown": md,
+            "events": [{"kind": "answer", "chars": len(md),
+                        "sources": len(all_sources),
+                        "segments_used": used,
+                        "segments_dropped": dropped,
+                        "segments_without_summary": n_no_summary,
+                        "citations_total": cites,
+                        "citations_removed": len(removed),
+                        "degraded": bool(head)}]}
+
+
 @scoped
 @_timed_node("write")
 def node_write(state: ResearchState) -> dict:
@@ -1362,12 +1609,12 @@ def node_write(state: ResearchState) -> dict:
     repo = get_repo()
     sid = state["session_id"]
 
-    # 来源与编号一律以库里的 rowid 为准——EvidenceTools 也是这么编的。
-    # 早先这里用的是 state["sources"]（检索轮次累积的顺序），两者一旦不一致，
-    # 子 agent 拿到的段号就和工具返回的对不上，引用会指错。单一真相在数据库。
-    all_sources = [dict(r) for r in repo.q(
-        "SELECT id, title, domain, url, source_type, source_date, char_count, "
-        "       source_nature FROM source WHERE session_id=? ORDER BY rowid", (sid,))]
+    ev = _load_numbered_evidence(repo, sid)
+    all_sources = ev["all_sources"]
+    segs = ev["segs"]
+    keep = ev["keep"]
+    src_lines = ev["src_lines"]
+    n_no_summary = ev["n_no_summary"]
 
     head = ""
     if state.get("probe_degraded"):
@@ -1385,34 +1632,9 @@ def node_write(state: ResearchState) -> dict:
                 "events": [{"kind": "write", "round": state.get("round"),
                             "note": "empty", "sections_written": 0}]}
 
-    # 段号方案必须与 EvidenceTools 一致：来源按入库顺序（rowid）编号，
-    # 段按来源内顺序编号，写成 S3·5。引用粒度因此是「哪一段」而不是「哪一篇」。
-    src_no: dict[str, int] = {s["id"]: i for i, s in enumerate(all_sources, 1)}
-    # Row 是只读的，要挂 ref 必须先转 dict
-    repo_segments = [dict(r) for r in repo.q(
-        "SELECT id, source_id, heading_path, content, summary, token_count, on_topic "
-        "FROM chunk WHERE session_id=? ORDER BY rowid", (sid,))]
-    seg_no: dict[str, int] = {}
-    for c in repo_segments:
-        n = seg_no.get(c["source_id"], 0) + 1
-        seg_no[c["source_id"]] = n
-        c["ref"] = f"S{src_no.get(c['source_id'], 0)}·{n}"
-
     # 段级闸门已在 node_gate（每轮抽取后）跑完并落库——这里直接读
     # on_topic 标记。闸门不再占写作的时间窗口（v12 里它吃了 4.8 分钟）。
     pr = state.get("probe") or {}
-    segs = [c for c in repo_segments if src_no.get(c["source_id"])]
-    n_no_summary = sum(1 for c in segs if not (c.get("summary") or "").strip())
-    keep = [c for c in segs if c.get("on_topic")]
-
-    # 来源清单也从 src_no 反过来编号。两处各写一遍 enumerate 的话，
-    # 改了一处忘了另一处，报告里每个 [Sn·m] 就会指向清单里下一行的来源——
-    # 而且不会报任何错，只能靠肉眼看引用对不对。
-    src_lines = [f"[S{src_no[s['id']]}] {s.get('title') or s['domain']} | {s['domain']} "
-                 f"| {s.get('source_type')} | {s.get('source_date') or '日期未知'}"
-                 f" | {s.get('source_nature') or '性质未判'}"
-                 f" | 正文 {s.get('char_count') or 0} 字"
-                 for s in all_sources]
 
     out = write_subgraph.run_write(
         session_id=sid, question=state["question"],

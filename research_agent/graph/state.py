@@ -39,6 +39,11 @@ class ResearchState(TypedDict, total=False):
     question: str
     title: str
 
+    # ---------- 档位 ----------
+    mode: str                   # 'standard'|'fast'；缺省/未知一律按 standard
+    # 未声明进 TypedDict 的返回值会被 LangGraph 静默丢弃——
+    # run_session 把 session.mode 放进初始 inp，路由靠它分流。
+
     # ---------- 时间敏感 ----------
     time_sensitive: bool
 

@@ -37,9 +37,10 @@ from langgraph.graph import END, START, StateGraph
 from .nodes import (
     node_apply_revision, node_assess, node_await_approval, node_extract,
     node_gate,
+    node_answer,
     node_finalize, node_outline, node_probe, node_retrieve, node_write,
     node_summary,
-    route_after_assess, route_after_revision,
+    route_after_assess, route_after_gate, route_after_revision,
 )
 from .state import ResearchState
 
@@ -57,6 +58,7 @@ def build_graph(checkpointer):
     g.add_node("extract", node_extract)
     g.add_node("gate", node_gate)
     g.add_node("assess", node_assess)
+    g.add_node("answer", node_answer)
     g.add_node("apply_revision", node_apply_revision)
     g.add_node("write", node_write)
     g.add_node("finalize", node_finalize)
@@ -70,7 +72,13 @@ def build_graph(checkpointer):
     # 段级闸门插在抽取与评估之间：assess 从此在过滤后的真池子上
     # 判断「材料够不够」，闸门调用也摊进各轮、不再堵在写作头部。
     g.add_edge("extract", "gate")
-    g.add_edge("gate", "assess")
+    # 快速档（2026-10-27，C1）：gate 后不评估、不审批、不写子图——
+    # 直接进 answer 一次性产出简报；标准档路径一个字不变。
+    g.add_conditional_edges(
+        "gate", route_after_gate,
+        {"answer": "answer", "assess": "assess"},
+    )
+    g.add_edge("answer", "finalize")
     g.add_conditional_edges(
         "assess", route_after_assess,
         # 未审批 → 先按材料校准框架（没有 outline_review 时 apply_revision 是空转）

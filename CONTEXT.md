@@ -2167,6 +2167,16 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
 **配置旋钮（环境变量，模块加载时读）**：`RA_WRITE_WORKERS`(12)、`RA_MAX_REWORK`(1)、`RA_WRITE_PRELOAD`(1)、`RA_SEARCH_TIMEOUT_S`(12)、`RA_FETCH_DEADLINE_S`(20)、`RA_SPEC_SLIM`(1)、`RA_AUDIT_TRIM`(1)。未来「快速/标准」档的差别应落在这些旋钮 + 篇幅预算上。
 **账户额度（2026-10-25）**：Token Plan 用量上限触发 429/(2056)，`GET` 类接口仍通；之前 10-18 也出现过同类、当晚恢复。长跑 + A/B 一天内会烧掉额度，真跑前先用一次极小调用确认。
 
+### 88. 快速 / 标准两档（2026-10-27）：快速档 = 检索 + 一次性整理，不走写作子图
+**用户定位**：快速档变成「信息检索和整理」——给对话 LLM 配一个专业一点的检索处理工具：检索一轮后把证据一次性交给 LLM 直接作答，不要大纲审批、评估循环、写作任务、审查返修。标准档 = 现有完整流程（行为一字不变，默认）。
+**实现（C1 后端，未含前端 C2）**：`ResearchState.mode`（'standard'|'fast'，缺省/未知=standard；已在 state.py 声明）；`session.mode` 列（迁移 0012）；`POST /api/sessions` 接受 `mode`（Literal，非法值 422）；`run_session` 的初始 state 带 mode。图：`probe → outline → retrieve → extract → gate` 之后 `route_after_gate`：fast→`answer`→finalize→summary，standard→assess（老路）；快速档不经 await_approval。`_mode_caps`：快速档 (max_urls 24, 每语种查询 3)，标准档 (50, 5) 与原常量一致。`node_answer`：`_load_numbered_evidence`（从 node_write 抽出共用，编号逻辑必须单一来源）→ 证据行 `[Sn·m] heading | summary[:450]`，总 ≤80k 字符，超限从「段数最多的来源」末尾去段 → `LLM.complete("fast_answer", …)` 纯文本流式 → 同写作线的 `_auto_fix_text/_check_citations/_check_internal_ids`，修不掉的引用从正文删除并进存疑节 → 正文 + 存疑节 + `### 来源`。失败/空输出降级为「检索结果 + 来源清单」，`session.degraded` 记原因，会话不失败。提示词 `FAST_ANSWER_SYSTEM`（= V2；V1 备查）。SSE：`kind:"answer"` 事件字段 `chars, sources, segments_used, segments_dropped, segments_without_summary, citations_total, citations_removed, degraded`（+`note:"empty"`/`error`）；`draft` 事件 stage=`fast_answer`。
+**这一轮的坑（再来一次的话先看这里）**：
+1. **`fast_answer` 档照抄 write_section 的 `reasoning_effort: low` + `forced_thinking: disabled` 对纯文本无效**——`forced_thinking` 只管强制工具轮，纯文本 M3 上 `low` = 开自适应思考，冒烟里思考 43k~61k 字符把 16384 输出预算吃光（`stop_reason=max_tokens`），首调用 152s 作废、重试 121s，answer 274s、全程 7.3 分钟。改成 `reasoning_effort: disabled`（平台中性语义值，**不能写裸 `off`**，YAML 会解析成布尔）后 answer 30~53s。**纯文本环节要关思考，只认 `reasoning_effort: disabled`。**
+2. 篇幅 V1「约 3000–6000 字」→ V2「约 2500–4000 字，硬上限 4500」（关思考后 n=3×2：V1 墙钟中位 59s/out 3.9k tok/正文 ~6.1k 字；V2 44s/3.0k/~4.7k 字）。我预设判据「字数中位 2500–5500」没写清口径——意图是**正文**（不含来源清单/存疑节），按正文口径 V2 满足，按报告全长口径（6677）不满足；采纳 V2，这是对判据口径的澄清，不是放宽。V2 要求 4–6 个 `##`，模型实得 6~8（把「分歧与不确定」也算一节），未调。
+3. 驱动脚本用了 bash 4 的 `declare -A`，macOS 自带 bash 3.2 不支持，四题静默坍缩成同一题——跑批驱动用 `case`，或直接写 python。
+**换题验证（快速档，各 1 次，旋钮全默认，`data/refs/ra_fast_{solid,cbam,rustgo,glp1}.db`）**：固态 198s、CBAM 286s、RustGo 133s、GLP-1 173s（标准档同题 613~796/638/534/608s）；来源 12/19/10/13、段 79/98/36/84；正文 4.6k/4.3k/4.6k/4.6k 字；越界 0、泄漏 0、裸引用无真错引；ground 替代口径证据外数 5/2/3/1（标准档 7/10/7/23，**口径不同只能参考**——`tests/ground_scan.py` 依赖写作子图快照，快速档跑不了）。EmptyOutput 复发 4 次（probe_outline×1、summarize×3），全重试救回；CBAM 因 summarize 失败有 12 段无概括，存疑节如实披露。F4（GLP-1）没有字面「分歧与不确定」节，由「证据短板」「长期监测」两节承担。
+**已知局限/没验证**：①快速档没有审查兜底，低质来源被引较多（renrendoc 转存报告 ×19~27、雪球、网盘资源站、门户转述等），没评估对终稿的实际伤害；②来源只有 10~19 个（24 URL 上限），覆盖面远小于标准档；③ground 口径替代；④每题只跑 1 次，方差未知；⑤前端未改（C2）。**候选**：把快速档会话「升级为深度报告」（复用已检索证据，只补大纲+写作），接口未留；源级质量过滤。
+
 ---
 
 ## 十、已知缺口（写下来，别假装没有）

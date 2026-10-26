@@ -118,7 +118,9 @@ def main() -> None:
             raise RuntimeError("uvicorn 启动后 /api/trash 始终无响应")
         tick("服务就绪")
 
-        s = _req("POST", "/api/sessions", {"question": question})
+        mode = os.environ.get("E2E_MODE", "standard")
+        s = _req("POST", "/api/sessions",
+                 {"question": question, "mode": mode})
         sid = s["session_id"]
         tick(f"session_id = {sid}")
 

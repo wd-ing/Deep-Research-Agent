@@ -81,6 +81,25 @@ def main() -> int:
     # 一次写完整节，t14 的 submit_section 入参在 8192 顶断白烧 55s）。
     # round_max_tokens 2048 同样是 P2 压上限设计，不许跟着涨；
     # timeout_s 继承 defaults 300s：16384 ÷ 最慢 62 tok/s ≈ 264s 够。
+    # fast_answer 是纯文本流式：forced_thinking 只作用于工具轮、
+    # 对它无效；M3 关思考必须走 reasoning_effort: disabled
+    # （语义值 → profile effort_off → thinking.type=disabled）。
+    # 2026-10-27 冒烟里 `low` 曾让思考吃光 16384 预算两次重试——
+    # 钉 yaml 原文而不是装载后的 cfg（'disabled' 会被翻译掉）。
+    import yaml
+    yml = yaml.safe_load(open(reg.path, encoding="utf-8"))
+    fa = yml["stages"]["fast_answer"]
+    c = reg.stage("fast_answer")
+    check("fast_answer: reasoning_effort=disabled、无 forced_thinking",
+          fa.get("reasoning_effort") == "disabled"
+          and "forced_thinking" not in fa
+          and c.stream is True
+          and c.max_output_tokens == 12288
+          and c.guard.max_output_tokens == 16384,
+          f"yaml effort={fa.get('reasoning_effort')} "
+          f"forced={fa.get('forced_thinking')} "
+          f"max={c.max_output_tokens}")
+
     c = reg.stage("write_section")
     check("write_section: max_output_tokens=16384 + round 2048",
           c.max_output_tokens == 16384

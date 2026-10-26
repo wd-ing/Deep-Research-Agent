@@ -74,6 +74,7 @@ NEEDS_GUARD = {
     "write_plan_spec", "write_plan_tasks",
     "write_audit",
     "write_section", "write_revise", "write_patch", "summarize",
+    "fast_answer",
     # dedupe：配置里有、图里没有调用点，是**记着的待办**不是废代码。
     # 真要接入时它已经在白名单和 guard 里了。查证：grep 调用点为 0。
     # （`assign` 原来也在这个名单里，2026-10-13 连配置一起删了——

@@ -698,6 +698,23 @@ stages:
   # 输出 512 就够（40 字结论 + 3~5 个要点 + 缺口），但给 4096：
   # 一是 guard 的 `max_output_tokens` 是「空返回时翻倍的**目标**」，
   # 给小了无处可翻；二是与其它关思考的轻量档（relevance / summarize）保持一致。
+  fast_answer:
+    # 快速档一次性简报（2026-10-27，C1）：纯文本流式，不带工具。
+    # ⚠️ 2026-10-27 修：初版照 write_section 抄 `low`+`forced_thinking`，
+    # 但 forced_thinking 只管强制工具轮；纯文本流式在 M3 上
+    # `reasoning_effort: low` = 开自适应思考——冒烟里思考 43k~61k 字符
+    # 吃光 16384 预算、stop_reason=max_tokens、重试一次才算完
+    # （152s 作废 + 121s 成功）。M3 的真开关是 thinking.type：
+    # `disabled` 走 profile effort_off 翻译后发出
+    # `thinking.type=disabled`（provider.py ~2349 实测表）。
+    stream: true
+    reasoning_effort: disabled
+    temperature: 0.2
+    # 基础预算降到 12288：关思考后 V2 实测 out 中位 3022、最大 3324
+    # （exp_fast_answer n=3），12288 ≈ 3.7× 余量；guard 上限仍 16384，
+    # 让 budget_ladder 有一级可爬（write_section 是平级，这里刻意差一档）。
+    max_output_tokens: 12288
+    guard: { max_reasoning_ratio: 0.7, retry_on_empty: 2, max_output_tokens: 16384 }
   session_summary:
     # `disabled` 是**平台中性的语义值**，不是字面量：这个环节要「关思考」，
     # 至于怎么关由平台档案声明（internai 发 none、xj189 干脆不发该字段）。
