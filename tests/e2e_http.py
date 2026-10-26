@@ -44,6 +44,10 @@ TIMEOUT_S = 60 * 60
 
 T0 = time.time()
 
+# 绕开 macOS 系统代理（2026-10-27）：urllib 默认读系统代理，本机代理会把
+# 127.0.0.1 的请求代理出去回 502（curl 不走系统代理所以正常）。
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 def tick(msg: str) -> None:
     print(f"[{time.time() - T0:8.1f}s] {msg}", flush=True)
@@ -55,7 +59,7 @@ def _req(method: str, path: str, body: dict | None = None,
     req = urllib.request.Request(
         BASE + path, data=data, method=method,
         headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _OPENER.open(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
 
@@ -63,7 +67,7 @@ def _sse_loop(sid: str, stop: threading.Event, out_q: "queue.Queue") -> None:
     """订 SSE 并把每条事件丢给主线程。daemon 线程。"""
     req = urllib.request.Request(f"{BASE}/api/stream/{sid}")
     try:
-        with urllib.request.urlopen(req, timeout=None) as r:
+        with _OPENER.open(req, timeout=None) as r:
             for raw in r:
                 if stop.is_set():
                     break
@@ -108,7 +112,7 @@ def main() -> None:
         # 循环耗尽必须报错，不能假装就绪（冷启动实测偶发 100s+，给 300 次）。
         for i in range(300):
             try:
-                urllib.request.urlopen(BASE + "/api/trash", timeout=5)
+                _OPENER.open(BASE + "/api/trash", timeout=5)
                 break
             except Exception:
                 if proc.poll() is not None:
