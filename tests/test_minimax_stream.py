@@ -262,6 +262,9 @@ print("\n=== ③ 流式下截断检测照样生效 ===")
 llm3 = LLMClient()
 cfg3 = pin(llm3, "write_section")
 cfg3.stream = True
+# write_section 的 base 已与 guard 上限同为 16384（批 4），翻倍无处可翻。
+# 这里压低 base 测「翻倍机制」本身，不是钉配置值。
+cfg3.max_output_tokens = 4096
 llm3._client = FakeClient([
     {"events": mm_events("写到一半", stop="max_tokens", out=16384)},
     {"events": mm_events("这次写完了", out=2100)},

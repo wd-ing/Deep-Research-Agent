@@ -827,6 +827,11 @@ class SSEAccum:
         # **默认 None = 完全保持原行为**——现有 7 个开流式的环节都没传。
         self._on_delta = on_delta
         self.stage = stage
+        # 失败插桩（2026-10-26）：与 AnthropicSSEAccum 同一套——
+        # `_reject_broken_args` 按这些信号区分「流被掐断」与「吐坏 JSON」。
+        self.t_first: float | None = None
+        self.t_last: float | None = None
+        self.n_arg_frags: int = 0            # arguments 分片事件总数
 
     def _fire(self, kind: str, chunk: str) -> None:
         if self._on_delta:
@@ -837,6 +842,10 @@ class SSEAccum:
                 pass
 
     def feed(self, obj: dict) -> None:
+        now = time.time()
+        if self.t_first is None:
+            self.t_first = now
+        self.t_last = now
         if obj.get("usage"):
             self.usage = obj["usage"]
         for ch in obj.get("choices") or []:
@@ -864,6 +873,26 @@ class SSEAccum:
                     slot["name"] = fn["name"]
                 if fn.get("arguments"):
                     slot["args"].append(fn["arguments"])
+                    self.n_arg_frags += 1
+
+    def _broken_diag(self, slot: dict) -> dict:
+        """与 `AnthropicSSEAccum._broken_diag` 同构，喂 `_reject_broken_args`。"""
+        raw = "".join(slot["args"])
+        now = time.time()
+        return {"args_chars": len(raw),
+                "args_head": raw[:200],
+                "args_tail": raw[-200:],
+                "args_frag_events": len(slot["args"]),
+                "json_delta_events": self.n_arg_frags,
+                # OpenAI 形状没有 message_delta/message_stop 事件；
+                # finish_reason 就是「流完整收尾」的对应信号。
+                "message_delta": self.finish_reason is not None,
+                "message_stop": self.finish_reason is not None,
+                "stop_reason": self.finish_reason,
+                "stream_span_s": round((self.t_last or now)
+                                       - (self.t_first or now), 2),
+                "idle_before_reject_s": round(now - (self.t_last or now), 2),
+                "stream_error": None}
 
     def blocks(self) -> list[dict]:
         """攒成 Anthropic 形状的块，和非流式路径的返回保持一致。"""
@@ -887,7 +916,8 @@ class SSEAccum:
                 args = {}
                 out.append({"type": "tool_use", "id": slot["id"],
                             "name": slot["name"], "input": args,
-                            "_args_broken": True})
+                            "_args_broken": True,
+                            "_diag": self._broken_diag(slot)})
                 continue
             out.append({"type": "tool_use", "id": slot["id"],
                         "name": slot["name"], "input": args})
@@ -948,6 +978,22 @@ class AnthropicSSEAccum:
         self.error: dict | None = None
         self._on_delta = on_delta
         self.stage = stage
+        # 失败插桩（2026-10-26，坑 87·v22）：v22 里 3 个 write_section 在
+        # ~48s 失败、finish_reason=None、输出 0——「max_tokens 截断」的
+        # 猜测口径无法区分「流被掐断」与「模型吐坏 JSON」。记下流级别
+        # 事件计数与时间戳，`_reject_broken_args` 才能按实信号断案。
+        self.t_first: float | None = None    # 首个事件时刻
+        self.t_last: float | None = None     # 最后一个事件时刻
+        self.n_json_delta: int = 0           # input_json_delta 事件总数
+        self.got_message_delta: bool = False  # 收到过 message_delta（stop_reason 来自它）
+        self.got_message_stop: bool = False   # 收到过 message_stop（流完整收尾）
+        # 时间线诊断（2026-10-26）：各类事件计数 + 首次/最后时间戳 +
+        # 相邻事件最大间隔——判断失败那 ~46s 是静默还是在生成。
+        self.ev_count: dict[str, int] = {}
+        self.ev_first: dict[str, float] = {}  # type -> 首次时刻（相对 t_first 的秒）
+        self.t_last_delta: float | None = None  # 最后 content_block_delta
+        self.first_delta_kind: str | None = None
+        self.max_gap: tuple = (0.0, "", "")   # (秒, 前一事件, 后一事件)
 
     def _fire(self, kind: str, chunk: str) -> None:
         if self._on_delta:
@@ -967,7 +1013,25 @@ class AnthropicSSEAccum:
         return slot
 
     def feed(self, obj: dict) -> None:
+        now = time.time()
+        if self.t_first is None:
+            self.t_first = now
         t = obj.get("type")
+        # 相邻事件间隔（含 ping——间隔意义是「上一件事之后多久有动静」）
+        gap = now - self.t_last if self.t_last is not None else 0.0
+        if gap > self.max_gap[0]:
+            self.max_gap = (round(gap, 2), getattr(self, "_prev_t", ""),
+                            str(t))
+        self._prev_t = str(t)
+        self.t_last = now
+        self.ev_count[str(t)] = self.ev_count.get(str(t), 0) + 1
+        if str(t) not in self.ev_first:
+            self.ev_first[str(t)] = round(now - self.t_first, 2)
+        if t == "content_block_delta":
+            if self.t_last_delta is None:
+                self.first_delta_kind = str(
+                    (obj.get("delta") or {}).get("type"))
+            self.t_last_delta = now
         if t == "message_start":
             u = (obj.get("message") or {}).get("usage") or {}
             self.usage.update({k: v for k, v in u.items() if v is not None})
@@ -997,17 +1061,64 @@ class AnthropicSSEAccum:
                 # 工具参数是**分片到达**的（与 OpenAI 形状同理），
                 # 必须按块累积再拼，一次 json.loads 必然炸
                 slot["args"].append(d["partial_json"])
+                self.n_json_delta += 1
         elif t == "message_delta":
+            self.got_message_delta = True
             stop = (obj.get("delta") or {}).get("stop_reason")
             if stop:
                 self.stop_reason = stop
             u = obj.get("usage") or {}
             # 后到的覆盖先到的：message_start 里 output_tokens 是个小数
             self.usage.update({k: v for k, v in u.items() if v is not None})
+        elif t == "message_stop":
+            self.got_message_stop = True
         elif t == "error":
             # `event: error` + data。**不能吞** —— 吞了就变成
             # 「流到一半没下文」，而空返回是下面能查到的失败模式
             self.error = obj.get("error") or {"raw": obj}
+
+    def stream_stats(self) -> dict:
+        """流时间线：各事件首次时刻/计数/最大相邻间隔/首末 delta。
+
+        成功与失败都计算——失败的进 `_broken_diag`（进 error 文案），
+        成功的由模块级 `STREAM_TIMELINES` 供实验脚本在内存里收。
+        """
+        now = time.time()
+        return {
+            "first_delta_s": (self.ev_first.get("content_block_delta")),
+            "first_delta_kind": self.first_delta_kind,
+            "last_delta_s": (round(self.t_last_delta - self.t_first, 2)
+                             if self.t_last_delta and self.t_first
+                             else None),
+            "message_start_s": self.ev_first.get("message_start"),
+            "block_start_s": self.ev_first.get("content_block_start"),
+            "message_delta_s": self.ev_first.get("message_delta"),
+            "message_stop_s": self.ev_first.get("message_stop"),
+            "counts": dict(self.ev_count),
+            "max_gap_s": self.max_gap[0],
+            "max_gap_between": [self.max_gap[1], self.max_gap[2]],
+            "stream_span_s": round((self.t_last or now)
+                                   - (self.t_first or now), 2),
+        }
+
+    def _broken_diag(self, slot: dict) -> dict:
+        """拼不出合法 JSON 的那一格，带流级证据给 `_reject_broken_args`。"""
+        raw = "".join(slot["args"])
+        now = time.time()
+        d = {"args_chars": len(raw),
+             "args_head": raw[:200],
+             "args_tail": raw[-200:],
+             "args_frag_events": len(slot["args"]),
+             "json_delta_events": self.n_json_delta,
+             "message_delta": self.got_message_delta,
+             "message_stop": self.got_message_stop,
+             "stop_reason": self.stop_reason,
+             "stream_span_s": round((self.t_last or now)
+                                    - (self.t_first or now), 2),
+             "idle_before_reject_s": round(now - (self.t_last or now), 2),
+             "stream_error": self.error}
+        d["timeline"] = self.stream_stats()
+        return d
 
     def blocks(self) -> list[dict]:
         """攒成 Anthropic 形状的块，和非流式路径的返回保持一致。"""
@@ -1024,7 +1135,8 @@ class AnthropicSSEAccum:
                     # 让 `_reject_broken_args` 把它变成一次显式失败
                     out.append({"type": "tool_use", "id": slot["id"],
                                 "name": slot["name"], "input": {},
-                                "_args_broken": True})
+                                "_args_broken": True,
+                                "_diag": self._broken_diag(slot)})
                     continue
                 out.append({"type": "tool_use", "id": slot["id"],
                             "name": slot["name"], "input": args})
@@ -1240,6 +1352,21 @@ def _anthropic_msgs_to_openai(messages: list[dict]) -> list[dict]:
     return out
 
 
+# 流式调用时间线收集（2026-10-26）：每次流式调用的 stream_stats 都进
+# 这个有界队列（成功/失败都记），实验脚本在内存里取分布；
+# llm_call 没有 JSON 明细列，按约定不加迁移列。
+STREAM_TIMELINES: deque = deque(maxlen=300)
+
+
+def _nonstream_diag(raw_args: str) -> dict:
+    """非流式路径的 `_args_broken` 诊断（没有流级信号可记，只留原串首尾）。"""
+    return {"args_chars": len(raw_args),
+            "args_head": raw_args[:200],
+            "args_tail": raw_args[-200:],
+            "args_frag_events": 1,
+            "non_stream": True}
+
+
 def _reject_broken_args(blocks: list[dict], stage: str,
                         finish_reason: str | None = None) -> None:
     """工具参数拼不成合法 JSON 时**显式失败**，不许它悄悄变成 `{}`。
@@ -1257,11 +1384,32 @@ def _reject_broken_args(blocks: list[dict], stage: str,
     if not bad:
         return
     names = ", ".join(str(b.get("name")) for b in bad)
+    # 按实信号分三类（2026-10-26，v22 教训）：finish_reason=None 的失败
+    # 与 max_tokens 截断是两种病——前者是流被掐断（预算没问题），
+    # 后者才是预算不够；其余 stop_reason 则是模型吐了非法 JSON。
+    # 「最可能是 max_tokens」的猜测口径曾把 v22 的三连失败误导成预算案。
+    if finish_reason in ("max_tokens", "length"):
+        cause = ("生成被 max_tokens 截断（预算问题）——"
+                 "这就是「预算不够」而不是「模型返回了空结果」")
+    elif not finish_reason:
+        cause = ("流在拿到 stop_reason 之前就结束了"
+                 "（连接中断/网关掐断/模型提前收尾），**不是预算问题**")
+    else:
+        cause = (f"模型输出了无法解析的工具参数"
+                 f"（finish_reason={finish_reason}），不是预算问题")
+    # 插桩：partial_json 规模、首尾、流级事件计数与计时（缺省=非流式路径）。
+    d = bad[0].get("_diag") or {}
+    diag = ""
+    if d:
+        try:
+            diag = ("诊断：" + json.dumps(d, ensure_ascii=False,
+                                         default=str)[:1100])
+        except Exception:
+            diag = ""
     raise EmptyOutput(
         f"环节 {stage} 的工具参数拼不成合法 JSON（工具：{names}，"
-        f"finish_reason={finish_reason}）。"
-        f"最可能的原因是生成被 max_tokens 截断——**这就是「预算不够」而不是"
-        f"「模型返回了空结果」**，所以这里必须失败，不许把 `{{}}` 当结果交出去。")
+        f"finish_reason={finish_reason}）：{cause}。"
+        f"所以这里必须失败，不许把 `{{}}` 当结果交出去。{diag}")
 
 
 class LLMClient:
@@ -2088,7 +2236,12 @@ class LLMClient:
             # `event: error` 必须响：吞掉就变成「流到一半没下文」，
             # 而下面能查到的失败模式（空 / 截断）都不是它
             raise RuntimeError(f"MiniMax 流式错误: {str(acc.error)[:300]}")
-        return 200, "", {"content": acc.blocks(),
+        blocks = acc.blocks()
+        STREAM_TIMELINES.append({"stage": cfg.stage, "at": time.time(),
+                                 "broken": any(b.get("_args_broken")
+                                               for b in blocks),
+                                 **acc.stream_stats()})
+        return 200, "", {"content": blocks,
                          "stop_reason": acc.stop_reason,
                          "usage": acc.usage}
 
@@ -2546,15 +2699,17 @@ class LLMClient:
         blocks: list[dict] = []
         for tc in (msg.get("tool_calls") or []):
             fn = tc.get("function") or {}
+            raw_args = fn.get("arguments") or "{}"
             try:
-                args = json.loads(fn.get("arguments") or "{}")
+                args = json.loads(raw_args)
             except Exception:
                 # 同流式分支：解析失败原来完全静默，这里给 `{}` 并打标记，
                 # 由 `complete_json_forced` 转成显式失败。
                 args = {}
                 blocks.append({"type": "tool_use", "id": tc.get("id"),
                                "name": fn.get("name"), "input": args,
-                               "_args_broken": True})
+                               "_args_broken": True,
+                               "_diag": _nonstream_diag(raw_args)})
                 continue
             blocks.append({"type": "tool_use", "id": tc.get("id"),
                            "name": fn.get("name"), "input": args})
@@ -2645,15 +2800,17 @@ class LLMClient:
         blocks: list[dict] = []
         for tc in (msg.get("tool_calls") or []):
             fn = tc.get("function") or {}
+            raw_args = fn.get("arguments") or "{}"
             try:
-                args = json.loads(fn.get("arguments") or "{}")
+                args = json.loads(raw_args)
             except Exception:
                 # 同上：这个分支以前和流式不对称——流式有标记有拒绝，
                 # 非流式没有，于是「拼不成 JSON」在这条路上是静默的。
                 args = {}
                 blocks.append({"type": "tool_use", "id": tc.get("id"),
                                "name": fn.get("name"), "input": args,
-                               "_args_broken": True})
+                               "_args_broken": True,
+                               "_diag": _nonstream_diag(raw_args)})
                 continue
             blocks.append({"type": "tool_use", "id": tc.get("id"),
                            "name": fn.get("name"), "input": args})

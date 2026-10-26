@@ -193,7 +193,7 @@ def t_node_audit():
     s0 = stub.seen[0]
     check("② 强制工具接线：name/schema/system/prompt",
           s0["name"] == "submit_audit" and s0["schema"] is W.AUDIT_SCHEMA
-          and s0["system"] is prompts.WRITE_AUDIT
+          and s0["system"].startswith(prompts.WRITE_AUDIT[:80])
           and "submit_audit" in s0["prompt"],
           f"name={s0['name']} prompt尾={s0['prompt'][-40:]!r}")
 

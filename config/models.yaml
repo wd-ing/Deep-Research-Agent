@@ -512,6 +512,9 @@ stages:
 
   # 主 agent 规约：thesis + 术语表 + 注意事项 + 小节。
   write_plan_spec:
+    # 2026-10-26：改走 submit_spec 强制提交 + 默认瘦身提示词
+    # （A/B n=3：38s/3 成功/全节覆盖，/tmp/exp_plan_spec、
+    # /tmp/exp_slim_dispatch；RA_SPEC_SLIM=0 退回完整提示词）。
     # 2026-10-20 迁到 M3.1-Flash low（钉死档案，不跟 defaults 走）。
     # 依据 /tmp/exp_model_ab/summary.txt（M3 vs M3.1 low，每格 n=3，
     # 同一份 v14 检查点回放）：spec 无 token/耗时收益
@@ -574,6 +577,9 @@ stages:
 
   # 判定依据见 DESIGN_R6_REVIEW.md 2.2 与 DECISIONS.md。
   write_audit:
+    # 2026-10-26：默认瘦身提示词（A/B n=3：墙钟中位 92.6→44.6s、
+    # 已知矛盾 3/3 抓到，/tmp/exp_audit_trim；
+    # RA_AUDIT_TRIM=0 回原提示词）。
     # 2026-10-19 迁到 M3.1-Flash（**钉死在档案上**，不跟 defaults.provider
     # 走——它需要的是这个模型的 effort 旋钮，不是「当前默认平台」）：
     #   · M3 开思考审一次 1.6~2.5 万 token，8192/16384 预算实测全被截断；

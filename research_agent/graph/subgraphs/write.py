@@ -42,6 +42,17 @@ CONCURRENCY = 4             # 并发子 agent 上限
 # dispatch 540s vs 单任务最长 ~120s——分批+串行头纯属内耗，改为一次全并发。
 # 环境变量 RA_WRITE_WORKERS 可压低（比如限流紧张时）。
 WRITE_WORKERS = max(1, int(os.environ.get("RA_WRITE_WORKERS", "12") or 12))
+# 写作规约瘦身（2026-10-26 默认开，用户决定）：A/B n=3 实测
+# 强制+瘦身 38s/3 成功/全节覆盖，下游 dispatch 检查全通过
+# （/tmp/exp_plan_spec、/tmp/exp_slim_dispatch）。
+# 强制+不瘦身比手写 JSON 旧路径慢 2.2×，不作默认。
+# RA_SPEC_SLIM=0 退回完整提示词。
+_SPEC_SLIM = os.environ.get("RA_SPEC_SLIM", "1") == "1"
+# 审查输出瘦身（2026-10-26 默认开，用户决定）：A/B n=3 实测
+# 墙钟中位 92.6→44.6s、已知矛盾 3/3 抓到、high 反增且经人工复核
+# 均为真问题（/tmp/exp_audit_trim）。输出 token 未降（9094 vs 9604）
+# ——采纳理由是时间而非 token。RA_AUDIT_TRIM=0 回原提示词。
+_AUDIT_TRIM = os.environ.get("RA_AUDIT_TRIM", "1") == "1"
 # 返修轮数上限（默认 1 是用户 2026-10-25 的决定）：v19/v20 实测第 2 次
 # 审查 113~155s 只换来 2~4 个返修目标（v19 返修 4s、v20 返修 120s 且
 # 3 个仍未解决）。以后「快速/标准」档的区分由这个旋钮承担：
@@ -251,6 +262,54 @@ PATCH_SCHEMA: dict = {
 }
 
 
+# 写作规约的强制提交工具（2026-10-26，坑 87·缺口③）：
+# spec 曾经是全流程唯一仍「手写 JSON」的大输出——v13（char 6962 断）与
+# v21（+~70s 重试）两次实弹 JSON 解析失败。改与 audit/tasks 同款的
+# `complete_json_forced`：平台在解码层保证合法 JSON，不再靠模型配平。
+# required 与下游真实读取一致：thesis（报告主张）、sections（裁给
+# 任务的 must_cover/not_yours）、spec_uncertainty（存疑节与提示词
+# 都强制要）；glossary/units/cautions 下游全按 `or []` 容错，不强制。
+SPEC_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "thesis": {"type": "string"},
+        "glossary": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "canonical": {"type": "string"},
+                "en": {"type": ["string", "null"]},
+                "aliases": {"type": "array", "items": {"type": "string"}},
+                "note": {"type": "string"}},
+            "required": ["canonical"]}},
+        "units": {"type": "array", "items": {"type": "string"}},
+        "cautions": {"type": "array", "items": {"type": "string"}},
+        "sections": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "role": {"type": "string"},
+                "must_cover": {"type": "array",
+                               "items": {"type": "string"}},
+                "not_yours": {"type": "array",
+                              "items": {"type": "string"}},
+            },
+            "required": ["id"]}},
+        "spec_uncertainty": {"type": "string"},
+    },
+    "required": ["thesis", "sections", "spec_uncertainty"],
+}
+
+_SPEC_KEYS = ("thesis", "glossary", "units", "cautions", "sections",
+              "spec_uncertainty")
+# 必填键齐不齐的判据与 required 一致——缺了就当入参偏离，走一次性重试。
+_SPEC_REQUIRED = ("thesis", "sections", "spec_uncertainty")
+
+
+def _spec_valid(data) -> bool:
+    return isinstance(data, dict) and all(
+        k in data for k in _SPEC_REQUIRED)
+
+
 # ================================================================ 规划
 
 def node_plan_spec(state: WriteState) -> dict:
@@ -263,28 +322,34 @@ def node_plan_spec(state: WriteState) -> dict:
     """
     data = None
     err: Exception | None = None
-    # 一次性重试（2026-10-18）：这步的输出是**手写 JSON**（complete_json
-    # 不是强制工具调用），而它的输出是全流程最大的 JSON——v13 全量实测
-    # 在 char 6962 处坏掉，一次失败整条写作线退化成「只有来源清单」。
-    # 坏 JSON 是非确定性抖动，重试一次大概率能过；两次都不成才降级。
+    # 一次性重试（2026-10-18 起保留；2026-10-26 起改强制工具提交
+    # `submit_spec`，手写 JSON 的那条失败模式不复存在——剩下的失败
+    # 形态只有「必填键缺席」，按同一「重试一次再降级」语义处理）。
+    prompt = _clip(_dumps(_brief(state)), 40000)
+    system = prompts.WRITE_PLAN_SPEC + (
+        prompts.WRITE_PLAN_SPEC_SLIM_NOTE if _SPEC_SLIM else "")
     for _ in range(2):
         try:
-            data = LLM.complete_json("write_plan_spec",
-                                     _clip(_dumps(_brief(state)), 40000),
-                                     system=prompts.WRITE_PLAN_SPEC)
+            raw = LLM.complete_json_forced(
+                "write_plan_spec", prompt, "submit_spec", SPEC_SCHEMA,
+                system=system)
+            if not _spec_valid(raw):
+                raise ValueError(
+                    "submit_spec 入参缺必填键"
+                    + str([k for k in _SPEC_REQUIRED
+                           if not isinstance(raw, dict) or k not in raw]))
+            data = raw
             err = None
             break
         except Exception as e:
             err = e
-            print(f"⚠️  写作规约 JSON 解析失败，重试一次: {str(e)[:120]}",
+            print(f"⚠️  写作规约提交失败，重试一次: {str(e)[:120]}",
                   flush=True)
     if data is None:
         return {"plan_failed": _clip_sentence(str(err), 200),
                 "events": [{"kind": "write_plan_error", "stage": "spec",
                             "error": _clip_sentence(str(err), 200)}]}
-    spec = {k: v for k, v in data.items()
-            if k in ("thesis", "glossary", "units", "cautions", "sections",
-                     "spec_uncertainty")}
+    spec = {k: v for k, v in data.items() if k in _SPEC_KEYS}
     return {"spec": spec,
             "events": [{"kind": "write_plan_spec",
                         "thesis": (spec.get("thesis") or "")[:120],
@@ -2242,7 +2307,8 @@ def node_audit(state: WriteState) -> dict:
         try:
             raw = LLM.complete_json_forced(
                 "write_audit", prompt, "submit_audit", AUDIT_SCHEMA,
-                system=prompts.WRITE_AUDIT)
+                system=prompts.WRITE_AUDIT + (
+                    prompts.WRITE_AUDIT_TRIM_NOTE if _AUDIT_TRIM else ""))
         except Exception as e:
             err = e
             if _audit_retryable(e):
