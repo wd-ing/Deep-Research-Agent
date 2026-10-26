@@ -208,18 +208,49 @@ function toStep(e: ProgressEntry, seq: number): Step | null {
           ? `复查 ${n(e, 'rework_checked') ?? '?'} 项 · ${still} 项未闭合`
           : `${n(e, 'findings') ?? 0} 项发现 · 高严重 ${n(e, 'high') ?? 0}`
             + (needRework ? ' · 需返修' : ''),
-        warn: needRework || still > 0,
-        detail: checks.map((c) => {
+        warn: needRework || still > 0
+          || (((e.blocked as unknown[] | undefined) ?? []).length > 0)
+          || (((e.normalize_fail as unknown[] | undefined) ?? []).length > 0),
+        detail: [
+          ...((((e.blocked as unknown[] | undefined) ?? []).length > 0)
+            ? [`${(e.blocked as unknown[]).length} 项无法返修`] : []),
+          ...((((e.normalize_fail as unknown[] | undefined) ?? []).length > 0)
+            ? [`入参归一化失败 ${(e.normalize_fail as unknown[]).length} 次（已重试）`] : []),
+        ].concat(checks.map((c) => {
           const [where, st] = c.split(':')
           return `${where} — ${STATUS_CN[st] ?? st}`
-        }),
+        })),
       }
     }
+    case 'write_audit_skipped': {
+      // 返修额度用完时的程序检查替代——原来整个事件被吞，
+      // 流程页看不到「这次没审」。
+      const viol = n(e, 'violations') ?? 0
+      const bl = n(e, 'blocked') ?? 0
+      return {
+        id, label: '审查已跳过',
+        summary: s(e, 'reason') ?? '',
+        warn: viol > 0 || bl > 0,
+        detail: [
+          ...(viol > 0 ? [`程序检查仍有 ${viol} 处引用问题，已写入存疑`] : []),
+          ...(bl > 0 ? [`${bl} 项无法返修，已写入存疑`] : []),
+        ],
+      }
+    }
+    case 'write_plan_error':
+      return { id, label: '规划失败',
+               summary: `${s(e, 'stage') ?? '?'}：${(s(e, 'error') ?? '').slice(0, 160)}`,
+               warn: true }
     case 'write_revise': {
       const tasks = (e.tasks as string[] | undefined) ?? []
+      const pr = (e.patch as { patch_reject?: unknown[] } | undefined)
+        ?.patch_reject ?? []
       return {
         id, label: '返修',
         summary: `${tasks.length} 节返修（${((e.targets as string[] | undefined) ?? []).join(' · ')}）`,
+        warn: pr.length > 0,
+        detail: pr.length > 0
+          ? [`补丁被拒 ${pr.length} 处，已回退整节重写`] : undefined,
       }
     }
     case 'extract': {
@@ -291,8 +322,15 @@ function toStep(e: ProgressEntry, seq: number): Step | null {
       return {
         id, label: '写作规约',
         summary: thesis ? `论点：${thesis.length > 60 ? thesis.slice(0, 60) + '…' : thesis}` : '规约已生成',
-        warn: !!s(e, 'spec_uncertainty'),
-        detail: s(e, 'spec_uncertainty') ? [`规约存疑：${s(e, 'spec_uncertainty')}`] : undefined,
+        warn: !!s(e, 'spec_uncertainty')
+          || (((e.sections_missing as string[] | undefined) ?? []).length > 0),
+        detail: [
+          ...(s(e, 'spec_uncertainty') ? [`规约存疑：${s(e, 'spec_uncertainty')}`] : []),
+          ...((((e.sections_missing as string[] | undefined) ?? []).length > 0)
+            ? [`规约缺 ${(e.sections_missing as string[]).length} 节，已补占位：`
+              + (e.sections_missing as string[]).join('、')]
+            : []),
+        ],
       }
     }
     case 'write_plan_tasks':
