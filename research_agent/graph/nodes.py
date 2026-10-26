@@ -24,6 +24,7 @@ from ..llm.provider import LLMClient, fire_progress, session_scope
 from ..trace import span
 from ..search.base import SearchHit
 from ..search.normalize import content_hash, domain_of, guess_source_type, normalize_url
+from ..search.quality import page_defect
 from ..search.searxng import SearXNGProvider
 from ..search.tavily import TavilyProvider
 from . import prompts
@@ -636,6 +637,14 @@ def node_retrieve(state: ResearchState) -> dict:
                        (known_hashes[ch], sid, h.url))
                 skipped.append({"url": h.url,
                                 "reason": f"dup:{known_hashes[ch]}"})
+                continue
+            # 批 7 任务 2：坏页/非内容站在入库前丢弃（招聘平台、
+            # 未渲染模板）。命中只影响这一页——skipped 走现有机制，
+            # 与 repost/no_page 同级展示，不静默。
+            defect = page_defect(h.url, p.title or h.title, p.text)
+            if defect:
+                skipped.append({"url": h.url,
+                                "reason": f"low_quality:{defect}"})
                 continue
             stype = guess_source_type(h.url, p.title or h.title, p.text)
             if stype == "repost":

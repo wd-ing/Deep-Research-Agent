@@ -1,0 +1,16 @@
+# 抓到后直接丢弃的域名(后缀匹配,含子域)——只放「永远不是研究材料」的类别。
+drop_domains:
+  # 招聘平台
+  - liepin.com
+  - zhaopin.com
+  - 51job.com
+  - lagou.com
+  - zhipin.com
+  - jobxzc.com
+# 标题或正文开头出现这些模式 → 判定为未渲染模板/坏页,丢弃。
+drop_title_regex:
+  - '\{\{[^}]*\}\}'      # {{custom_sec.title}} 这类 mustache 模板
+  - '\$\{[^}]*\}'        # ${var}
+  - '<%[^%]*%>'          # <% %>
+drop_text_head_regex:    # 只看正文前 300 字
+  - '\{\{[^}]*\}\}'
