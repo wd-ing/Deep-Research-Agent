@@ -2209,7 +2209,8 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
 | `assess` 在 M3.1 上思考占比偏高警告 | 未处理（v17 出现 1 次） |
 | 来源性质 8/20 未判 | 老问题，v17 更严重（extract 被 529 打断），未单独处理 |
 | 审查后仍有 1 处未核实的数字（v15「领先约 22%—32%」） | 种子注入后残余，未决定是否做窄的确定性兜底 |
-| 迭代路线 | 第一轮（正确性）基本完成；**第二轮（成本/时长）进行中**：29.0→17.9→16.4→11.1（不可比）→13.3（v22，含完整审查返修，首个可比基线）→**8.2（v23，料少 36%，见坑 87）**；「快速/标准」两档设计待做；**第三轮（前端）已完成**（坑 85/86）。真实长研究下前端观感仍待验证 |
+| 迭代路线 | 三轮均已落地：① 正确性基本完成；② 时间优化 29.0→13.3（v22，首个含审查返修的可比基线）→8.2/10.2（v23/v24，工作量更小）→换题 8.9~10.6 分钟（v25），快速档 2.2~4.8 分钟（坑 87/88）；③ 前端产品化已完成并验收（坑 85/86/88·C2/C3）。**阶段性收尾时的残留见下面「收尾残留」行** |
+| 收尾残留（2026-10-27） | ①批 7（闸门 V2 + 坏页过滤）与批 8（checkpoint 自动清理）**没有端到端真跑验证**——V2 只在回放上验证，autoprune 只有单测，下一次完整真跑要看 `skipped: low_quality:*`、闸门通过率、完成后 checkpoint 是否只剩 1 行；②前端对若干后端事件静默丢弃（`write_audit_skipped`、`write_plan_spec.sections_missing/stubbed`、`write_audit.blocked/normalize_fail`、`write_revise.patch.patch_reject`、`write_plan_error`、`extract_error`）——审计 P2，出错/跳过在流程页不可见；③`write_section` 偶发 EmptyOutput（模型提前收尾只吐 `{`）无缓解，每次多花 55~80s；④权威性：低权威相关来源（weibo/雪球/文库转存等）单源被引过多，未处理；⑤快速档无模型审查、来源只有 10~19 个；⑥3 个预存失败测试（`test_guard_effort_ladder`、`test_fallback_summary`、`test_minimax_truncation`）未判断该改代码还是改断言；⑦TECH_DEBT #2–#7；⑧**仓库没有 git remote**（175 个提交只在本机），`data/refs/` 约 84MB 不可再生资产不在 git 里；⑨checkpoint 根因（全文塞进图状态）未治，历史 checkpoint 靠完成后自动裁剪 |
 | assemble 清标题不干净 | **双保险**（坑 64 后端已修 + 坑 73 前端 `cleanReportMd` 渲染兜底；v13 存量报告已清洗）。待下次真跑观察 `fences_unwrapped` |
 
 ---
