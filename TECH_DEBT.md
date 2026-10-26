@@ -14,6 +14,15 @@
 
 ## 1. 🔴 `checkpoints.db` 无清理机制（押后到上线前）
 
+> **2026-10-27 更新（批 8）：机制层已做，根因未治，真实库尚未清理。**
+> 已有：`research_agent/maintenance.py` + CLI `python -m research_agent.maintenance prune-checkpoints`
+> （默认 dry-run；`--apply` 只裁剪已完成会话的历史 checkpoint，每个 thread 只留顶层最新一个；
+> 孤儿线程需 `--delete-orphans`，孤儿占比>50% 或研究库 session 为 0 时需再加 `--yes-really`；
+> `--vacuum` 需停服务）；会话成功完成后 server 自动 `prune_thread`（`RA_CKPT_AUTOPRUNE=0` 可关）。
+> 在 /tmp 副本上演练：752MB → 4MB（-99.5%），保留 thread 的最终 state 仍可读。
+> **未做**：①对真实 `data/checkpoints.db` 执行清理（不可逆，等用户确认并先备份）；②根因（全文塞进图状态）；
+> ③僵尸会话的自动处理（只有 CLI 的 `--stale-days`）。
+
 **决定（用户，2026-10-17）**：等项目优化得差不多了再统一清理，**上线前定清理机制**。
 在那之前不动它 —— 它现在不影响正确性，只占磁盘。
 

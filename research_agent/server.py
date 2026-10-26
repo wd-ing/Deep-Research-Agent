@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+
 import asyncio
 import json
 import queue
@@ -75,6 +77,30 @@ def _emit(thread_id: str, event: dict) -> None:
         get_repo().save_sse_event(thread_id, event)
     except Exception:
         pass
+
+
+def _autoprune(sid: str) -> None:
+    """批 8：会话成功后清理旧 checkpoint（TECH_DEBT #1 的机制层）。
+
+    只在「图已跑完、最终 checkpoint 已落库」之后调用——
+    本函数的全部调用点都在 `get_state` 读回最终 state 之后。
+    失败静默吞掉（顶多记一行 trace），绝不影响会话完成。
+    `RA_CKPT_AUTOPRUNE=0` 可关。失败/出错/审批等待的会话
+    不会走到这里（done 事件只有成功路径才发）。
+    """
+    if os.environ.get("RA_CKPT_AUTOPRUNE", "1") == "0":
+        return
+    try:
+        from .graph.runner import CKPT_DB
+        from .maintenance import prune_thread
+        res = prune_thread(CKPT_DB, sid)
+        try:
+            get_repo().save_node_timing(
+                sid, "maintenance.prune", 0, **res)
+        except Exception:
+            pass
+    except Exception as e:  # noqa: BLE001 — 清理失败绝不能炸会话
+        print(f"[maintenance] prune {sid} 失败（已忽略）: {e}")
 
 
 # ---------------------------------------------------------------- API
@@ -1064,6 +1090,7 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
             # 收尾：astream 迭代完拿不到最终 state，用 checkpointer 读
             st = graph().get_state(cfg)
             _finish(dict(st.values or {}))
+            _autoprune(sid)
         except Exception as e:
             _emit(sid, {"kind": "error", "error": f"{type(e).__name__}: {e}"})
         finally:
@@ -1082,6 +1109,7 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
             # 让这条路径也能被 dump_events 完整回放。
             with progress_scope(_on_progress):
                 _finish(graph().invoke(inp, config=cfg))
+                _autoprune(sid)
         except Exception as e:
             _emit(sid, {"kind": "error", "error": f"{type(e).__name__}: {e}"})
         finally:
@@ -1199,6 +1227,7 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
                 "round": out.get("round"), "url_count": out.get("url_count"),
                 "cost_tokens": out.get("cost_tokens"),
             }})
+            _autoprune(sid)
         except Exception as e:
             _emit(sid, {"kind": "error", "error": f"{type(e).__name__}: {e}"})
         finally:
@@ -1218,6 +1247,7 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
                 "report_chars": len(out.get("report_markdown") or ""),
                 "round": out.get("round"),
             }})
+            _autoprune(sid)
         except Exception as e:
             _emit(sid, {"kind": "error", "error": f"{type(e).__name__}: {e}"})
 

@@ -140,6 +140,9 @@ Markdown / PDF（浏览器打印）/ Word（前端生成 .docx）。
 | `test_rate_limiter.py` | 主动限流（event hook、端点分桶、配置改了跟着改）|
 | `test_guard_effort_ladder.py` | 空返回/截断重试是**降 effort**、不抬预算 |
 | `test_platform_switch.py` | 切平台后「关思考」仍然关着（两种平台的写法正好相反）|
+| `test_fast_mode.py` | 快速档全链：mode 迁移/路由/caps/node_answer 四形态/降级 |
+| `test_source_quality.py` | 坏页/非内容站的入库前丢弃（域名后缀、模板页、retrieve skipped）|
+| `test_maintenance.py` | checkpoint 清理：分类计划、keep_latest、VACUUM 锁、自动开关 |
 | `write_struct.py` | write 子图的结构自检：路由、装配、引用校验、返修收敛 |
 | `probe_plan_tasks_toolloop.py` | `node_plan_tasks` 的工具循环接线 + 编造段号被丢弃 |
 | `check_token_budget.py` | 预算体检：实测最大输出占配置上限多少 |
@@ -159,6 +162,8 @@ Markdown / PDF（浏览器打印）/ Word（前端生成 .docx）。
 | `e2e_http.py <问题> <db>` | **走真实 server + SSE + 异步图**跑完整研究（自动审批），结束打 timeline 与 cost 报告；测时间一律用它，别用 `e2e_run.py`（同步图，checkpoint 路径不同）|
 | `timeline_report.py <db> [sid]` | 阶段瀑布、LLM 并发度剖面、静默区间及「未解释秒数」、checkpoint 汇总（只读，老库也能跑）|
 | `exp_write_preload.py` / `exp_outline_ab.py` / `exp_merge_gate.py` | 时间优化期间的 A/B 实验驱动（真 API；对照组口径见 CONTEXT 坑 87，`exp_merge_gate` 的对照组是坏的）|
+| `exp_fast_answer.py` / `exp_gate_note.py` / `exp_plan_spec.py` / `exp_audit_trim.py` / `exp_spec_coverage.py` | 快速档与闸门/规约变体的回放实验（真 API；`ls tests/exp_*` 看全量）|
+| `ground_scan.py` | 终稿数字与证据核对（**只适用标准档**——读 write 快照的 tasks/drafts，快速档没有这份快照）|
 | `test_toolloop_protocol.py` | **一半在线**：① 协议转换是离线的，② 会真跑两轮工具循环 |
 | `replay_server.py` | 前端回放服务器（零 API 调用、零搜索额度）|
 | `verify_nature_e2e.py` | 端到端验来源性质判定不再整批丢 |
@@ -175,8 +180,36 @@ Markdown / PDF（浏览器打印）/ Word（前端生成 .docx）。
 | `RA_SEARCH_TIMEOUT_S` | 12 | 单次搜索超时 |
 | `RA_FETCH_DEADLINE_S` | 20 | 单个页面抓取整体 deadline |
 | `RA_OVERLOAD_RETRIES` / `RA_OVERLOAD_BASE_S` | 5 / 10 | MiniMax 过载重试 |
+| `RA_SPEC_SLIM` | 0 | 写作规约压缩到最小（批 6 省 token；1=只传必要的字段）|
+| `RA_AUDIT_TRIM` | 0 | 审查输入裁剪（批 6：只给审查需要的小节级材料）|
+| `RA_CKPT_AUTOPRUNE` | 1 | 会话完成后自动裁剪旧 checkpoint（0=关；见下「维护」）|
+| `E2E_MODE` | standard | `e2e_http.py` 的档位：`standard`/`fast` |
 
-这些旋钮就是将来「快速 / 标准」两档的落点。每次真跑会花额度，MiniMax 额度用尽时返回 `429 … (2056)`，先用一次极小调用确认。
+### 标准 / 快速两档（C1/C2）
+
+POST `/api/sessions` 带 `mode`：`standard`（默认，完整管线：审批→分节写作→审查返修）
+或 `fast`（探针→大纲→**一轮**检索→抽取→闸门→**一次成文**；无审批/无审查/无返修）。
+快速档事件：`kind:"answer"`（chars/sources/segments_used/citations_total/citations_removed/degraded）；
+前端按 `mode` 识别——快速档会话有「快速」标签、流程页是「整理作答」一步、无审批段。
+
+`config/source_quality.yaml`：抓取后入库前的确定性过滤（招聘平台域名、未渲染模板页）。
+规则缺失/损坏自动回落空表，不炸检索。
+
+### 维护：checkpoint 清理（TECH_DEBT #1）
+
+```bash
+# 默认 dry-run，只打印计划表；--apply 才执行；--vacuum 需同时 --apply
+.venv/bin/python -m research_agent.maintenance prune-checkpoints \
+  [--db data/research.db --db data/refs/ra_xxx.db ...] [--stale-days 7] \
+  [--delete-orphans] [--yes-really]
+```
+
+`--apply` 默认**只裁剪已完成会话的历史 checkpoint**（每个 thread 保留顶层
+最新一份），不删任何 thread。孤儿 thread（所有传入研究库里都没有的
+session）要删须显式加 `--delete-orphans`；若合并后 session 总数为 0 或
+孤儿占比超半数，删除会被拒绝——说明 `--db` 很可能没指对，确认无误再加
+`--yes-really`。`--db` 可重复/逗号分隔。**VACUUM 前要停掉占用该库的服务**
+（锁超时会被拒并说明）。
 
 ### 怎么确认一个脚本是不是真的离线
 
