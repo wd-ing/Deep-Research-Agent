@@ -668,6 +668,17 @@ def session_trace(sid: str) -> dict:
                 slot["stop_would_be"] = d["stop_would_be"]
                 slot["stop_layer"] = d.get("stop_layer") or ""
 
+    # C2 遗留修：快速档没有 assess 行，segments_total 恒缺 →
+    # 前端状态条显示「累计 ? 段」。快速档只跑一轮检索，
+    # 库里 chunk 行数就是那轮的真实累计段数——用真实字段回填，
+    # 不编造。标准档不受影响（assess 行本来就有这个数）。
+    sess = repo.q1("SELECT mode FROM session WHERE id=?", (sid,))
+    if sess and sess["mode"] == "fast":
+        n = repo.q1("SELECT COUNT(*) n FROM chunk WHERE session_id=?", (sid,))["n"]
+        for slot in by_round.values():
+            if "segments_total" not in slot:
+                slot["segments_total"] = n
+
     return {"rounds": [by_round[k] for k in sorted(by_round)]}
 
 

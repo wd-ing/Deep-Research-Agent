@@ -213,8 +213,10 @@ export function RoundChart({ sid, refreshKey }: { sid: string; refreshKey: numbe
         ><Icon name="chevron-right" size={11} /></span>
         <span className="shrink-0 text-xs text-ink">检索轮次</span>
         <span className="min-w-0 flex-1 truncate text-xs text-muted">
-          {rounds.length} 轮 · 命中 {sum('hits')} · 采用 {sum('accepted')} 来源 · 累计{' '}
-          {last.segments_total ?? '?'} 段
+          {rounds.length} 轮 · 命中 {sum('hits')} · 采用 {sum('accepted')} 来源
+          {/* 「累计 N 段」只在有数时整段出现——快速档没有 assess 轮次行，
+              segments_total 恒缺，显示「？」等于把缺数据说成是坏数据。 */}
+          {typeof last.segments_total === 'number' && ` · 累计 ${last.segments_total} 段`}
         </span>
       </button>
 

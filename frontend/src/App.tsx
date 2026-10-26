@@ -57,7 +57,21 @@ export default function App() {
   const [docxBusy, setDocxBusy] = useState(false)
   // 侧栏折叠（E2 专注阅读）：内存态即可——不进 URL，
   // 「我暂时想宽点看报告」不该变成分享链接的一部分。
-  const [sideCollapsed, setSideCollapsed] = useState(false)
+  // 窄屏（<640px）初始收成图标轨：侧栏 224px + 头部按钮组
+  // 的最小宽相加超过 390px 视口，会造成文档级横向溢出。
+  // 图标轨仍保留全部导航入口，用户可随时展开；宽屏行为不变。
+  const [sideCollapsed, setSideCollapsed] = useState(
+    () => typeof window !== 'undefined'
+      && window.matchMedia('(max-width: 639px)').matches)
+
+  // 视口缩进 <640px 时自动收侧栏——光改初始值不够，
+  // 用户在桌面宽度下打开后拖窄窗口也会顶出横向溢出。
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 639px)')
+    const onChange = (e: MediaQueryListEvent) => { if (e.matches) setSideCollapsed(true) }
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
   // 首页输入卡的草稿——和 NewResearchDialog 分开存，
   // 首页直接内联提问不再需要先开对话框。
   const [homeQ, setHomeQ] = useState('')
@@ -338,14 +352,17 @@ export default function App() {
       ) : (
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-between border-b border-line2 bg-white px-7 py-3 print:hidden">
-          <div className="min-w-0">
+          {/* flex-1 + min-w-0：窄屏下标题区必须肯收缩，按钮组才有地方放。
+              副标题行同样 truncate——「已完成 · 58,301 token · 30 来源」
+              这类字符串的 min-content 能把整行撑出视口。 */}
+          <div className="min-w-0 flex-1">
             <div className={[
               'truncate text-[13.5px] font-medium tracking-[-.005em]',
             ].join(' ')}>
               {d?.title || d?.question || '深度研究'}
             </div>
             {d && (
-              <div className="mt-0.5 text-xs text-muted">
+              <div className="mt-0.5 truncate text-xs text-muted">
                 <span className="inline-flex items-center gap-1.5">
                 <span className={['dot', d.status === 'running' ? 'live' : ''].join(' ')} />
                 {d.status === 'running' ? '进行中' : d.status === 'done' ? '已完成' : d.status}
@@ -371,9 +388,13 @@ export default function App() {
             )}
             {d && s.view === 'done' && report && (
               <>
-                {/* 报告是终点不是终点——流程还在后面一页能回看 */}
-                <button className="btn-ghost" onClick={() => s.setView('flow')}>
-                  <Icon name="history" size={13} />回看流程
+                {/* 报告是终点不是终点——流程还在后面一页能回看。
+                    按钮文字 `max-sm:hidden`：390px 下标题+三枚按钮放不下，
+                    图标照旧可点（aria-label/title 留名），宽屏外观不动。 */}
+                <button className="btn-ghost" onClick={() => s.setView('flow')}
+                        aria-label="回看流程" title="回看流程">
+                  <Icon name="history" size={13} />
+                  <span className="max-sm:hidden">回看流程</span>
                 </button>
                 {/* 有补丁明细才给开关——没有修订痕迹的会话
                     这个按钮点了也没东西可看，不如不出现。打印时隐藏。 */}
@@ -381,9 +402,11 @@ export default function App() {
                   <button
                     className={`btn-ghost print:hidden ${marksOn ? 'sel' : ''}`}
                     onClick={() => setMarksOn((v) => !v)}
+                    aria-label="修订痕迹"
                     title="显示/隐藏审查修订痕迹（朱批）"
                   >
-                    <Icon name="pen" size={13} />修订痕迹
+                    <Icon name="pen" size={13} />
+                    <span className="max-sm:hidden">修订痕迹</span>
                   </button>
                 )}
                 {/* C1 导出：复制 / .md / PDF(打印) / Word 全收进一个菜单。
@@ -393,8 +416,11 @@ export default function App() {
                   className="btn-ghost"
                   aria-haspopup="menu"
                   aria-expanded={!!exportAt}
+                  aria-label="导出"
+                  title="导出"
                 >
-                  <Icon name="download" size={13} />导出
+                  <Icon name="download" size={13} />
+                  <span className="max-sm:hidden">导出</span>
                   <Icon name="chevron-down" size={11} className="-ml-0.5 text-faint" />
                 </button>
               </>
