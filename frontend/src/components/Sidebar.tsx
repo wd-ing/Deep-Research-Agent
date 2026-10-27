@@ -81,7 +81,7 @@ function SessionRow({
         setMenuAt({ anchor: null, point: { x: e.clientX, y: e.clientY } })
       }}
       className={[
-        'group relative mb-0.5 rounded-[10px] border px-2.5 py-2 transition-colors',
+        'group reveal relative mb-0.5 rounded-[10px] border px-2.5 py-1.5 transition-colors',
         // 选中=白底+1px 线（.sel 的 inset 圈），未选中=透明描边占位、
         // hover 才浮成白卡——选中/悬停都不跳位。
         active ? 'sel border-transparent'
@@ -106,7 +106,8 @@ function SessionRow({
             {s.archived_at && (
               <span className="mt-0.5 shrink-0 text-2xs text-muted">📌</span>
             )}
-            <span className="min-w-0 flex-1 truncate text-[13px] leading-[1.35] text-ink">
+            <span className="min-w-0 flex-1 truncate text-[13.5px] leading-[1.35] text-ink"
+                title={s.title || s.question}>
               {s.title || s.question}
             </span>
           </div>
@@ -290,6 +291,8 @@ export function Sidebar({
   const [confirm, setConfirm] = useState<
     { s: SessionSummary; purge: boolean } | null
  >(null)
+  // 已归档组默认折叠；选中会话在归档里、或筛选=已归档时自动展开
+  const [archOpen, setArchOpen] = useState(false)
   // 跨会话全文搜索（D2）：本地 q 只做标题/问题的即时过滤，
   // 输入停下来 300ms 后顺手查一次服务端（标题+问题+报告正文）。
   // null = 没在搜索 / 请求失败（退回纯本地过滤，搜索坏了不挡路）。
@@ -331,6 +334,19 @@ export function Sidebar({
 
   const archived = shown.filter((s) => s.archived_at)
   const rest = shown.filter((s) => !s.archived_at)
+
+  /* P1 分组：进行中 → 今天 → 近 7 天 → 更早（created_at 按本地零点、
+     组内保持 src 顺序），已归档收进底部折叠组。空组不渲染。 */
+  const day0 = (iso: string) => { const d = new Date(iso); d.setHours(0, 0, 0, 0); return d.getTime() }
+  const today0 = day0(new Date().toISOString())
+  const week0 = today0 - 6 * 86400000
+  const groups = ([
+    ['进行中', rest.filter((s) => s.status === 'running')],
+    ['今天', rest.filter((s) => s.status !== 'running' && day0(s.created_at) === today0)],
+    ['近 7 天', rest.filter((s) => s.status !== 'running' && day0(s.created_at) < today0 && day0(s.created_at) >= week0)],
+    ['更早', rest.filter((s) => s.status !== 'running' && day0(s.created_at) < week0)],
+  ] as [string, SessionSummary[]][]).filter(([, v]) => v.length > 0)
+
 
   /** 一次写操作。**失败必须说出来**——
    *
@@ -406,7 +422,7 @@ export function Sidebar({
     <nav className="flex w-[252px] shrink-0 flex-col border-r border-line bg-paper2 px-3 pb-2.5 pt-3.5 print:hidden">
       {/* 品牌块：黑方块里的竖条 logo——稿子的签名图形。 */}
       <div className="flex items-center gap-[9px] px-1.5 pb-3.5 text-sm font-semibold tracking-[.01em]">
-        <span className="flex h-[22px] w-[22px] items-end justify-center gap-[2px] rounded-[7px] bg-[#1a1a1a] pb-[5px]">
+        <span className="brandmark flex h-[22px] w-[22px] items-end justify-center gap-[2px] rounded-[7px] bg-[#1a1a1a] pb-[5px]">
           {[5, 9, 5, 12, 5].map((h, i) => (
             <i key={i} className="block w-[1.5px] bg-white" style={{ height: h }} />
           ))}
@@ -549,15 +565,10 @@ export function Sidebar({
           </>
         ) : (
           <>
-            {/* 稿子的「最近 N」小标签行——11px 大写字距。
-                已归档段单独再标一次。 */}
-            <div className="flex items-baseline justify-between px-2 pb-1.5 pt-3 text-2xs tracking-[.04em] text-faint">
-              <span>最近</span><span>{shown.length}</span>
-            </div>
-            {archived.length > 0 && (
-              <>
-                <div className="px-2 py-1 text-2xs text-faint">已归档</div>
-                {archived.map((s) => (
+            {groups.map(([label, rows]) => (
+              <div key={label}>
+                <div className="lbl px-2 py-1">{label}</div>
+                {rows.map((s) => (
                   <SessionRow key={s.id} s={s} active={s.id === cur} choices={choices}
                     onOpen={() => onPick(s.id)}
                     onRename={(t) => act('重命名', () => api.jpatch(`/api/sessions/${s.id}`, { title: t }))}
@@ -565,16 +576,32 @@ export function Sidebar({
                     onDelete={() => setConfirm({ s, purge: false })}
                     onMove={(fid) => act('移动到文件夹', () => api.jpatch(`/api/sessions/${s.id}`, { folder_id: fid }))} />
                 ))}
-              </>
-            )}
-            {rest.map((s) => (
-              <SessionRow key={s.id} s={s} active={s.id === cur} choices={choices}
-                onOpen={() => onPick(s.id)}
-                onRename={(t) => act('重命名', () => api.jpatch(`/api/sessions/${s.id}`, { title: t }))}
-                onArchive={(v) => act(v ? '归档' : '取消归档', () => api.jpatch(`/api/sessions/${s.id}`, { archived: v }))}
-                onDelete={() => setConfirm({ s, purge: false })}
-                onMove={(fid) => act('移动到文件夹', () => api.jpatch(`/api/sessions/${s.id}`, { folder_id: fid }))} />
+              </div>
             ))}
+            {archived.length > 0 && (() => {
+              const auto = filter === 'archived' || archived.some((s) => s.id === cur)
+              const open_ = archOpen || auto
+              return (
+                <div>
+                  <button
+                    onClick={() => setArchOpen((v) => !v)}
+                    className="lbl flex w-full items-center gap-1 px-2 py-1 text-left"
+                    aria-expanded={open_}
+                  >
+                    <span className={open_ ? 'rotate-90' : ''}>▸</span>
+                    已归档 · {archived.length}
+                  </button>
+                  {open_ && archived.map((s) => (
+                    <SessionRow key={s.id} s={s} active={s.id === cur} choices={choices}
+                      onOpen={() => onPick(s.id)}
+                      onRename={(t) => act('重命名', () => api.jpatch(`/api/sessions/${s.id}`, { title: t }))}
+                      onArchive={(v) => act(v ? '归档' : '取消归档', () => api.jpatch(`/api/sessions/${s.id}`, { archived: v }))}
+                      onDelete={() => setConfirm({ s, purge: false })}
+                      onMove={(fid) => act('移动到文件夹', () => api.jpatch(`/api/sessions/${s.id}`, { folder_id: fid }))} />
+                  ))}
+                </div>
+              )
+            })()}
             {!shown.length && (
               <Empty icon="chat" text={
                 selNode

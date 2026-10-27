@@ -8,7 +8,8 @@ import { WorkflowView } from './views/WorkflowView'
 import { buildPhases } from './views/workflow'
 import { SegDrawer, NatureBadge } from './components/SegDrawer'
 import { DebugPanel } from './components/DebugPanel'
-import type { ResearchMode } from './lib/mode'
+import { MODES, loadDefaultMode, type ResearchMode } from './lib/mode'
+import { useCountUp } from './lib/motion'
 import { RoundChart } from './components/RoundChart'
 import { Sidebar, type Pane } from './components/Sidebar'
 import { SourceDetail } from './components/SourceDetail'
@@ -75,6 +76,8 @@ export default function App() {
   // 首页输入卡的草稿——和 NewResearchDialog 分开存，
   // 首页直接内联提问不再需要先开对话框。
   const [homeQ, setHomeQ] = useState('')
+  // 首页档位的默认取自设置，但**只影响本次提交，不写回**
+  const [homeMode, setHomeMode] = useState<ResearchMode>(() => loadDefaultMode())
   // 回放模式探测：/api/replay/state 只在回放服务器上存在。
   // null=还没探完/真后端（按钮不显示）；false=探测失败。
   const [replayOn, setReplayOn] = useState(false)
@@ -224,7 +227,9 @@ export default function App() {
     const q = homeQ.trim()
     if (!q || s.busy) return
     setHomeQ('')
-    void start(q)
+    // 档位在首页输入面板里选——原来永远传 'standard'，
+    // 把设置里的默认档和当面选择全吞了（P1 修）。
+    void start(q, homeMode)
   }
   /** 首页统计/卡片的口径：归档的不算「在做的研究」。 */
   const liveList = list.filter((x) => !x.archived_at)
@@ -338,11 +343,11 @@ export default function App() {
       {/* 来源视图占满整个主区域：报告有 2 万字，来源详情是主内容，
           没必要再套一层会话的头部。设置页同理——整页编辑器。 */}
       {route.name === 'settings' ? (
-        <main className="flex min-w-0 flex-1 flex-col overflow-auto">
+        <main key="settings" className="view-in flex min-w-0 flex-1 flex-col overflow-auto">
           <SettingsView onNotify={s.notify} />
         </main>
       ) : pane === 'source' ? (
-        <main className="flex min-w-0 flex-1 flex-col">
+        <main key="source" className="view-in flex min-w-0 flex-1 flex-col">
           <SourceDetail
             src={srcDetail}
             onOpenSession={(id) => nav({ name: 'session', sid: id })}
@@ -493,20 +498,21 @@ export default function App() {
             ⚠️ 指标只用列表接口里的真实字段（status/cost_tokens/created_at）——
             稿子的「累计来源/报告字数/引用覆盖/来源构成」没有现成数据，不编。 */}
         {s.view === 'idle' && !sid && (
-          <div className="flex-1 overflow-auto">
-            <div className="mx-auto max-w-[980px] px-10 py-14">
-              <h1 className="text-[34px] font-semibold leading-[1.2] tracking-[-.01em]">
+          <div className="view-in relative flex-1 overflow-auto">
+            <div className="paper-grid" />
+            <HomeLens />
+            <div className="relative mx-auto max-w-[980px] px-10 py-14">
+              <h1 className="text-[44px] font-semibold leading-[1.15] tracking-[-.02em]">
                 开始一场研究
               </h1>
-              <div className="ruler mt-3.5 w-[220px]" />
+              <div className="ruler mt-3.5 w-[220px]"><span className="scan" /></div>
               <p className="mt-2.5 max-w-[560px] text-sm leading-6 text-muted">
                 提出一个问题，agent 会多轮检索、评估并写出逐句带引用的长报告。
-                一场研究约 20–30 分钟，过程中可随时离开。
               </p>
 
               {/* 问题输入卡：和「新建研究」对话框走同一个 start()，
                   只是输入框内联在首页而不是弹层里。 */}
-              <div className="card mt-8 px-[18px] pb-3.5 pt-4">
+              <div className="card mt-8 rounded-2xl px-[18px] pb-3.5 pt-4 shadow-float">
                 <textarea
                   rows={2}
                   value={homeQ}
@@ -519,34 +525,67 @@ export default function App() {
                   placeholder="例如：固态电池各技术路线的产业化进度与分歧点…"
                   className="w-full resize-none text-[15.5px] leading-6 outline-none placeholder:text-faint"
                 />
-                <div className="mt-3 flex items-center gap-2 border-t border-line2 pt-3">
-                  <span className="flex-1 text-2xs text-faint">⌘ / Ctrl + Enter 开始</span>
+                <div className="mt-3 flex items-center gap-2 border-t border-line2 pt-3 max-[899px]:flex-col max-[899px]:items-stretch">
+                  {/* 档位段：与「新建研究」对话框同一组 MODES 文案与键盘语义，
+                      只影响本次提交，不写 localStorage。
+                      <640px 独占一行（flex-wrap 兜窄屏、允许换行不溢出）*/}
+                  <div role="radiogroup" aria-label="研究档位"
+                       className="seg max-[899px]:w-full">
+                    {MODES.map((m) => {
+                      const on = homeMode === m.key
+                      return (
+                        <button
+                          key={m.key}
+                          type="button"
+                          role="radio"
+                          aria-checked={on}
+                          data-mode={m.key}
+                          className={on ? 'on' : ''}
+                          onClick={() => setHomeMode(m.key)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                              e.preventDefault()
+                              const i = MODES.findIndex((x) => x.key === homeMode)
+                              const nxt = MODES[(i + (e.key === 'ArrowRight' ? 1 : MODES.length - 1)) % MODES.length]
+                              setHomeMode(nxt.key)
+                              ;(e.currentTarget.parentElement?.querySelector(
+                                `[data-mode="${nxt.key}"]`) as HTMLElement | null)?.focus()
+                            }
+                          }}
+                        >{m.label} · {m.eta.replace('约 ', '')}</button>
+                      )
+                    })}
+                  </div>
+                  <span className="min-w-0 flex-1 text-2xs text-faint">
+                    {MODES.find((m) => m.key === homeMode)?.bullets}
+                    <span className="max-sm:hidden"> · ⌘ / Ctrl + Enter 开始</span>
+                  </span>
                   <button
                     onClick={submitHome}
                     disabled={!homeQ.trim() || s.busy}
-                    className="btn-primary"
+                    className="btn-primary max-[899px]:w-full"
                   ><Icon name="arrow-right" size={13} />开始研究</button>
                 </div>
               </div>
 
               {/* 指标条：只用真数（列表接口有的那几列） */}
-              <div className="card mt-4">
+              <div className="card mt-4 stagger">
                 <div className="metrics">
                   <div>
                     <div className="k">研究</div>
-                    <div className="big">{liveList.length}<small>场</small></div>
+                    <div className="big"><MetricN v={liveList.length} /><small>场</small></div>
                   </div>
                   <div>
                     <div className="k">进行中</div>
-                    <div className="big">{liveList.filter((x) => x.status === 'running').length}<small>场</small></div>
+                    <div className="big"><MetricN v={liveList.filter((x) => x.status === 'running').length} /><small>场</small></div>
                   </div>
                   <div>
                     <div className="k">已完成</div>
-                    <div className="big">{liveList.filter((x) => x.status === 'done').length}<small>场</small></div>
+                    <div className="big"><MetricN v={liveList.filter((x) => x.status === 'done').length} /><small>场</small></div>
                   </div>
                   <div>
                     <div className="k">累计消耗</div>
-                    <div className="big">{tokens(liveList.reduce((n, x) => n + x.cost_tokens, 0)) || '0'}<small>token</small></div>
+                    <div className="big"><MetricN v={liveList.reduce((n, x) => n + x.cost_tokens, 0)} fmt={tokens} /><small>token</small></div>
                   </div>
                 </div>
               </div>
@@ -557,17 +596,20 @@ export default function App() {
                     <span>继续之前的</span>
                     <span className="text-2xs text-faint">按最近更新</span>
                   </div>
-                  <div className="mt-3.5 grid grid-cols-2 gap-4">
+                  <div className="mt-3.5 grid grid-cols-1 gap-4 stagger min-[760px]:grid-cols-2">
                     {liveList.slice(0, 4).map((x) => (
                       <button
                         key={x.id}
                         onClick={() => nav({ name: 'session', sid: x.id })}
-                        className="card flex flex-col justify-start px-[22px] pb-[18px] pt-5 text-left transition-colors hover:border-black/15"
+                        className="card card-hover flex flex-col justify-start px-[22px] pb-[18px] pt-5 text-left"
                       >
                         <div className="flex items-center gap-[7px] text-xs text-faint">
                           <span className={['dot', x.status === 'running' ? 'live' : ''].join(' ')} />
-                          {x.status === 'running' ? '进行中' : x.status === 'done' ? '已完成' : x.status} · {ago(x.created_at)}
+                          {x.status === 'running' ? '进行中' : x.status === 'done' ? '已完成' : x.status}
+                          {x.mode === 'fast' && <span className="tag-fast">快速</span>}
+                          <span>· {ago(x.created_at)}</span>
                         </div>
+                        {x.status === 'running' && <div className="run-scan mt-1.5" />}
                         <h3 className="mb-1 mt-3 line-clamp-2 text-[17px] font-semibold leading-[1.35] tracking-[-.005em]">
                           {x.title || x.question}
                         </h3>
@@ -750,4 +792,45 @@ export default function App() {
       )}
     </div>
   )
+}
+
+/** 指标条大数字：rAF 滚动到真值，token 这类已格式化数字只滚幅度。
+    fmt 默认原样——小时/场数直接显示。 */
+function MetricN({ v, fmt }: { v: number; fmt?: (n: number) => string }) {
+  const n = useCountUp(v)
+  return <>{fmt ? fmt(Math.round(n)) : Math.round(n)}</>
+}
+
+/** 首页「放大镜」网格：跟随指针的局部网格显影。rAF 节流更新 --mx/--my；
+    指针不在容器内 → 淡出；reduced-motion / 触屏直接不挂载（CSS 也挡了）。 */
+function HomeLens() {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    if (matchMedia('(pointer: coarse)').matches) return
+    const host = el.parentElement
+    if (!host) return
+    let raf = 0
+    const onMove = (e: MouseEvent) => {
+      if (raf) return
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        const r = host.getBoundingClientRect()
+        el.style.setProperty('--mx', `${e.clientX - r.left}px`)
+        el.style.setProperty('--my', `${e.clientY - r.top + host.scrollTop}px`)
+        el.classList.add('on')
+      })
+    }
+    const onLeave = () => el.classList.remove('on')
+    host.addEventListener('mousemove', onMove)
+    host.addEventListener('mouseleave', onLeave)
+    return () => {
+      if (raf) cancelAnimationFrame(raf)
+      host.removeEventListener('mousemove', onMove)
+      host.removeEventListener('mouseleave', onLeave)
+    }
+  }, [])
+  return <div ref={ref} className="paper-lens" />
 }

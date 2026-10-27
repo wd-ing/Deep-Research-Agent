@@ -405,3 +405,119 @@ textarea:focus-visible {
    CSS Custom Highlight API，React 的 DOM 一下不动。 */
 ::highlight(report-find) { background-color: rgba(250, 204, 21, .4); }
 ::highlight(report-find-cur) { background-color: rgba(249, 115, 22, .5); }
+
+/* ============================================================
+   P1 动效地基（前端再设计）
+   ============================================================ */
+:root {
+  --ease: cubic-bezier(.22,.68,.24,1);
+  --ease-out: cubic-bezier(.2,.7,.3,1);
+}
+
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes grow-x { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes ruler-scan { 0% { left: -50px; } 55%, 100% { left: 230px; } }
+@keyframes eq {
+  0% { transform: scaleY(1); } 40% { transform: scaleY(.35); } 100% { transform: scaleY(1); }
+}
+/* 运行中的不确定态扫描条：只是「还在跑」，不是进度 */
+@keyframes run-scan { 0% { left: -30%; } 100% { left: 100%; } }
+
+.reveal { animation: pop-in .42s var(--ease) both; animation-delay: var(--d, 0s); }
+.stagger > * { animation: pop-in .42s var(--ease) both; }
+.stagger > *:nth-child(1) { animation-delay: 0s; }
+.stagger > *:nth-child(2) { animation-delay: .05s; }
+.stagger > *:nth-child(3) { animation-delay: .1s; }
+.stagger > *:nth-child(4) { animation-delay: .15s; }
+.stagger > *:nth-child(5) { animation-delay: .2s; }
+.stagger > *:nth-child(6) { animation-delay: .25s; }
+.stagger > *:nth-child(7) { animation-delay: .3s; }
+.stagger > *:nth-child(n+8) { animation-delay: .35s; }
+
+.card-hover { transition: border-color .15s ease; }
+.card-hover:hover { border-color: rgb(0 0 0 / .15); }
+
+/* 路由切换入场：只做透明度——报告页里有 sticky/定位，transform 会建堆叠上下文 */
+.view-in { animation: view-in .16s ease both; }
+@keyframes view-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* 品牌标悬停：五根柱做均衡器 */
+.brandmark i { transform-origin: bottom; }
+.brandmark:hover i, .logo:hover .brandmark i { animation: eq .9s var(--ease-out) both; }
+.brandmark:hover i:nth-child(2), .logo:hover .brandmark i:nth-child(2) { animation-delay: .06s; }
+.brandmark:hover i:nth-child(3), .logo:hover .brandmark i:nth-child(3) { animation-delay: .12s; }
+.brandmark:hover i:nth-child(4), .logo:hover .brandmark i:nth-child(4) { animation-delay: .18s; }
+.brandmark:hover i:nth-child(5), .logo:hover .brandmark i:nth-child(5) { animation-delay: .24s; }
+
+/* 首页刻度尺扫描：一条绿色渐变光带划过 */
+.ruler { overflow: hidden; }
+.ruler .scan {
+  position: absolute; top: 0; bottom: 0; width: 46px; left: -50px; z-index: 1;
+  background: linear-gradient(90deg, transparent, rgb(62 143 79 / .55), transparent);
+  -webkit-mask: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 8px);
+          mask: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 8px);
+  animation: ruler-scan 4.8s var(--ease) 1.6s infinite;
+}
+
+/* 运行中卡片的扫描细条（不确定态，3px） */
+.run-scan { position: relative; height: 3px; overflow: hidden; border-radius: 999px; background: rgb(62 143 79 / .14); }
+.run-scan::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 30%; left: -30%;
+  background: linear-gradient(90deg, transparent, rgb(62 143 79 / .55), transparent);
+  animation: run-scan 1.6s var(--ease-out) infinite;
+}
+
+/* 首页氛围：极淡测量网格 + 指针放大镜（absolute 铺，不 fixed） */
+.paper-grid {
+  position: absolute; inset: 0 0 auto 0; height: 560px; pointer-events: none;
+  background-image:
+    linear-gradient(rgb(0 0 0 / .028) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(0 0 0 / .028) 1px, transparent 1px);
+  background-size: 88px 88px;
+  -webkit-mask: linear-gradient(180deg, #000 0, #000 70%, transparent);
+          mask: linear-gradient(180deg, #000 0, #000 70%, transparent);
+}
+.paper-lens {
+  position: absolute; inset: 0; pointer-events: none; opacity: 0;
+  transition: opacity .6s ease;
+  background-image:
+    linear-gradient(rgb(0 0 0 / .075) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(0 0 0 / .075) 1px, transparent 1px),
+    repeating-linear-gradient(90deg, rgb(0 0 0 / .05) 0 1px, transparent 1px 11px);
+  background-size: 88px 88px, 88px 88px, 100% 6px;
+  background-repeat: repeat, repeat, repeat-y;
+  --mx: 50%; --my: 30%;
+  -webkit-mask: radial-gradient(240px 240px at var(--mx) var(--my), #000, transparent 72%);
+          mask: radial-gradient(240px 240px at var(--mx) var(--my), #000, transparent 72%);
+}
+.paper-lens.on { opacity: 1; }
+
+/* 对话框面板入场 */
+.dialog-in { animation: dialog-in .18s var(--ease-out) both; }
+@keyframes dialog-in {
+  from { opacity: 0; transform: scale(.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal, .stagger > *, .view-in, .ruler .scan, .run-scan::after,
+  .brandmark i, .dialog-in { animation: none !important; }
+}
+@media (pointer: coarse) {
+  .paper-lens { display: none; }
+}
+
+/* P1：指标条——大数字流式字号（防末格 <small> 越界），单元格允许收缩；
+   <900px（侧栏仍占 252px 的区间）转 2×2，左/上分隔线重算不漏线不多线。 */
+.metrics > div { min-width: 0; }
+.big { font-size: clamp(24px, 3vw, 38px); }
+@media (max-width: 899px) {
+  .metrics { grid-auto-flow: row; grid-template-columns: 1fr 1fr; }
+  .metrics > div { border-left-width: 0; }
+  .metrics > div:nth-child(even) { border-left: 1px solid rgb(0 0 0 / .05); }
+  .metrics > div:nth-child(n+3) { border-top: 1px solid rgb(0 0 0 / .05); }
+  .big { font-size: 30px; }
+}
