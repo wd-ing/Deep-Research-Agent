@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<!-- 「一根线」· Deep Research launch film · onetake composition · PolyForm Noncommercial -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Deep Research · 一根线</title>
+<style>
+:root{
+  --bg:#FBFAF9; --paper2:#F0EFEC; --card:#FFFFFF; --line:#E7E5E1; --line2:#EFEEEB;
+  --ink:#1A1918; --mut:#6B6865; --fnt:rgba(0,0,0,.42);
+  --acc:#3E8F4F; --live:#3E8F4F; --seal:#C4412F;
+  --c1:#3E8F4F; --c2:#2E50C8; --c3:#8A8680; --c4:#7B5EA7; --c5:#C28A2B;
+  --serif:'LookInstrumentSerif','CJKSong',Georgia,serif;
+  --sans:'LookInter','CJKSans',system-ui,sans-serif;
+  --sans-sb:'CJKSansSB','LookInter','CJKSans',sans-serif;
+  --mono:'LookGeistMono','CJKSans',ui-monospace,monospace;
+}
+html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:var(--bg)}
+body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased}
+#stage{position:absolute;inset:0;overflow:hidden;background:var(--bg)}
+.abs{position:absolute;left:0;top:0;will-change:transform,opacity}
+canvas.layer{position:absolute;left:0;top:0;width:1920px;height:1080px}
+#world{position:absolute;left:0;top:0;width:0;height:0;transform-origin:0 0;will-change:transform}
+.w{position:absolute;left:0;top:0;will-change:transform,opacity}
+
+/* ── question card ── */
+#qcard{width:1240px;height:200px;background:var(--card);border:1px solid var(--line);border-radius:20px;
+  box-shadow:0 1px 2px rgba(0,0,0,.04),0 30px 60px -32px rgba(0,0,0,.30),0 12px 24px -18px rgba(0,0,0,.12)}
+#qcard .qt{position:absolute;left:56px;top:66px;font-family:var(--serif);font-weight:700;font-size:37px;letter-spacing:-.01em;white-space:nowrap}
+#qcard .qt i{display:inline-block;width:4px;height:36px;background:var(--ink);vertical-align:-5px;margin-left:3px}
+#qcard .qdot{position:absolute;left:56px;top:38px;width:8px;height:8px;border-radius:50%;background:var(--live)}
+#qcard .qcap{position:absolute;left:74px;top:33px;font-family:var(--mono);font-size:14px;color:var(--fnt);letter-spacing:.04em}
+
+/* ── brief chip (HUD) ── */
+#brief{left:26px;top:24px;display:flex;align-items:center;gap:10px;height:44px;padding:0 16px;border-radius:12px;
+  background:var(--card);border:1px solid var(--line);box-shadow:0 2px 8px rgba(0,0,0,.06);font-size:15px;opacity:0}
+#brief .bdot{width:7px;height:7px;border-radius:50%;background:var(--live)}
+#brief .bno{font-family:var(--mono);font-size:11px;color:var(--fnt)}
+#brief .bt{max-width:430px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mut)}
+#stagecap{left:28px;top:auto;bottom:24px;display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:13px;color:var(--mut);opacity:0}
+#stagecap .sd{width:7px;height:7px;border-radius:50%;background:var(--live)}
+#stagecap.paused .sd{background:var(--ink)}
+
+/* ── source cards ── */
+.src{position:absolute;left:0;top:0;width:340px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 16px 12px;
+  box-shadow:0 10px 26px -14px rgba(0,0,0,.20),0 1px 3px rgba(0,0,0,.06);transform-origin:50% 50%}
+.src .hd{display:flex;align-items:center;gap:8px}
+.src .fv{width:14px;height:14px;border-radius:4px;background:var(--paper2);border:1px solid var(--line)}
+.src .tt{font-size:14.5px;font-weight:600;letter-spacing:-.005em;line-height:1.3;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.src .dm{margin-top:5px;font-family:var(--mono);font-size:10.5px;color:var(--fnt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.src .tg{position:absolute;right:12px;top:-10px;height:22px;padding:0 8px;border-radius:6px;font-size:12px;line-height:22px;font-weight:600}
+.src .rs{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%) rotate(-9deg);padding:2px 10px;border:1.5px solid var(--seal);border-radius:6px;color:var(--seal);font-size:15px;font-weight:700;background:rgba(255,255,255,.9);opacity:0}
+.tg1{background:rgba(62,143,79,.12);color:#2F7440}.tg2{background:rgba(46,80,200,.10);color:#2E50C8}.tg3{background:rgba(0,0,0,.07);color:rgba(0,0,0,.55)}.tg4{background:rgba(123,94,167,.12);color:#6A4C96}.tg5{background:rgba(194,138,43,.14);color:#9A6A17}
+
+/* ── gate ── */
+#gate .rail{position:absolute;width:15px;height:170px;background:var(--ink);border-radius:4px}
+#gate .glow{position:absolute;width:8px;height:8px;border-radius:50%;background:rgba(0,0,0,.25)}
+#gate .slot-lab{position:absolute;font-family:var(--mono);font-size:13px;color:var(--fnt);white-space:nowrap}
+.cnt{position:absolute;font-family:var(--mono);font-size:15px;color:var(--mut);white-space:nowrap}
+.cnt b{color:var(--ink);font-weight:500}
+
+
+
+/* ── mix bar ── */
+#mixbar .mb{display:flex;height:12px;gap:3px;overflow:hidden;border-radius:4px}
+#mixbar .mb i{display:block;height:100%;transform-origin:left center}
+#mixbar .lg{display:flex;gap:16px;margin-top:9px;font-family:var(--mono);font-size:12px;color:var(--mut)}
+#mixbar .lg b{color:var(--ink);font-weight:500;margin-left:4px}
+
+/* ── pile ── */
+#pile .pl{position:absolute;width:340px;height:11px;background:var(--card);border:1px solid var(--line);border-radius:5px;transform-origin:50% 50%}
+#pilecap{position:absolute;font-family:var(--mono);font-size:15px;color:var(--mut);white-space:nowrap;opacity:0}
+#pilecap b{color:var(--ink);font-weight:500}
+
+/* ── outline panel ── */
+#outl{width:780px;height:920px;background:var(--card);border:1px solid var(--line);border-radius:20px;
+  box-shadow:0 1px 2px rgba(0,0,0,.04),0 30px 60px -32px rgba(0,0,0,.28),0 12px 24px -18px rgba(0,0,0,.12)}
+#outl .oh{position:absolute;left:44px;top:34px;display:flex;align-items:center;gap:10px;font-size:14px;color:var(--mut)}
+#outl .ot{position:absolute;left:44px;top:66px;font-family:var(--sans-sb);font-size:24px;letter-spacing:-.01em}
+#outl .orow{position:absolute;left:44px;right:44px;height:66px}
+#outl .orow .ln{position:absolute;left:0;top:0;height:1.5px;width:100%;background:var(--line);transform-origin:left center;transform:scaleX(0)}
+#outl .orow .no{position:absolute;left:0;top:14px;font-family:var(--mono);font-size:12px;color:var(--fnt);opacity:0}
+#outl .orow .ti{position:absolute;left:52px;top:9px;font-size:19px;opacity:0}
+#outl .obtns{position:absolute;left:44px;right:44px;bottom:44px;display:flex;align-items:center;gap:14px}
+#outl .btn{display:flex;align-items:center;justify-content:center;height:56px;padding:0 26px;border-radius:13px;font-size:18px;font-weight:600;transform-origin:50% 50%}
+#outl .bp{background:var(--ink);color:#fff}
+#outl .bg2{background:var(--card);border:1px solid var(--line);color:var(--ink)}
+#outl .paused{position:absolute;left:auto;right:88px;top:38px;bottom:auto;font-family:var(--mono);font-size:13px;color:var(--fnt);opacity:0}
+#outl .tickok{position:absolute;right:40px;top:30px;width:34px;height:34px;border-radius:50%;background:var(--live);opacity:0}
+#outl .tickok:after{content:"";position:absolute;left:11px;top:8px;width:8px;height:15px;border-right:3px solid #fff;border-bottom:3px solid #fff;transform:rotate(45deg)}
+
+/* ── pointer ── */
+#ptr{position:absolute;width:30px;height:40px;filter:drop-shadow(0 3px 6px rgba(0,0,0,.28));will-change:transform;opacity:0}
+
+/* ── report page ── */
+#page{width:1080px;height:1340px;background:var(--card);border:1px solid var(--line);border-radius:22px;
+  box-shadow:0 1px 2px rgba(0,0,0,.04),0 34px 70px -36px rgba(0,0,0,.30),0 14px 26px -18px rgba(0,0,0,.12)}
+#page .ch{position:absolute;left:0;right:0;top:0;height:58px;border-bottom:1px solid var(--line2);display:flex;align-items:center;gap:10px;padding:0 30px;font-size:14px;color:var(--mut)}
+#page .ch .d{display:none}
+#page .ch .sg{margin-left:auto;display:flex;gap:2px;background:rgba(0,0,0,.04);border-radius:999px;padding:3px}
+#page .ch .sg span{font-size:11.5px;padding:2px 10px;border-radius:999px;color:var(--mut)}
+#page .ch .sg .on{background:#fff;color:var(--ink);box-shadow:0 0 0 1px rgba(0,0,0,.08)}
+#page .ti{position:absolute;left:56px;top:96px;font-family:var(--sans-sb);font-size:41px;line-height:1.3;letter-spacing:-.015em;width:960px;white-space:nowrap;opacity:0}
+#page .mt{position:absolute;left:56px;top:230px;display:flex;align-items:center;gap:9px;font-size:15px;color:var(--mut);opacity:0}
+#page .mt .d{width:7px;height:7px;border-radius:50%;background:var(--live)}
+#page .mx{position:absolute;left:56px;top:272px;width:964px;opacity:0}
+#page .mx .mb{display:flex;height:11px;gap:2px;overflow:hidden;border-radius:4px}
+#page .mx .mb i{display:block;height:100%;transform-origin:left center;transform:scaleX(0)}
+#page .mx .lg{display:flex;gap:14px;margin-top:8px;font-family:var(--mono);font-size:12px;color:var(--mut)}
+#page .mx .lg b{color:var(--ink);font-weight:500;margin-left:3px}
+.sec{position:absolute;left:56px;width:880px}
+.sec h5{margin:0;font-size:22px;font-weight:600;letter-spacing:-.008em;font-family:var(--sans-sb);opacity:0}
+.sec .rl{margin-top:9px;height:9px;width:180px;
+  background:repeating-linear-gradient(90deg,rgba(0,0,0,.30) 0 1px,transparent 1px 8px);
+  -webkit-mask:linear-gradient(90deg,#000 30%,transparent);mask:linear-gradient(90deg,#000 30%,transparent);
+  transform-origin:left center;transform:scaleX(0)}
+.sec .ln{position:relative;height:34px;margin-top:12px;font-size:20px;line-height:34px;color:var(--ink)}
+.sec .ln .rv{position:absolute;left:0;top:0;height:34px;overflow:hidden;white-space:nowrap;width:0}
+.sec .chip{position:absolute;top:3px;height:26px;padding:0 8px;border-radius:7px;background:rgba(62,143,79,.09);
+  color:var(--acc);font-family:var(--mono);font-size:13px;line-height:26px;transform-origin:50% 50%;will-change:transform,opacity;opacity:0}
+.sec .del{position:absolute;top:16px;left:0;height:2px;background:var(--seal);transform-origin:left center;width:0}
+.sec .ins{position:absolute;left:2px;top:-20px;font-size:13px;color:var(--seal);background:rgba(196,65,47,.08);border-bottom:1.5px solid var(--seal);border-radius:3px;padding:0 5px;height:22px;line-height:22px;opacity:0;white-space:nowrap}
+.sec .drop{position:absolute;left:0;top:38px;font-size:13px;color:var(--seal);background:rgba(196,65,47,.08);border-bottom:1.5px solid var(--seal);border-radius:3px;padding:0 5px;height:22px;line-height:22px;opacity:0;white-space:nowrap}
+.secf{position:absolute;left:56px;width:880px;height:12px;border-radius:6px;background:var(--paper2);opacity:0}
+.stub{position:absolute;left:0;top:0;width:236px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px 12px;font-size:12px;line-height:1.5;color:var(--mut);opacity:0}
+.stub .sn{font-family:var(--mono);font-size:11px;color:var(--acc)}
+.stub .tg{display:inline-block;margin-left:5px;height:17px;padding:0 6px;border-radius:4px;font-size:10.5px;line-height:17px}
+.stub .dm2{font-family:var(--mono);font-size:10px;color:var(--fnt);margin-top:3px}
+#page .fn{position:absolute;left:56px;bottom:30px;font-family:var(--mono);font-size:15px;color:var(--mut);opacity:0}
+
+/* ── doubt card ── */
+#doubt{width:390px;background:#fff;border:1px solid rgba(196,65,47,.35);border-radius:14px;padding:14px 16px;
+  box-shadow:0 16px 34px -18px rgba(0,0,0,.25);transform-origin:30% 20%;opacity:0}
+#doubt .dh{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:var(--seal)}
+#doubt .ds{display:inline-flex;align-items:center;height:21px;padding:0 8px;border:1px solid rgba(196,65,47,.5);border-radius:6px;font-size:11.5px;letter-spacing:.06em}
+#doubt p{margin:7px 0 0;font-size:13.5px;line-height:1.7;color:var(--mut)}
+
+/* ── lockup ── */
+#lk{opacity:0}
+#lk .bars{display:flex;align-items:flex-end;justify-content:center;gap:14px;height:205px}
+#lk .bars i{display:block;width:26px;background:var(--ink);border-radius:8px;transform-origin:bottom center;transform:scaleY(0)}
+#lk .wm{position:absolute;top:225px;left:0;right:0;text-align:center;font-family:var(--sans-sb);font-weight:600;font-size:96px;letter-spacing:-.025em;white-space:nowrap}
+#lk .wm span{display:inline-block;transform-origin:50% 88%}
+#lk .tag2{position:absolute;top:345px;left:0;right:0;text-align:center;font-family:var(--serif);font-weight:700;font-size:40px;letter-spacing:-.005em;color:var(--ink);white-space:nowrap;opacity:0}
+#lk .sub{position:absolute;top:415px;left:0;right:0;display:flex;align-items:center;justify-content:center;gap:10px;font-family:var(--mono);font-size:16px;color:var(--fnt);white-space:nowrap;opacity:0}
+#lk .sub svg{width:19px;height:19px;color:var(--mut)}
+
+#hud{position:absolute;right:14px;bottom:10px;font:13px var(--mono);color:#c00;display:none}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="far" class="layer" width="1920" height="1080"></canvas>
+  <div id="world"></div>
+  <canvas id="tcv" class="layer" width="1920" height="1080"></canvas>
+  <div id="brief" class="abs"><span class="bdot"></span><span class="bno">问题</span><span class="bt" id="btxt"></span></div>
+  <div id="stagecap" class="abs"><span class="sd"></span><span id="sctxt"></span></div>
+  <div id="hud"></div>
+</div>
+<script src="motion.js"></script>
+<script src="look.js"></script>
+<script src="cjk.js"></script>
+<script>
+'use strict';
+const {clamp,lerp,seg,sstep,ease,spring,spline} = OM;
+const $=id=>document.getElementById(id);
+const WORLD=$('world'), TCV=$('tcv'), TC=TCV.getContext('2d'), FAR=$('far'), FC=FAR.getContext('2d');
+const W=1920,H=1080;
+const DUR=31.8;
+window.__meta={dur:DUR,fps:30,w:W,h:H,cuts:[],inFrame:{thread:[3.15,28.6],ptr:[14.55,16.15]}};
+
+/* ══════════ timeline ══════════ */
+const TYPE0=0.55, CPS=10.5;
+const BORN=3.15;                       // caret → thread head
+const BRIEF_IN=3.9;
+const WHIP1=3.4;
+const RAIN_A=[4.02,4.14,4.26,4.38,4.50];
+const RAIN_B=[5.02,5.16,5.30,5.44,5.58];
+const RAIN_C=[5.95,6.10];
+const GATHER0=5.55, GATHER1=6.4;
+const PASS_T=[]; for(let i=0;i<16;i++) PASS_T.push(6.55 + i*0.19);   // 6.55 … 9.40
+const RJ1=7.6, RJ2=9.15;
+const BULK0=6.65, BULK_D=0.135;        // 25 bulk passes → …9.72
+const PILE_SQ=10.15, PILECAP=10.6;
+const STIT0=11.9;                       // framework rows cascade
+const STILL0=14.2;
+const PTR_IN=14.55, PTR_HOVER=15.35, CLICK=15.75;
+const WRITE=[
+  {start:17.5,  chips:[18.95,20.05,21.20], l1:[17.9,18.85],  l2:[19.05,19.95], l3:[20.15,21.10]},
+  {start:17.62, chips:[19.25,20.45],       l1:[18.15,19.15], l2:[19.4,20.35]},
+  {start:17.75, chips:[19.45,20.70],       l1:[18.35,19.35], l2:[19.65,20.60]}
+];
+const REVIEW_T=21.8, STRIKE0=22.0, PLUCK=22.35, DROP_NOTE=22.6;
+const EDIT0=22.1;
+const DOUBT_T=23.1;
+const LIFT0=26.2, LIFT1=27.2;          // head lifts off page corner → arcs up to mark
+const GHOST0=26.5, GHOST1=27.3;        // page fully fades out while it climbs
+const ASSEM0=24.0, META_T=24.6, FN_T=25.9;
+const FLY0=26.2, MARK0=27.2, MARK1=28.2;
+const TITLE_T=18.05;                        // report title lands as writing starts
+const WORD0=28.4, TAG0=28.8, SUB0=29.1;
+
+/* ══════════ copy ══════════ */
+const Q='固态电池的产业化进展，以及各家技术路线的分歧点';
+const SRC=[
+  ['Toyota plots solid-state battery timeline for future EVs','greencarreports.com','tg2','媒体'],
+  ['Isostatic Pressing: The Core Process for SSB Mass Production','neware.net','tg1','一手'],
+  ['Interface failure mechanisms in sulfide and halide solid electrolytes','frontiersin.org','tg4','研究'],
+  ["Toyota's Solid-State Battery Roadmap: Reality vs. Rumor",'evworld.com','tg5','社区'],
+  ['Toyota to roll out solid-state battery EVs globally','finance.yahoo.com','tg2','媒体'],
+  ['Argyrodite Li6PS5Cl Scale-Up Market, Outlook 2026–2034','24chemicalresearch.com','tg3','聚合'],
+  ['CATL confirms sulfide route for first-gen solid-state line','cnevpost.com','tg2','媒体'],
+  ['QuantumScape ships QSE-5 B samples to automotive partners','quantumscape.com','tg1','一手'],
+  ['Solid-state electrolyte film pilot line — process notes','murata.com','tg1','一手'],
+  ['硫化物固态电解质量产工艺白皮书','ciaps.org.cn','tg4','研究'],
+  ['Solid-state battery cost parity: scenarios to 2030','benchmarkminerals.com','tg3','聚合'],
+  ['Toyota, Idemitsu break ground on solid-state pilot plant','nikkei.com','tg2','媒体'],
+];
+const BULK_N=29;
+const OUT_ROWS=['技术路线分类与核心分歧','固-固界面瓶颈与放大失效','成本结构与制造工艺不兼容','产业化时间表与过渡期','应用场景与车规路线之争','原材料与供应链','专利格局与玩家分布','存疑与未完成'];
+const MIXL=[['一手',16,'c1'],['媒体',9,'c2'],['聚合',9,'c3'],['研究',5,'c4'],['社区',2,'c5']];
+const SECS=[
+  {y:-340, h:'4.2 丰田主线：2027—2028 节点', lines:[
+    {txt:'丰田官方披露的商业化节点为 2027—2028 年', chip:'S10·1', stub:0},
+    {txt:'丰田印度高管口径一致：「数年内全球推出」', chip:'S13·1', stub:1},
+    {txt:'社区站 EVWorld 强调其至今未交付固态电池车', chip:'S11·1', stub:-1}]},
+  {y:-60, h:'2.6 量产最大卡点的共识表述', lines:[
+    {txt:'各类电解质的取舍并未收敛：固-固界面是首要技术障碍', chip:'S27·12', stub:2},
+    {txt:'刚性界面失配，触发阻抗与失效的连锁放大', chip:'S36·3', stub:3, edit:1}]},
+  {y:270, h:'6.1 成本结构与制造工艺不兼容', lines:[
+    {txt:'等静压是量产核心工艺，设备投资占比高', chip:'S30·7', stub:4},
+    {txt:'成本口径分歧大：2×–8× 各有说法', chip:'S41·2', stub:5}]},
+];
+const STUBS=[
+  ['S10·1','tg2','媒体','greencarreports.com'],
+  ['S13·1','tg2','媒体','finance.yahoo.com'],
+  ['S27·12','tg4','研究','frontiersin.org'],
+  ['S36·3','tg1','一手','neware.net'],
+  ['S30·7','tg3','聚合','24chemicalresearch.com'],
+  ['S41·2','tg2','媒体','cnevpost.com'],
+];
+const STUB_X=6808;
+
+/* ══════════ world stations ══════════ */
+const GATE_X=2950, GATE_Y=-60, PILE={x:3450,y:90};
+const OUTL={x:4350,y:-20};
+const PAGE={x:6200,y:0,tx:5660};             // tx = text left edge (page left 5660 + pad 56)
+const DOCK_O={x:4006,y:-434};        // thread parks on the outline header's status slot (text midline)
+const DOCK_R={x:5696,y:-640};        // thread docks on the page header's status slot (text midline)
+const MARK={x:6326,y:-1500};
+const chipY=(si,li)=>SECS[si].y+72+46*li;   // chip centre on a report line
+const R=r=>{const e=document.createElement('div');e.className='w';WORLD.appendChild(e);return e};
+const place=(el,x,y,s=1,op=1,rot=0,blur=0)=>{el.style.opacity=op;el.style.transform=`translate(${x.toFixed(1)}px,${y.toFixed(1)}px) rotate(${rot.toFixed(2)}deg) scale(${s.toFixed(4)})`;el.style.filter=blur>0.2?`blur(${blur.toFixed(1)}px)`:'none';};
+
+/* ══════════ DOM build ══════════ */
+const qcard=R('div'); qcard.id='qcard';
+qcard.innerHTML=`<span class="qdot"></span><span class="qcap">新研究 · DEEP RESEARCH</span><div class="qt"><span id="qtxt"></span><i id="qcaret"></i></div>`;
+const heroes=SRC.map((d,i)=>{const e=R('div');e.className='w src';
+  e.innerHTML=`<div class="hd"><span class="fv"></span><span class="tt">${d[0]}</span></div><div class="dm">${d[1]}</div><span class="tg ${d[2]}" style="opacity:0">${d[3]}</span><span class="rs"></span>`;
+  return{el:e,tag:e.querySelector('.tg'),rs:e.querySelector('.rs'),nat:d[2],i,hero:1};});
+const bulk=[]; for(let i=0;i<BULK_N;i++){const e=R('div');e.className='w src mini';const t=SRC[i%SRC.length];
+  e.innerHTML=`<div class="hd"><span class="fv"></span><span class="tt">${t[0]}</span></div>`;
+  bulk.push({el:e,nat:t[2],i,hero:0});}
+const cards=[...heroes,...bulk];
+cards.forEach((c,i)=>c.idx=i);
+const rejA=heroes[3], rejB=heroes[10];
+{let pt=0;for(const c of cards)c.passT=c===rejA?RJ1:c===rejB?RJ2:(c.hero?PASS_T[pt++]:BULK0+c.i*BULK_D);}
+const gate=R('div'); gate.id='gate';
+gate.innerHTML=`<div class="rail" style="left:-50px;top:-96px;width:100px;height:11px;border-radius:5px"></div>
+  <div class="rail" style="left:-46px;top:-85px"></div><div class="rail" style="left:31px;top:-85px"></div>
+  <div style="position:absolute;left:-70px;top:84px;width:170px;height:2px;background:var(--line)"></div>
+  <div class="glow" id="glow" style="left:-4px;top:-4px"></div>
+  <div class="slot-lab" style="left:-46px;top:-130px">证据闸门</div>
+  <div class="cnt" id="cJudge" style="left:-240px;top:-60px">判定 <b>0</b></div>
+  <div class="cnt" id="cKept" style="left:130px;top:-60px">入库 <b>0</b></div>`;
+const mixbar=R('div'); mixbar.id='mixbar'; mixbar.style.width='620px';
+mixbar.innerHTML=`<div class="mb">${MIXL.map(m=>`<i style="flex:${m[1]};background:var(--${m[2]})"></i>`).join('')}</div><div class="lg">${MIXL.map(m=>`<span>${m[0]}<b>0</b></span>`).join('')}</div>`;
+const mixSegs=[...mixbar.querySelectorAll('.mb i')], mixNums=[...mixbar.querySelectorAll('.lg b')];
+const pile=R('div'); pile.id='pile';
+const pileLayers=[]; for(let i=0;i<14;i++){const p=document.createElement('div');p.className='pl';p.style.opacity=0;pile.appendChild(p);pileLayers.push(p);}
+const pilecap=R('div'); pilecap.id='pilecap'; pilecap.innerHTML='41 个来源 · <b>122</b> 段入库';
+const outl=R('div'); outl.id='outl';
+outl.innerHTML=`<div class="oh"><span style="display:inline-block;width:14px;flex:none"></span>待你审批 · 已在材料上校准</div><div class="ot">报告框架</div>
+  ${OUT_ROWS.map((r,i)=>`<div class="orow" style="top:${120+i*92}px"><div class="ln"></div><div class="no">0${i+1}</div><div class="ti">${r}</div></div>`).join('')}
+  <div class="paused">计时暂停 · 不消耗 token</div>
+  <div class="obtns"><span class="btn bp" id="go">通过，开始写作</span><span class="btn bg2">修改框架</span></div>
+  <div class="tickok" id="tickok"></div>`;
+const orows=[...outl.querySelectorAll('.orow')];
+const ptr=R('div'); ptr.id='ptr'; ptr.innerHTML=`<svg viewBox="0 0 34 44" width="30" height="40"><path d="M4 3 L30 22 L18 24 L26 40 L20 43 L12 27 L4 36 Z" fill="#111" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/></svg>`;
+const page=R('div'); page.id='page';
+page.innerHTML=`<div class="ch"><span style="display:inline-block;width:12px;flex:none"></span>报告<div class="sg"><span class="on">报告</span><span>流程</span><span>来源库</span></div></div>
+  <div class="ti">${Q}</div>
+  <div class="mt"><span class="d"></span><span>已完成 · <b>41</b> 个来源 · <b>327</b> 处引用</span></div>
+  <div class="mx"><div class="mb">${MIXL.map(m=>`<i style="flex:${m[1]};background:var(--${m[2]})"></i>`).join('')}</div>
+  <div class="lg">${MIXL.map(m=>`<span>${m[0]}<b>0</b></span>`).join('')}</div></div>
+  <div class="fn">真实一次运行 · 40 分钟 · 651k token · 117 次调用</div>`;
+const pageMix=[...page.querySelectorAll('.mx .mb i')], pageNums=[...page.querySelectorAll('.mx .lg b')];
+const secEls=SECS.map((s,si)=>{
+  const e=document.createElement('div');e.className='sec';e.style.top=(670+s.y)+'px';
+  e.innerHTML=`<h5>${s.h}</h5><div class="rl"></div>`+s.lines.map(()=>`<div class="ln"><div class="rv"><span></span></div><span class="chip"></span><div class="del"></div><span class="ins"></span><div class="drop"></div></div>`).join('');
+  s.lines.forEach((l,li)=>{e.querySelectorAll('.rv span')[li].textContent=l.txt;e.querySelectorAll('.chip')[li].textContent=l.chip;});
+  page.appendChild(e);
+  return{el:e,s,si,lines:[...e.querySelectorAll('.ln')].map(ln=>({ln,rv:ln.querySelector('.rv'),sp:ln.querySelector('.rv span'),chip:ln.querySelector('.chip'),del:ln.querySelector('.del'),ins:ln.querySelector('.ins'),drop:ln.querySelector('.drop')}))};
+});
+const secf=[]; for(let i=0;i<4;i++){const f=document.createElement('div');f.className='secf';f.style.top=(670+430+i*46)+'px';f.style.width=(700+((i*97)%3)*90)+'px';page.appendChild(f);secf.push(f);}
+const stubs=STUBS.map((d,i)=>{const e=R('div');e.className='w stub';
+  e.innerHTML=`<span class="sn">${d[0]}</span><span class="tg ${d[1]}">${d[2]}</span><div class="dm2">${d[3]}</div>`;
+  return{el:e,x:STUB_X,y:0,popT:99};});
+const doubt=R('div'); doubt.id='doubt';
+doubt.innerHTML=`<div class="dh"><span class="ds">存疑</span>交叉审查 · 真实摘录</div><p>「丰田 1300 项专利」等高频数字多为二手转述，原始一手来源仍需再核。</p>`;
+const lk=R('div'); lk.id='lk';
+lk.innerHTML=`<div class="bars">${[98,162,118,185,84].map(h=>`<i style="height:${h}px"></i>`).join('')}</div>
+  <div class="wm">${[...'Deep Research'].map(c=>`<span>${c===' '?'&nbsp;':c}</span>`).join('')}</div>
+  <div class="tag2">每一句话，都有来处。</div>
+  <div class="sub"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>开源 · 可自部署 · GitHub</div>`;
+const bars=[...lk.querySelectorAll('.bars i')], wmLetters=[...lk.querySelectorAll('.wm span')];
+// static placements
+place(qcard,-620,-100);
+place(gate,GATE_X,GATE_Y);
+place(mixbar,2400,320);
+place(pilecap,PILE.x-170,PILE.y+150);
+place(outl,OUTL.x-390,OUTL.y-460);
+place(page,PAGE.x-540,PAGE.y-670);
+lk.style.top=(MARK.y-102)+'px'; // left set in build() once wordmark width is real
+const OUTL_BTN={x:OUTL.x-390+44+89, y:OUTL.y-460+920-44-28};   // 通过 button centre — refined in build()
+
+/* ══════════ geometry — built after fonts so text measures are real ══════════ */
+let PATH=null, legS=null, STOT=0, rowS=null;
+let TETHERS=[], CARET={x:340,y:-20}, STRIKE_Y=-172;
+let TNOW=0;
+function densify(pts,step=4){const out=[];for(let i=0;i<pts.length-1;i++){const a=pts[i],b=pts[i+1];const d=Math.hypot(b[0]-a[0],b[1]-a[1]);const n=Math.max(1,Math.round(d/step));for(let k=0;k<n;k++){const u=k/n;out.push([a[0]+(b[0]-a[0])*u,a[1]+(b[1]-a[1])*u]);}}out.push(pts[pts.length-1]);return out;}
+function buildLeg(knots){const ks=knots.map((k,i)=>({t:i,x:k[0],y:k[1]}));const pts=[];const n=Math.max(8,knots.length*8);for(let i=0;i<=n;i++){pts.push(spline(ks,i/n*(ks.length-1)));}return densify(pts,3);}
+function build(){
+  $('qtxt').textContent=Q;
+  const qw=$('qtxt').offsetWidth;
+  CARET={x:-620+56+qw+8, y:-100+66+16};
+  // measured text widths → chip x, strike ends, tether anchors
+  const LW=secEls.map(sec=>sec.lines.map(l=>l.sp.offsetWidth));
+  const CW=secEls.map(sec=>sec.lines.map(l=>l.chip.offsetWidth));
+  const chipWld=(si,li)=>({x:PAGE.tx+56+LW[si][li]+14+CW[si][li]/2, y:chipY(si,li)});
+  // button centre measured for the pointer aim
+  OUTL_BTN.x=OUTL.x-390+44+$('go').offsetWidth/2;
+  OUTL_BTN.y=OUTL.y-460+920-44-$('go').offsetHeight/2;
+  // line widths cached once (used by strike + chip lefts)
+  secEls.forEach((sec,si)=>sec.lines.forEach((l,li)=>{l._w=LW[si][li];}));
+  STRIKE_Y=PAGE.y+SECS[0].y+secEls[0].lines[2].ln.offsetTop+16;   // same height as .del (top:16)
+  // lockup centred on MARK.x — centred on the widest child so the whole block reads centred
+  const wmW=lk.querySelector('.wm').scrollWidth;
+  const lw=Math.max(wmW,lk.querySelector('.tag2').scrollWidth,lk.querySelector('.sub').scrollWidth);
+  lk.style.left=(MARK.x-lw/2)+'px';
+  lk.style.width=lw+'px';
+  // mark zigzag: 5 bars skyline (centred block), draw up-strokes
+  const bh=[98,162,118,185,84],bw=26,bs=40,bx=MARK.x-(bw*5+14*4)/2,baseY=MARK.y+102;
+  const mk=[[bx-16,baseY]];for(let i=0;i<5;i++){const x=bx+i*bs;mk.push([x,baseY],[x,baseY-bh[i]],[x+bw,baseY-bh[i]],[x+bw,baseY]);if(i<4)mk.push([x+bs,baseY]);}
+  const mkPts=densify(mk,3);
+  const LEGS=[
+    buildLeg([[CARET.x,CARET.y],[CARET.x+140,-60],[430,-150],[560,-240],[700,-300]]),// L1 whip up to the arc crest
+    buildLeg([[700,-300],[1132,-166],[1527,-98],[2110,-129],[2560,-60]]),          // gentle field arc, descends to the gate
+    buildLeg([[2560,-60],[2760,-70],[2940,-60]]),
+    buildLeg([[2940,-60],[3140,0],[3320,45],[3450,55]]),                            // gate → pile, shallow
+    buildLeg([[3450,55],[3680,-160],[3970,-410],[DOCK_O.x,DOCK_O.y]]),              // lift → dock, one arc
+    buildLeg([[DOCK_O.x,DOCK_O.y],[DOCK_O.x+3,DOCK_O.y-2]]),                        // parked on the header slot
+    buildLeg([[DOCK_O.x+3,DOCK_O.y-2],[4300,-720],[5120,-740],[DOCK_R.x,DOCK_R.y]]),// transit → page corner, clears the header row
+    buildLeg([[DOCK_R.x,DOCK_R.y],[5680,-1010],[5800,-1320],[mk[0][0],mk[0][1]]]),  // lift-off arc → mark
+    mkPts,
+  ];
+  PATH=[]; legS=[0];
+  for(const leg of LEGS){for(let i=0;i<leg.length;i++){const p=leg[i];if(PATH.length&&i===0&&Math.hypot(p[0]-PATH[PATH.length-1].x,p[1]-PATH[PATH.length-1].y)<1)continue;PATH.push({x:p[0],y:p[1],s:0});}
+    let acc=0;for(let i=1;i<leg.length;i++)acc+=Math.hypot(leg[i][0]-leg[i-1][0],leg[i][1]-leg[i-1][1]);legS.push(legS[legS.length-1]+acc);}
+  {let s=0;for(let i=0;i<PATH.length;i++){if(i>0)s+=Math.hypot(PATH[i].x-PATH[i-1].x,PATH[i].y-PATH[i-1].y);PATH[i].s=s;}}
+  STOT=PATH[PATH.length-1].s;
+  // tethers chip → stub + stub placement
+  TETHERS=[];
+  SECS.forEach((s,si)=>s.lines.forEach((l,li)=>{
+    if(l.stub<0)return;
+    const c=chipWld(si,li), sy=c.y-26;
+    stubs[l.stub].y=sy; stubs[l.stub].popT=WRITE[si].chips[li]+0.08;
+    TETHERS.push({p0:{x:c.x+34,y:c.y},p1:{x:STUB_X+8,y:sy+24},t:WRITE[si].chips[li]+0.1});
+  }));
+  // extra faint margin threads for citation density (appear at assemble)
+  for(let i=0;i<5;i++){
+    const y=-360+i*92+((i*41)%5)*9;
+    TETHERS.push({p0:{x:PAGE.tx+700+((i*97)%4)*40,y},p1:{x:STUB_X+10,y:y+((i*13)%3)*14-10},t:ASSEM0+0.2+i*0.09,faint:1});
+  }
+ 
+  // rain slots: cards land strung along the L2 thread, alternating around it
+  cards.forEach((c,i)=>{
+    const s=legS[1]+(i+0.6)/(cards.length+0.4)*(legS[2]-legS[1]);
+    const p=atS(s), side=(i%2?-1:1);
+    rainSlots.push({x:p.x+((i*37)%5)*10-20, y:p.y-side*(70+((i*53)%3)*34), rot:((i*29)%9)-4});
+  });
+}
+function atS(s){s=clamp(s,0,STOT);let lo=0,hi=PATH.length-1;while(hi-lo>1){const m=(lo+hi)>>1;PATH[m].s<=s?lo=m:hi=m;}const a=PATH[lo],b=PATH[hi];const u=(s-a.s)/Math.max(1e-6,b.s-a.s);return{x:lerp(a.x,b.x,u),y:lerp(a.y,b.y,u)};}
+// master s(t): continuous coverage, static windows included
+// gate pass synced with the first card: head crosses the gate plane at T_G
+// carrying speed V_G, legs on both sides match that boundary velocity
+const T_G=6.5, V_G=380;
+const eGate=u=>{const m=V_G*(T_G-3.75)/(legS[3]-legS[1]),a=m-2,b=3-m;return (a*u+b)*u*u;};
+const ePile=u=>{const m=V_G*(9.9-T_G)/(legS[4]-legS[3]),a=m-2,b=3-2*m;return (a*u+b)*u*u+m*u;};
+const HEAD_LEGS=[
+  [BORN,3.75,0,1,ease.expoInOut],          // L1 caret → field arc entry (the whip)
+  [3.75,T_G,1,3,eGate],                    // arc → gate: one bell, still moving at V_G
+  [T_G,9.9,3,4,ePile],                     // gate → pile: same speed, decelerating glide to rest
+  [9.9,10.9,4,4,ease.linear],              // rest on the library pile
+  [10.9,11.4,4,5,ease.smooth],             // L5 lift → dock on the framework header (~1600 u/s)
+  [11.4,15.9,5,6,ease.smooth],             // parked at dock while the block runs itself
+  [15.9,17.0,6,7,ease.smooth],             // L7 transit → page's top-left corner (~1600 u/s)
+  [17.0,LIFT0,7,7,ease.linear],            // parked at the page corner through write/review/pull-back
+  [LIFT0,LIFT1,7,8,ease.smooth],           // lift-off arc → mark (~1600 u/s)
+  [LIFT1,MARK1,8,9,ease.smooth],           // draw mark
+];
+function masterS(t){
+  if(t<BORN)return -1;
+  for(const L of HEAD_LEGS){if(t<L[1])return lerp(legS[L[2]],legS[L[3]],L[4](seg(t,L[0],L[1])));}
+  return legS[9];
+}
+// symmetric moving-average on s(t): softens hard starts/stops at leg & park boundaries
+function msSmooth(t){
+  if(t<BORN)return -1;
+  let acc=0,n=0;
+  for(let o=-0.12;o<=0.121;o+=0.04){const s=masterS(clamp(t+o,BORN,DUR));if(s>=0){acc+=s;n++;}}
+  return n?acc/n:-1;
+}
+/* ══════════ camera ══════════ */
+const CAMK=[
+  {t:0.0,x:0,y:0,zoom:1.0},
+  {t:3.1,x:60,y:-6,zoom:1.0},
+  {t:3.85,x:700,y:-120,zoom:0.86,curve:ease.expoInOut},
+  {t:5.0,x:1620,y:-20,zoom:0.72},
+  {t:6.45,x:2830,y:-30,zoom:0.9,curve:ease.expoInOut},
+  {t:7.1,x:3000,y:10,zoom:0.98},
+  {t:10.0,x:3320,y:80,zoom:0.85},
+  {t:11.6,x:4350,y:-40,zoom:0.92,curve:ease.expoInOut},
+  {t:14.4,x:4410,y:40,zoom:1.03},
+  {t:14.95,x:4430,y:25,zoom:1.02},
+  {t:16.15,x:4430,y:25,zoom:1.02},
+  {t:17.1,x:5780,y:-90,zoom:0.8,curve:ease.expoInOut},
+  {t:17.8,x:6300,y:-170,zoom:0.78},
+  {t:20.0,x:6340,y:170,zoom:0.78},
+  {t:21.85,x:6250,y:-80,zoom:1.15,curve:ease.expoInOut},
+  {t:23.1,x:6480,y:150,zoom:1.0},
+  {t:24.2,x:6200,y:10,zoom:0.55,curve:ease.expoInOut},
+  {t:26.5,x:6200,y:-60,zoom:0.52},
+  {t:27.3,x:6326,y:-1060,zoom:0.92,curve:ease.expoInOut},
+  {t:28.4,x:6326,y:-1380,zoom:1.0},
+  {t:32.8,x:6326,y:-1380,zoom:1.0},
+];
+function camAt(t){
+  const c=OM.camera(t,CAMK);
+  const kill=sstep(14.2,14.7,t)*(1-sstep(16.05,16.4,t))+sstep(27.6,28.1,t);
+  const amp=5*(1-clamp(kill,0,1));
+  c.x+=amp*(Math.sin(t*0.9)*0.6+Math.sin(t*1.7+1.3)*0.4);
+  c.y+=amp*(Math.sin(t*1.1+2.0)*0.6+Math.sin(t*2.3+0.7)*0.4);
+  return c;
+}
+const Mview=t=>OM.view(camAt(t),{W,H,depth:0});
+const proj=(M,x,y)=>[M[0]*x+M[2]*y+M[4],M[1]*x+M[3]*y+M[5]];
+// pointer — dead-straight lerp entry → button centre; cannot overshoot or retrace
+const PTR_FROM={x:4650,y:210};
+const ptrAt=t=>{const k=ease.expoInOut(seg(t,PTR_IN,PTR_HOVER));return{x:lerp(PTR_FROM.x,OUTL_BTN.x-2,k),y:lerp(PTR_FROM.y,OUTL_BTN.y-4,k)};};
+
+/* ══════════ cards ══════════ */
+const rainSlots=[];   // filled in build(): cards land strung along the L2 thread
+const queuePos=cards.map((c,i)=>({x:2700-i*50,y:-95+(i%2)*84,rot:(i%2?1:-1)*1.2}));
+const pilePos=cards.map((c,i)=>({x:PILE.x-170+((i*23)%5)*8,y:PILE.y-96-((i%14)*9),rot:((i*31)%7)-3}));
+function cardPos(c,t){
+  const i=c.i,hero=c.hero;
+  const slot=rainSlots[c.idx]||{x:900,y:-200,rot:0};
+  const rainT=hero?(i<5?RAIN_A[i]:i<10?RAIN_B[i-5]:RAIN_C[i-10]):4.3+(i%29)*0.09;
+  const k=ease.expoInOut(seg(t,rainT,rainT+0.7));
+  const op=hero?1:0.62;
+  let x=lerp(slot.x+120,slot.x,k),y=lerp(slot.y-700,slot.y,k),rot=slot.rot*(2-k*1.5),s=hero?1:0.85;
+  const g=ease.smooth(seg(t,GATHER0+i*0.012,GATHER1));
+  const q=queuePos[c.idx]; x=lerp(x,q.x,g); y=lerp(y,q.y,g); rot=lerp(rot,q.rot||0,g);
+  const isRej=c===rejA||c===rejB;
+  const passT=c.passT;
+  if(isRej){
+    const hit=Math.min(1,spring(Math.max(0,t-passT),0.5,18));
+    const fly=ease.expoIn(seg(t,passT+0.3,passT+1.2));
+    return{x:lerp(q.x,GATE_X-90,hit)+fly*1300,y:lerp(q.y,GATE_Y,hit)-fly*860,rot:fly*36,s:s*1.02,op:op*(1-fly),pj:0,tagK:0,mode:'rej'};
+  }
+  const gp=ease.cubicInOut(seg(t,passT,passT+0.5));
+  const gx=lerp(q.x,GATE_X+70,gp), gy=lerp(q.y,GATE_Y,gp);
+  x=lerp(x,gx,gp); y=lerp(y,gy,gp); rot*=1-gp;
+  const pp=pilePos[c.idx]; const pj=ease.smoother(seg(t,passT+0.5,passT+1.05));
+  x=lerp(x,pp.x,pj); y=lerp(y,pp.y,pj)-Math.sin(Math.min(1,pj)*Math.PI)*110;
+  rot=lerp(rot,pp.rot,pj);
+  const tagK=sstep(passT+0.18,passT+0.34,t);
+  return{x,y,rot,s,op:op*(1-pj*0.88),gp,pj,tagK,mode:'pass'};
+}
+
+/* ══════════ counters ══════════ */
+const JUDGE_TS=(()=>{const a=PASS_T.slice(0,10).concat([RJ1,RJ2]);for(let i=0;i<29;i++)a.push(BULK0+i*BULK_D);a.push(9.65,9.78,9.9);a.sort((x,y)=>x-y);return a;})();
+const nJudge=t=>{let n=0;for(const x of JUDGE_TS)if(t>=x+0.2)n++;return n;};
+const nKept=t=>clamp(Math.round(nJudge(t)/JUDGE_TS.length*122),0,122);
+const nSearch=t=>{let n=0;for(const c of cards){const rt=c.hero?(c.i<5?RAIN_A[c.i]:c.i<10?RAIN_B[c.i-5]:RAIN_C[c.i-10]):4.3+(c.i%29)*0.09;if(t>=rt+0.3)n++;}return n;};
+/* ══════════ frame ══════════ */
+const qtxt=$('qtxt'),qcaret=$('qcaret'),brief=$('brief'),sctxt=$('sctxt'),stagecap=$('stagecap');
+$('btxt').textContent=Q;
+function drawFar(cam){
+  FC.setTransform(1,0,0,1,0,0);FC.clearRect(0,0,W,H);
+  const Mg=OM.view(cam,{W,H,depth:.8});
+  FC.setTransform(Mg[0],Mg[1],Mg[2],Mg[3],Mg[4],Mg[5]);
+  const z=Math.hypot(Mg[0],Mg[1]);
+  FC.strokeStyle='rgba(0,0,0,0.030)';FC.lineWidth=1/z;
+  const c0=OM.unproject(Mg,0,0),c1=OM.unproject(Mg,W,H);
+  const gs=88;
+  FC.beginPath();
+  for(let x=Math.floor(c0[0]/gs)*gs;x<=c1[0]+gs;x+=gs){FC.moveTo(x,c0[1]-gs);FC.lineTo(x,c1[1]+gs);}
+  for(let y=Math.floor(c0[1]/gs)*gs;y<=c1[1]+gs;y+=gs){FC.moveTo(c0[0]-gs,y);FC.lineTo(c1[0]+gs,y);}
+  FC.stroke();
+  FC.setTransform(1,0,0,1,0,0);
+}
+function drawThread(t){
+  TC.setTransform(1,0,0,1,0,0);TC.clearRect(0,0,W,H);
+  const M=Mview(t);
+  const dot=p=>{const q=proj(M,p.x,p.y);TC.fillStyle='#3E8F4F';TC.beginPath();TC.arc(q[0],q[1],4,0,Math.PI*2);TC.fill();};
+  const stroke=(pts,alpha,wdt)=>{
+    if(pts.length<2)return;
+    TC.strokeStyle=`rgba(62,143,79,${alpha})`;TC.lineWidth=wdt;TC.lineJoin='round';TC.lineCap='round';
+    TC.beginPath();const q0=proj(M,pts[0].x,pts[0].y);TC.moveTo(q0[0],q0[1]);
+    for(let i=1;i<pts.length;i++){const q=proj(M,pts[i].x,pts[i].y);TC.lineTo(q[0],q[1]);}
+    TC.stroke();
+  };
+  const TAIL=320;
+  const ms=msSmooth(t);
+  if(ms>=0){
+    if(ms>legS[8]){
+      // the mark leg leaves a persistent stroke behind the head
+      const markA=0.85*(1-ease.smooth(seg(t,MARK1+0.15,MARK1+0.7,t)));
+      const s0=legS[8],s1=Math.min(ms,legS[9]);
+      if(s1>s0+2){const pts=[];for(let s=s0;s<s1;s+=6)pts.push(atS(s));pts.push(atS(s1));stroke(pts,markA,2.4);}
+    }
+    // comet tail (cut where the path turns sharply >50°, so no folded V residue)
+    const spd=ms-msSmooth(Math.max(0,t-0.12));
+    const tail=clamp(spd*3,0,TAIL);
+    if(tail>4){
+      const all=[];for(let s=Math.max(0,ms-tail);s<ms;s+=7)all.push(atS(s));all.push(atS(ms));
+      // truncate the tail where cumulative bend exceeds ~40° or any single turn >55°
+      let cut=0,bend=0;
+      for(let i=all.length-1;i>1;i--){
+        const a=all[i],b=all[i-1],c=all[i-2],l1=Math.hypot(a.x-b.x,a.y-b.y),l2=Math.hypot(b.x-c.x,b.y-c.y);
+        if(l1>0.5&&l2>0.5){
+          const cos=((a.x-b.x)*(b.x-c.x)+(a.y-b.y)*(b.y-c.y))/(l1*l2);
+          bend+=Math.acos(clamp(cos,-1,1));
+          if(bend>0.45||cos<0.57){cut=i-1;break;}
+        }
+      }
+      const pts=all.slice(cut);
+      const CH=Math.max(2,Math.ceil(pts.length/8));
+      for(let i=0;i<pts.length-1;i+=CH){
+        const j=Math.min(pts.length-1,i+CH),r=(i+j)/2/(pts.length-1);
+        stroke(pts.slice(i,j+1),0.08+0.82*r,2.5);
+      }
+    }
+    const hide=ease.smooth(seg(t,MARK1+0.1,MARK1+0.45,t));
+    if(hide<1){TC.globalAlpha=1-hide;dot(atS(ms));TC.globalAlpha=1;}
+  }
+  for(const te of TETHERS){
+    const k=ease.expoOut(seg(t,te.t,te.t+0.35));if(k<=0)continue;
+    const gw=1-ease.smooth(seg(t,GHOST0-0.1,GHOST0+0.5,t));if(gw<=0.02)continue;
+    const mx=(te.p0.x+te.p1.x)/2-30,my=(te.p0.y+te.p1.y)/2;
+    const al=(te.faint?0.16:0.42)*gw;
+    TC.strokeStyle=`rgba(62,143,79,${al})`;TC.lineWidth=te.faint?0.8:1.1;
+    const a=proj(M,te.p0.x,te.p0.y),b=proj(M,te.p1.x,te.p1.y),m=proj(M,mx,my);
+    TC.beginPath();TC.moveTo(a[0],a[1]);TC.quadraticCurveTo(m[0],m[1],a[0]+(b[0]-a[0])*k,a[1]+(b[1]-a[1])*k);TC.stroke();
+  }
+  const sk=ease.expoOut(seg(t,STRIKE0,STRIKE0+0.28));
+  if(sk>0){const y=STRIKE_Y,x0=PAGE.tx+56,x1=x0+Math.min(660,(secEls[0].lines[2]._w||660))*sk;
+    TC.strokeStyle='rgba(196,65,47,0.8)';TC.lineWidth=2;
+    const a=proj(M,x0,y),b=proj(M,x1,y);TC.beginPath();TC.moveTo(a[0],a[1]);TC.lineTo(b[0],b[1]);TC.stroke();}
+}
+function seek(tr){
+  const t=tr; TNOW=tr;
+  const cam=camAt(tr), M=Mview(tr);
+  WORLD.style.transform=`matrix(${M.map(v=>v.toFixed(5)).join(',')})`;
+  drawFar(cam); drawThread(t);
+  // 1 · question
+  {const ty=OM.typeOn(t,TYPE0,Q,{cps:CPS});qtxt.textContent=ty.str;
+   const shrink=ease.smoother(seg(t,BORN,BORN+0.55)), fade=1-sstep(BORN+0.15,BORN+0.62,t);
+   place(qcard,-620-shrink*230,-100-shrink*150,1-shrink*0.45,fade);
+   qcaret.style.opacity=ty.caret*(1-sstep(BORN,BORN+0.12,t));
+   qcaret.style.transform=`scaleY(${1-sstep(BORN,BORN+0.12,t)*0.85})`;}
+  // 2 · brief + stagecap
+  {const b=OM.popIn(t,BRIEF_IN,{rise:14});
+   brief.style.opacity=b.op*(1-sstep(28.6,29.2,t));
+   brief.style.transform=`translateY(${b.dy.toFixed(1)}px)`;
+   let sc='',paused=false;
+   if(t>=3.9&&t<7.1)sc=`检索 · ${nSearch(t)}/41`;
+   else if(t>=6.4&&t<10.6)sc=`证据闸门 · 判定 ${nJudge(t)} · 入库 ${nKept(t)}`;
+   else if(t>=10.6&&t<11.9)sc='来源库 · 已成';
+   else if(t>=11.9&&t<STILL0)sc='报告框架 · 铺设中';
+   else if(t>=STILL0&&t<16.9){sc='待审批 · 计时暂停';paused=true;}
+   else if(t>=16.9&&t<REVIEW_T)sc='写作 · 三节成稿';
+   else if(t>=REVIEW_T&&t<LIFT0)sc='交叉审查';
+   else if(t>=LIFT0&&t<28.6)sc='成稿';
+   sctxt.textContent=sc;
+   stagecap.style.opacity=(sc?1:0)*sstep(3.4,3.7,t)*(1-sstep(28.6,29.2,t));
+   stagecap.classList.toggle('paused',paused);}
+  // 3 · cards
+  const libFold=sstep(10.15,10.9,t);
+  for(const c of cards){
+    const p=cardPos(c,t);
+    const born=c.hero?(c.i<5?RAIN_A[c.i]-0.5:c.i<10?RAIN_B[c.i-5]-0.5:RAIN_C[c.i-10]-0.5):3.8+(c.i%29)*0.09;
+    if(t<born){c.el.style.opacity=0;continue;}
+    if(c.hero){c.tag.style.opacity=p.tagK||0;
+      if(p.mode==='rej'){c.rs.textContent=c===rejA?'跑题':'非证据';c.rs.style.opacity=sstep((c===rejA?RJ1:RJ2)+0.1,(c===rejA?RJ1:RJ2)+0.28,t);}}
+    place(c.el,p.x-170,p.y-48,p.s,p.op*(1-libFold),p.rot);
+  }
+  // 4 · gate counters
+  $('cJudge').innerHTML=`判定 <b>${nJudge(t)}</b>`;
+  $('cKept').innerHTML=`入库 <b>${nKept(t)}</b>`;
+  {const anyPass=JUDGE_TS.find(x=>t>=x&&t<x+0.25); const rj=(t>=RJ1&&t<RJ1+0.4)||(t>=RJ2&&t<RJ2+0.4);
+   $('glow').style.background=rj?'var(--seal)':(anyPass?'var(--live)':'rgba(0,0,0,.25)');}
+  // 5 · mix bar
+  {const cnt=[0,0,0,0,0];const natIdx={tg1:0,tg2:1,tg3:2,tg4:3,tg5:4};
+   for(const c of cards){const p=cardPos(c,t);if(p.mode==='pass'&&p.tagK>0.5)cnt[natIdx[c.nat]]++;}
+   const fold=sstep(PILECAP,PILECAP+0.6,t);
+   MIXL.forEach((m,i)=>{const shown=Math.round(lerp(cnt[i],m[1],fold));
+     mixNums[i].textContent=shown;
+     mixSegs[i].style.transform=`scaleX(${lerp(clamp(cnt[i]/Math.max(1,m[1]),0,1),1,fold).toFixed(3)})`;});}
+  // 6 · pile + caption
+  {let n=0;for(const c of cards)if(cardPos(c,t).pj>0.5)n++;
+   const target=clamp(Math.round(n/cards.length*14),0,14);
+   const sq=OM.impact(t,PILE_SQ,{decay:8,omega:20,sqx:0.02,sqy:0.05});
+   pileLayers.forEach((p,i)=>{const on=i<target;
+     p.style.opacity=on?1-libFold:0;
+     if(on)p.style.transform=`translate(${PILE.x-170+i*2.5}px,${PILE.y-10-i*9}px) scale(${sq.sx.toFixed(3)},${sq.sy.toFixed(3)}) rotate(${((i*31)%5)-2}deg)`;});
+   pilecap.style.opacity=sstep(PILECAP-0.25,PILECAP+0.15,t)*(1-libFold);}
+  // 7 · outline rows cascade in while the thread rests on the header dock
+  {orows.forEach((r,i)=>{
+     const k=ease.smooth(seg(t,11.9+i*0.26,12.25+i*0.26));
+     r.querySelector('.ln').style.transform=`scaleX(${k.toFixed(3)})`;
+     const tk=sstep(12.05+i*0.26,12.35+i*0.26,t);
+     r.querySelector('.no').style.opacity=tk;
+     const ti=r.querySelector('.ti');ti.style.opacity=tk;ti.style.transform=`translateY(${((1-tk)*10).toFixed(1)}px)`;});
+   const inStill=t>=STILL0&&t<CLICK;
+   $('go').style.boxShadow=inStill?`0 0 0 ${5+2.5*Math.sin(t*4)}px rgba(0,0,0,${(0.10+0.05*Math.sin(t*4)).toFixed(3)})`:'none';
+   outl.querySelector('.paused').style.opacity=sstep(STILL0,STILL0+0.3,t)*(1-sstep(CLICK-0.1,CLICK+0.35,t));
+   const pr=OM.press(t,CLICK);$('go').style.transform=`scale(${pr.s.toFixed(3)})`;
+   const ok=$('tickok');ok.style.opacity=sstep(CLICK+0.08,CLICK+0.35,t);ok.style.transform=`scale(${clamp(spring(t-CLICK-0.08,0.5,20),0,1.2).toFixed(3)})`;
+   const ox=ease.expoIn(seg(t,16.15,17.3))*1400;
+   outl.style.opacity=ease.smooth(seg(t,10.6,11.4,t)).toFixed(3);
+   outl.style.transform=`translate(${(OUTL.x-390-ox).toFixed(1)}px,${OUTL.y-460}px)`;}
+  // 8 · pointer
+  {const vis=t>=PTR_IN&&t<16.15;ptr.style.opacity=vis?1:0;
+   if(vis){const p=ptrAt(t),pr=OM.press(t,CLICK);
+     ptr.style.transform=`translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px) scale(${pr.s.toFixed(3)})`;}}
+  // 9 · report sections + chips + review
+  secEls.forEach((sec,si)=>{
+    const w=WRITE[si];
+    const act=sstep(w.start-0.1,w.start+0.3,t);
+    const h5=sec.el.querySelector('h5');h5.style.opacity=act;h5.style.transform=`translateY(${((1-act)*8).toFixed(1)}px)`;
+    sec.el.querySelector('.rl').style.transform=`scaleX(${act})`;
+    sec.lines.forEach((l,li)=>{
+      if(l._w==null)l._w=l.sp.offsetWidth;
+      const lt=w['l'+(li+1)], cs=w.chips[li], st=SECS[si].lines[li];
+      const rk=lt?ease.smooth(seg(t,lt[0],lt[1])):0;
+      l.rv.style.width=(rk*(l._w+4)).toFixed(1)+'px';
+      l.chip.style.left=(l._w+14)+'px';
+      const ch=OM.popIn(t,cs,{zeta:0.5,omega:26,rise:10});
+      const plucked=si===0&&li===2;
+      l.chip.style.opacity=ch.op*(plucked?(1-sstep(PLUCK,PLUCK+0.4,t)):1);
+      l.chip.style.transform=`translateY(${ch.dy.toFixed(1)}px) scale(${ch.s.toFixed(3)})`;
+      if(plucked){
+        const flare=sstep(REVIEW_T,REVIEW_T+0.3,t);
+        l.chip.style.background=`rgba(${flare>0.02?'196,65,47':'46,80,200'},${(0.09+0.35*flare).toFixed(3)})`;
+        l.chip.style.color=flare>0.4?'var(--seal)':'';
+        const drop=ease.expoIn(seg(t,PLUCK,PLUCK+0.55));
+        if(drop>0)l.chip.style.transform=`translate(${(drop*30).toFixed(1)}px,${(drop*170).toFixed(1)}px) rotate(${(drop*24).toFixed(1)}deg) scale(${ch.s.toFixed(3)})`;
+        l.drop.textContent='越界引用 · 已丢弃';l.drop.style.opacity=sstep(DROP_NOTE,DROP_NOTE+0.3,t);
+      }
+      if(st.edit){
+        const ek=ease.expoOut(seg(t,EDIT0,EDIT0+0.3));
+        l.del.style.width=(ek*(l._w*0.58)).toFixed(1)+'px';
+        l.del.style.left=(l._w*0.40)+'px';
+        l.ins.textContent='阻抗跃升与失效连锁';l.ins.style.left=(l._w*0.40)+'px';
+        l.ins.style.opacity=sstep(EDIT0+0.35,EDIT0+0.7,t);
+      }
+    });
+  });
+  secf.forEach((f,i)=>{f.style.opacity=sstep(ASSEM0+i*0.16,ASSEM0+i*0.16+0.5,t)*0.85;});
+  const ghost=1-ease.smooth(seg(t,GHOST0,GHOST1,t));
+  page.style.opacity=ghost;
+  stubs.forEach(s=>{
+    const k=OM.popIn(t,s.popT,{rise:12});
+    s.el.style.opacity=k.op*ghost;
+    s.el.style.transform=`translate(${s.x.toFixed(1)}px,${(s.y+k.dy).toFixed(1)}px) scale(${k.s.toFixed(3)})`;});
+  {const k=OM.popIn(t,22.85,{rise:16});const stamp=OM.impact(t,DOUBT_T,{decay:8,omega:20,sqx:0.06,sqy:0.08});
+   doubt.style.opacity=k.op*ghost;
+   doubt.style.transform=`translate(${PAGE.x+560}px,${(PAGE.y+430+k.dy).toFixed(1)}px) rotate(${(-1.5+sstep(DOUBT_T,DOUBT_T+0.3,t)*1.5).toFixed(2)}deg) scale(${(k.s*stamp.sx).toFixed(3)},${(k.s*stamp.sy).toFixed(3)})`;}
+  {const tk=OM.wordRise(t,TITLE_T,{dist:20});const ti=page.querySelector('.ti');ti.style.opacity=tk.op;ti.style.transform=`translateY(${tk.y.toFixed(1)}px)`;
+   page.querySelector('.mt').style.opacity=sstep(META_T,META_T+0.4,t);
+   page.querySelector('.mx').style.opacity=sstep(META_T-0.15,META_T+0.25,t);
+   const mk=sstep(META_T+0.2,META_T+1.1,t);pageMix.forEach((m,i)=>{m.style.transform=`scaleX(${mk})`;pageNums[i].textContent=Math.round(MIXL[i][1]*mk);});
+   page.querySelector('.fn').style.opacity=sstep(FN_T,FN_T+0.4,t);}
+  // 10 · lockup
+  {const on=t>=FLY0+0.4;
+   lk.style.opacity=on?1:0;
+   bars.forEach((b,i)=>{const bt=spring(t-28.4-i*0.07,0.5,22);b.style.transform=`scaleY(${clamp(bt,0,1.15).toFixed(3)})`;});
+   wmLetters.forEach((s,i)=>{const d=OM.letterDrop(t,WORD0,i,{stagger:0.035});s.style.opacity=d.op;s.style.transform=`translateY(${d.y.toFixed(1)}px) scale(${d.sx.toFixed(3)},${d.sy.toFixed(3)})`;});
+   const tg=OM.wordRise(t,TAG0,{dist:16});const t2=lk.querySelector('.tag2');t2.style.opacity=tg.op;t2.style.transform=`translateY(${tg.y.toFixed(1)}px)`;
+   lk.querySelector('.sub').style.opacity=sstep(SUB0,SUB0+0.4,t);}
+  $('hud').textContent='t='+t.toFixed(3)+' s='+(PATH?msSmooth(t).toFixed(0):'-');
+}
+window.__seek=t=>{if(!PATH)return false;seek(t);return true;};
+window.__motion=(t0,t1)=>{
+  if(!PATH)return 0;
+  let d=OM.screenTravel(camAt(t0),camAt(t1),camAt((t0+t1)/2),{W,H});
+  for(let k=0;k<=4;k++){const a=t0+(t1-t0)*k/5,b=t0+(t1-t0)*(k+1)/5;
+    const wa=a,wb=b;
+    const M0=Mview(a),M1=Mview(b);
+    const s0=msSmooth(wa),s1=msSmooth(wb);
+    if(s0>=0&&s1>=0){const p0=atS(s0),p1=atS(s1);const q0=proj(M0,p0.x,p0.y),q1=proj(M1,p1.x,p1.y);d=Math.max(d,Math.hypot(q0[0]-q1[0],q0[1]-q1[1]));}
+    for(const c of cards){const a0=cardPos(c,wa),a1=cardPos(c,wb);const q0=proj(M0,a0.x,a0.y),q1=proj(M1,a1.x,a1.y);d=Math.max(d,Math.hypot(q0[0]-q1[0],q0[1]-q1[1]));}
+    if(wb>PTR_IN&&wa<16.15){const pa=ptrAt(clamp(wa,PTR_IN,16.05)),pb=ptrAt(clamp(wb,PTR_IN,16.05));const qa=proj(M0,pa.x,pa.y),qb=proj(M1,pb.x,pb.y);d=Math.max(d,Math.hypot(qb[0]-qa[0],qb[1]-qa[1]));}
+    {const oa=ease.expoIn(seg(wa,16.15,17.3))*1400,ob=ease.expoIn(seg(wb,16.15,17.3))*1400;if(ob-oa>0.5){const qa=proj(M0,OUTL.x-390-oa,OUTL.y),qb=proj(M1,OUTL.x-390-ob,OUTL.y);d=Math.max(d,Math.hypot(qb[0]-qa[0],qb[1]-qa[1]));}}
+    for(const te of TETHERS){const ka=ease.expoOut(seg(wa,te.t,te.t+0.35)),kb=ease.expoOut(seg(wb,te.t,te.t+0.35));if(kb-ka>0.02){const xa=lerp(te.p0.x,te.p1.x,ka),ya=lerp(te.p0.y,te.p1.y,ka),xb=lerp(te.p0.x,te.p1.x,kb),yb=lerp(te.p0.y,te.p1.y,kb);const qa=proj(M0,xa,ya),qb=proj(M1,xb,yb);d=Math.max(d,Math.hypot(qb[0]-qa[0],qb[1]-qa[1]));}}
+    {const ka=ease.expoOut(seg(wa,STRIKE0,STRIKE0+0.28)),kb=ease.expoOut(seg(wb,STRIKE0,STRIKE0+0.28));if(kb-ka>0.02){const w=Math.min(660,(secEls[0].lines[2]._w||660)),y=STRIKE_Y;const qa=proj(M0,PAGE.tx+56+w*ka,y),qb=proj(M1,PAGE.tx+56+w*kb,y);d=Math.max(d,Math.hypot(qb[0]-qa[0],qb[1]-qa[1]));}}
+  }
+  return d;
+};
+window.__track=t=>{
+  const M=Mview(t);const out={},tl=t;
+  if(PATH){const ms=msSmooth(tl);
+    if(ms>=0){const p=atS(Math.min(ms,STOT));const q=proj(M,p.x,p.y);out.thread={x:q[0]-10,y:q[1]-10,w:20,h:20,op:1-ease.smooth(seg(tl,MARK1+0.1,MARK1+0.45))};}}
+  if(tl>=PTR_IN&&tl<16.15){const pt=ptrAt(Math.min(tl,16.05));const q=proj(M,pt.x,pt.y);out.ptr={x:q[0]-15,y:q[1]-15,w:30,h:40,op:1};}
+  return out;
+};
+window.__events=()=>[
+  {t:0.6,k:'type'},{t:BORN,k:'melt'},{t:WHIP1,k:'whip'},
+  ...RAIN_A.map(t=>({t,k:'rain'})),...RAIN_B.map(t=>({t,k:'rain'})),
+  {t:GATHER0,k:'gather'},
+  ...PASS_T.map(t=>({t:t+0.2,k:'stamp'})),{t:RJ1+0.1,k:'reject'},{t:RJ2+0.1,k:'reject'},
+  {t:PILE_SQ,k:'settle'},{t:STIT0,k:'stitch'},{t:STILL0,k:'hush'},{t:CLICK,k:'click'},{t:15.9,k:'transit'},
+  ...WRITE.flatMap(w=>w.chips.map(t=>({t,k:'chip'}))),
+  {t:STRIKE0,k:'strike'},{t:PLUCK,k:'pluck'},{t:DOUBT_T,k:'seal'},
+  {t:LIFT0,k:'lift'},{t:TITLE_T,k:'title'},{t:FLY0,k:'fly'},{t:MARK0,k:'mark'},{t:WORD0,k:'word'},
+].sort((a,b)=>a.t-b.t);
+const q0=new URLSearchParams(location.search);
+window.__done=false;
+window.__ready=Promise.all([LOOK.ready,CJK.ready,document.fonts.ready]).then(()=>{build();seek(0);window.__done=true;return true;});
+if(q0.has('t'))__ready.then(()=>seek(parseFloat(q0.get('t'))));
+if(q0.has('hud'))$('hud').style.display='block';
+if(q0.has('play'))__ready.then(()=>{const t0=performance.now();(function loop(){seek(((performance.now()-t0)/1000)%DUR);requestAnimationFrame(loop);})();});
+</script>
+</body>
+</html>
