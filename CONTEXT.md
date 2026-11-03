@@ -1347,6 +1347,8 @@ Anthropic 形状的对应物是 `stop_reason == "max_tokens"` 和 `output_tokens
 ⇒ 照它调参会**完全没有效果**，照它读参数会**看错一个 4 倍的值**。
 已在文件头加了显眼警告；「接上还是删掉」记进 `TECH_DEBT.md` 待定。
 
+**2026-11-04 决定（用户）：删除。** `config/search.yaml` 已 `git rm`（完整原文可用 `git show acccd62:config/search.yaml` 取回；代码里唯一的引用是 `tavily.py` 开头的 docstring，已把「禁用 /research 端点」的理由内联，不再指向该文件）。原文件里**仍然有参考价值的设计意图**（注意这些是当年的意图，不是现行配置，现行值以代码为准）：①分工——Tavily 主英文检索，SearXNG 主中文检索且不耗 Tavily 额度，两者都实现 `SearchProvider` 接口；②SearXNG 惰性启停（`.searxng/searxng.sh`，每次检索 touch heartbeat，空闲约 60s 回收），引擎 sogou/360search/quark/bing；③Tavily 用 `search_depth: basic`（1 credit），**禁用 /research 端点**（自带编排、4–250 credit/次，与跟随式循环冲突）；④抓取礼貌性：同域名间隔 ~1s、并发 8、遇 403/429/503 直接跳过、绝不重试/不换 IP；⑤含「最新/近况/现状…」等时间敏感词的问题强制走网络、绕缓存。**以后要把这些参数做成可配置，请新建被代码真正加载的配置，而不是恢复这个文件。**
+
 ⚠️ **查「配置有没有生效」的办法**：grep 这个文件名 + grep `safe_load`，
 不是看文件里写了什么。配置文件长得比代码更像真相，但它没有编译器护着。
 
@@ -2236,10 +2238,27 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
 **第三档（等用户定）**：checkpoint 根因（全文塞进图状态）、快速档「升级为深度报告」接口、批 7 坏页过滤的真实起效证据、写手深度追平 v26（见坑 93 已知缺口①）。
 **第一档执行结果（2026-11-04）**：
 - **3 个预存失败测试的分类（均为测试过期/脆弱，生产代码无 bug）**：①`test_fallback_summary`——**断言过期**：`write.py` 的 `_WRITE_PRELOAD` 默认=1，写手默认拿**原文**（`_preload_evidence`），概括 listing（含 `[无概括` 前缀）只在回退路径（预加载关/块超 70k 字符/返修）出现；已把 t3 拆成回退路径（`_WRITE_PRELOAD=False`，保留原断言）+ 预加载路径（断言两段原文都在、不走概括 listing）。②`test_minimax_truncation`——**fixture 漂移**：`_minimax` 的 `min(guard.max_output_tokens, budget*2)` 翻倍逻辑完好；失败是因为测试借用线上 `write_section` 配置，而它迁到 glm 后 `guard.max_output_tokens == max_output_tokens`（16384），没有翻倍余量；已在 `pin_minimax` 里拷贝 guard 并放大到 4 倍，测试不再依赖线上余量（provider.py 未动）。③`test_guard_effort_ladder`——**真通过但脆弱**：它走的确实是真实 `_opencode` 路径（桩的是 HTTP client），只是断言写死「起始 effort=high」靠 `write_plan_tasks` 现在恰好配 glm high；已把用到的环节钉成 `high`，并用 `RA_MODELS_PATH` 指向 write_plan_tasks=low 的副本复跑证明独立于线上配置。偶发的 `test_toolloop_protocol` 本轮多次全量跑均通过，未复现，不作 flaky 结论。
-- **TECH_DEBT #2**：已修（`tests/_isolate.py`，详见 TECH_DEBT #2）；**默认库里的孤儿 `llm_call`（714 条）未删**。**#3**（删 `ra` 入口声明）、**#4**（删 `opencode` 档案与三条 blocked 备选）、**#5**（删空包 `research_agent/docs/`）已做。**#6** 本机备份已做（坑 93），异地未做。**#7** `config/search.yaml` 复核后判定「接上还是删」是二选一的产品决定，**未动**，留给用户。
+- **TECH_DEBT #2**：已修（`tests/_isolate.py`，详见 TECH_DEBT #2）；**默认库里的孤儿 `llm_call`（714 条）未删**。**#3**（删 `ra` 入口声明）、**#4**（删 `opencode` 档案与三条 blocked 备选）、**#5**（删空包 `research_agent/docs/`）已做。**#6** 本机备份已做（坑 93），异地未做。**#7** `config/search.yaml` 复核后判定「接上还是删」是二选一的产品决定，当时未动；**用户随后决定删除，已删（见坑 61）**。
 - **验证**：全部 44 个 `tests/test_*.py` 在**带隔离**与**不带隔离**两种环境下退出码全 0；不带隔离那一轮 `data/research.db` 19 表逐表行数、`data/checkpoints.db` 字节前后不变。**没有重跑标准/快速档真跑**：本档改动只有测试文件、`pyproject`、已无引用的 `opencode` 档案与空包，不触及运行路径，坑 93 的 v30 对默认配置的验收仍然有效。
-- **仍待用户定**：#7；孤儿 `llm_call` 清理；第二档两项取证（`write_section` EmptyOutput 已随模型切换消失的确认、权威性离线统计）；第三档全部。
+- **仍待用户定**：孤儿 `llm_call` 清理；第二档两项取证（`write_section` EmptyOutput 已随模型切换消失的确认、权威性离线统计）；第三档全部。
+**第二档/第三档部分的执行结果见坑 95。**
 **收尾动作**：第一档做完 → 更新文档 → `git push origin main`（push 前用 .env 里的密钥值扫一遍待推提交，SSL/HTTP2 报错重试即可）。
+
+
+### 95. 第二档取证 + checkpoint 根因复查 + 写手深度目标调整（2026-11-04）
+**用户决定（本轮）**：①`config/search.yaml` 删除（见坑 61）；②第二档直接离线测；③checkpoint 根因「可以查一下」（只调查，没改）；④**写手深度不再追平 v26**——长度不等于质量（长报告也可能是废话、也跟模型本身性能相关），只要流程没有大问题即可，所以**坑 93 已知缺口①「写手深度追平 v26」从目标列表里撤下**，以「流程健康」为验收：零 EmptyOutput/零错误、引用都在范围内、审查真的跑了（`final_audit_skipped:false`）、无空小节、无 `write_plan_error`/`write_audit_skipped`；⑤批 7 的证据并入第二档；⑥快速档升级深度报告等前置做完再说。**脚本**已存档于 `tests/offline_stats/`（`auth_stats.py`/`auth2.py` 权威性；`gate_stats.py` 闸门/坏页；`empty_stats.py` EmptyOutput；`ckpt_sample.py`/`ckpt_analyze.py` checkpoint）；它们读 `/tmp/auth/snap/` 下的一致快照（对 `data/refs/*.db` 逐个 `sqlite3 .backup` 而得，**不要直接读带 -wal 的原库**），重跑要先重建快照目录。
+**③ `write_section` EmptyOutput（`llm_call` 全部 34 个参考库）**：MiniMax 时期 write_section 295 次调用中 EmptyOutput 4 次（1.4%）、write_revise 68 次中 2 次（2.9%）、write_patch 54 次 0；**Ark 时期 write_section 47 次、write_revise 6 次、write_patch 5 次，EmptyOutput 全为 0**；v31（见下）也为 0。**结论：Ark 下没出现，但样本不足以说「已随模型消失」**——按 MiniMax 时期 ~1.4% 的率，47 次里期望才 ~0.7 次，0 次与之无法区分。别再为它单独投入，但也别写「已解决」。（顺带：MiniMax 时期 summarize 有 20 次 EmptyOutput，是另一个环节的故障，Ark 下未见。）
+**④ 权威性离线统计（只统计，没改检索）**。口径：来源编号=session 内 source 表 rowid 升序（同 `_load_numbered_evidence`）；引用=报告正文（去掉文末自动来源清单，否则每个来源都「被引用」；兼容 `[ S3·1]` 带空格写法）里的 `[S<n>·<m>]` 按来源计；权威分档=脚本内的**域名规则表**（low=社媒/问答/内容农场/文库转存/门户转载，如 weibo/xueqiu/zhihu/csdn/cnblogs/renrendoc/yunpan.plus/163.com/sohu.com；high=政府/教育/学术出版/官方文档，**很保守**；其余全进 mid），另与 LLM 判的 `source_nature` 对照。**规则表本身有不确定性**：163.com/sohu.com 同时承载通讯社稿件和自媒体号，归 low 偏严；high 偏窄所以 high 占比被低估。
+- 标准档：MiniMax 时期 11 份（v18–v26，424 来源/8096 引用）low 占来源 27.4%、占引用 27.4%，high 6.8%/13.2%；Ark 时期 5 份有正文的（v28B/C/D/E、v30，142 来源/777 引用）low 15.5%/13.8%，high 4.9%/3.2%；快速档 9 份 low 26.9%/29.1%，high 16.2%/19.5%。**两个时期题目不同（MiniMax 多为固态电池，Ark 全是 Rust 对 Go），所以不能当作模型对比**；同题 Rust 对 Go 内部：v25 low 引用 30%、v26 1%、Ark 5 份 14%，跨次波动本身就很大。
+- **单源集中度**（单个 low 域名占该报告引用的比例）：**renrendoc.com（文库转存）**在固态电池题上反复出现——v21 37%、v22 30%、v18 20%、v23 16%，快速档 fast_solid 58.5%；sohu.com 24%（v25 GLP-1）、bbs.csdn.net 16%（v25 Rust/Go）、xueqiu 15%（v24）、163.com 17%（v28B）。**用户观察到的「低权威来源被单源引过多」在数据里成立，但集中在特定题目（中文产业题的文库转存站），不是普遍现象**。
+- **没回答的**：renrendoc 这类站里转存的可能正是真实行业研报，「低权威」≠「内容差」——要判断质量需要抽样读被引句子，没做；每个题目只有 1~5 份，只能当方向性证据。**没有改任何检索/写作逻辑**。可选动作（等用户定）：写手/审查阶段对单域名引用占比设软上限、或把来源性质/权威档喂给写手提示词做取舍；二者都要先定义「低权威」名单，那是产品判断。
+**批 7 起效证据（离线重放，`gate_stats.py`）**：把 `page_defect` 回放到所有已存来源：批 7 之前的 10 个库（392 来源）命中 3 个（v25 GLP-1 的模板标题页、v25 Rust/Go 的 liepin、jobxzc），批 7 之后的 12 个库（287 来源）**命中 0**；真跑的 `low_quality:*` 跳过事件仍然是 0（含 v31）。⇒ **过滤器至今没有在真实运行里真正拦下过一页**（坏页只出现在批 7 之前的库里，之后的真跑没再搜到）；能说的只是「回放 3/3 命中、0 误伤，批 7 之后没有坏页漏进库」，**仍不能说它在线上起了作用**。合并闸门 V2：批 7 之后「merged 判定」段的关掉比例 98/291=33.7%，之前 105/887=11.8%，但题目构成不同（之后几乎全是 Rust/Go），不可归因。「招聘/{{/立即投递」关键词在批 7 之后 on_topic 段里的命中（每份 Rust/Go 约 3 段）逐条看是正常内容（讨论「招聘 Rust 工程师」），无泄漏；批 7 之前 v21 有 12 段命中 wang.eitech.edu.cn，未核查内容。
+**v31 标准档（Rust 对 Go，默认配置，关自动裁剪以观察 checkpoint；`data/refs/ra_v31_std_ck.db`，尚未进本机备份包，要重打）**：墙钟 481s（审批点到达于 217s，等待 0）、285k token、6 小节（outline 6、tasks 6）、报告 20.1k 字、30 来源/30 个不同引用、`cite_over:false`、`llm_bad:[]`、`emptyout_rows:0`、`final_audit_skipped:false`、`mandate_avg` 102、无坏事件。**规划方差再添一例**：同样的 glm high 配置，outline 节数 v29E=8、v30=8、v31=6——n 越多越能看清，单次不是规律。
+**checkpoint 根因复查（只调查，未改任何代码）**——TECH_DEBT #1 的旧数字已经过时，重新量了（`ckpt_sample.py` 每 5s 采样、`ckpt_analyze.py` 逐通道反序列化，真跑时 `RA_CKPT_AUTOPRUNE=0`）：
+- 一场标准档共 **42 个 checkpoint，blob 合计 11.1MB**（库文件 12.0MB + 4.6MB WAL），最大单个 0.89MB；旧记录是单场 20~27MB。采样时序：库文件在 ~240s 起被撑大，完成后稳定。
+- **根因已经转移**：旧文档的头号大户 `pending_extract` 现在整场只占 0.76MB（7%）；**现在 67%（7.4MB）来自 write 子图内的 10 个 checkpoint，每个都带着同样的 `segments`（394KB）+`on_topic`（349KB）**——即把全部证据段落全文塞进 WriteState，write 子图每个节点转移都重序列化一遍。且 `on_topic`（97 段）是 `segments`（112 段）的子集，同一份文本存了两遍；这些正文本来就在 `chunk` 表里（本场 chunk 正文合计 328KB）。
+- **但影响很小**：①`dumps_typed` 序列化最大一份 0.89MB 状态只要 ~0.1ms，运行时间上可忽略；②自动裁剪（默认开）完成后每个 thread 只留最终 state（现役 `data/checkpoints.db` 26 个 thread 各 1 个 checkpoint，blob 合计 4.5MB，库文件 14.8MB 含空闲页）；③峰值磁盘 ~12MB/场。**只有失败/僵尸会话不会被自动裁剪**，每个残留约 12MB。
+- **建议（等用户定）**：**降级为观察项，不建议现在动**。收益小（磁盘峰值 12MB、运行时间无感），而改动要碰 write 子图所有读 `state["segments"]/["on_topic"]` 的节点和测试夹具。若以后要治：窄改法是 `on_topic` 只存 ref 列表（去掉重复的一半，约 -47%），进一步把 `segments` 改成 id + 节点入口用 `_load_numbered_evidence` 读库；风险点是 write 节点和 audit/revise 都直接读正文、测试夹具大量直接塞 state。n=1，趋势明确但数字是单次。
 
 ---
 

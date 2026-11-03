@@ -1,7 +1,7 @@
 """Tavily provider：英文检索主力。
 
-注意：不要用 Tavily 的 /research 端点。理由见 config/search.yaml：
-它自带编排（与我们的跟随式循环冲突）且 4-250 credit/次。
+注意：不要用 Tavily 的 /research 端点。research 端点自带编排且
+4-250 credit/次，与我们的循环冲突，所以明确禁用。
 """
 
 from __future__ import annotations

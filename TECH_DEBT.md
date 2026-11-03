@@ -23,6 +23,9 @@
 > **未做**：①对真实 `data/checkpoints.db` 执行清理（不可逆，等用户确认并先备份）；②根因（全文塞进图状态）；
 > ③僵尸会话的自动处理（只有 CLI 的 `--stale-days`）。
 
+> **2026-11-04 复查（真跑 v31，关自动裁剪，n=1；详见 CONTEXT 坑 95）——下面「实测到的事实」是 10-17 的旧数字，根因的位置已经变了：**
+> 一场标准档 42 个 checkpoint / blob 11.1MB（旧：20~27MB）；`pending_extract` 现在只占 7%；**67% 来自 write 子图 10 个 checkpoint 里重复携带的 `segments`（394KB）+`on_topic`（349KB，是 segments 的子集，文本存了两遍）**。序列化最大状态 ~0.1ms，运行时间影响可忽略；自动裁剪后每个 thread 只剩最终 state（现役库 26 个 thread 共 4.5MB blob）；仅失败/僵尸会话不会被自动裁剪（每个残留 ~12MB）。**结论：建议降级为观察项，暂不治根因**（收益小、要动 write 子图所有读正文的节点与测试夹具）；若要治，窄改法是 `on_topic` 只存 ref（约 -47%），进一步 `segments` 改 id + 节点入口读库。等用户定。
+
 **决定（用户，2026-10-17）**：等项目优化得差不多了再统一清理，**上线前定清理机制**。
 在那之前不动它 —— 它现在不影响正确性，只占磁盘。
 
@@ -166,7 +169,9 @@ ra = "research_agent.cli:main"
 
 ---
 
-## 7. 🟡 `config/search.yaml` 没有任何代码加载，且值已和真值矛盾
+## 7. ✅ `config/search.yaml` 没有任何代码加载，且值已和真值矛盾（2026-11-04 用户决定删除，已删）
+
+> 已处置：`git rm config/search.yaml`；设计依据留存于 `CONTEXT.md` 坑 61 末尾，原文可 `git show acccd62:config/search.yaml` 取回，`tavily.py` docstring 已内联禁用 /research 端点的理由。以下为历史记录。
 
 **2026-10-17 阶段 0 排查发现**（详见 `CONTEXT.md` 坑 61）：后端唯一的
 `yaml.safe_load` 读的是 `models.yaml`，`search.yaml` 是纯文档。
