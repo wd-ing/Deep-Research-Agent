@@ -14,3 +14,13 @@ drop_title_regex:
   - '<%[^%]*%>'          # <% %>
 drop_text_head_regex:    # 只看正文前 300 字
   - '\{\{[^}]*\}\}'
+
+# 线索级来源：不丢弃（内容可能相关），但来源清单里标「线索级」，
+# 写手/审查对其中的具体数字降级处理（抽样见 CONTEXT 坑 95）。
+clue_grade_domains:
+  - renrendoc.com    # 人人文库
+  - docin.com        # 豆丁
+  - doc88.com        # 道客巴巴
+  - book118.com      # 原创力文档
+  - wenku.baidu.com  # 百度文库
+  - taodocs.com      # 淘豆网

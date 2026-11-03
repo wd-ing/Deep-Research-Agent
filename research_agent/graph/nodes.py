@@ -24,7 +24,7 @@ from ..llm.provider import LLMClient, fire_progress, session_scope
 from ..trace import span
 from ..search.base import SearchHit
 from ..search.normalize import content_hash, domain_of, guess_source_type, normalize_url
-from ..search.quality import page_defect
+from ..search.quality import CLUE_MARK, clue_grade, page_defect
 from ..search.searxng import SearXNGProvider
 from ..search.tavily import TavilyProvider
 from . import prompts
@@ -1420,6 +1420,8 @@ def _load_numbered_evidence(repo, sid: str) -> dict:
                  f"| {s.get('source_type')} | {s.get('source_date') or '日期未知'}"
                  f" | {s.get('source_nature') or '性质未判'}"
                  f" | 正文 {s.get('char_count') or 0} 字"
+                 + (f" | {CLUE_MARK}（文库转存，其中的具体数字无法溯源，须另有来源印证）"
+                    if clue_grade(s.get("domain")) else "")
                  for s in all_sources]
     return {"all_sources": all_sources, "src_no": src_no, "segs": segs,
             "keep": keep, "src_lines": src_lines,

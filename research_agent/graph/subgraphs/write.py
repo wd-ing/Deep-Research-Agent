@@ -32,6 +32,7 @@ from ...llm.toolloop import run_tool_loop
 from ...trace import span, traced
 from .. import prompts
 from ..state import WriteState
+from ...search.quality import CLUE_MARK
 # 重试判据/工具入参归一与 probe.py 共用（2026-10-20 抽）；名字仍挂在
 # 本模块名下，测试里的 `W._transient_http` 等引用不受影响。
 from ._retry import (_TRANSIENT_RE, _TRANSIENT_WAIT_S, _norm_audit_list,
@@ -73,6 +74,47 @@ PRELOAD_SEG_CHARS = 2500       # 预加载单段全文字符上限
 PRELOAD_BLOCK_CHARS = 70000    # 预加载整块字符上限，超出回退工具轮
 MAX_TOOL_ROUNDS = 3         # plan 取全文的工具循环上限
 TASK_MARK_RE = re.compile(r"<!--\s*task:(\S+)\s+section:(\S+)\s*-->")
+
+# 引用 token：`[S3·5]` / `[ S9·1]`（带空格）/ `[S3]` 都认。
+# 组1=来源号（判「是否全在线索集合」用）；token 用 _CITE_TOK_RE 取原样。
+_CITE_RE = re.compile(r"\[\s*S(\d+)(?:·\d+)?[^\]]*\]")
+_CITE_TOK_RE = re.compile(r"\[\s*(S\d+(?:·\d+)?)[^\]]*\]")
+# 限定语豁免：写手自证「这数字是线索级说的/未印证」的句子不判候选。
+_CLUE_QUAL_RE = re.compile(
+    r"线索级|未获.{0,4}印证|未经.{0,4}(?:验证|印证|核实)"
+    r"|无法(?:独立)?(?:核实|验证|印证)|待(?:核实|验证|印证)")
+
+
+def _clue_only_numeric_sentences(draft: str, src_lines: list,
+                                 cap: int = 12) -> list[dict]:
+    """筛「只被线索级来源支撑的含数字断言」——write_audit 的输入候选。
+
+    只提给审查当线索，**不接 violations/返修**（程序不判断真假，
+    限定语豁免规则见 _CLUE_QUAL_RE）。
+    """
+    clue = {int(m.group(1)) for ln in src_lines or []
+            if CLUE_MARK in ln and (m := re.match(r"\[S(\d+)\]", ln))}
+    if not clue:
+        return []
+    out, cur_t, cur_s = [], None, None
+    for line in (draft or "").split("\n"):
+        if m := TASK_MARK_RE.search(line):
+            cur_t, cur_s = m.group(1), m.group(2)
+        for sent in re.split(r"[。！？]", line):
+            sent = sent.strip()
+            if not sent:
+                continue
+            nums = {int(n) for n in _CITE_RE.findall(sent)}
+            if not nums or not nums <= clue:
+                continue
+            bare = re.sub(r"\d{4}\s*年", "", _CITE_RE.sub("", sent))
+            if not re.search(r"\d", bare) or _CLUE_QUAL_RE.search(sent):
+                continue
+            out.append({"task": cur_t, "section": cur_s, "sentence": sent,
+                        "cited": _CITE_TOK_RE.findall(sent)})
+            if len(out) >= cap:
+                return out
+    return out
 # 子 agent 分节输出用的标记。`covers` 多于一节时必须逐节标注，否则无法归位。
 SECTION_MARK_RE = re.compile(r"<!--\s*section:(\S+)\s*-->")
 # 子 agent 给「引言标题」加的标记。带它的标题被降成正文段落、不进目录也不编号
@@ -2338,6 +2380,12 @@ def node_audit(state: WriteState) -> dict:
             prev = _last_high_findings(state.get("session_id"))
             if prev:
                 payload["上一轮你提出的问题（逐条核对，现在还在吗）"] = prev
+        # 线索级来源独撑的含数字断言（程序筛候选，audit 按规则提 finding）：
+        # 没有线索级来源/没有候选句时不加键，行为与改动前完全一致。
+        clue_cands = _clue_only_numeric_sentences(
+            draft, state.get("src_lines") or [])
+        if clue_cands:
+            payload["线索级来源独撑的含数字断言"] = clue_cands
 
         # 2026-10-19 起结论走强制工具 `submit_audit`（坑 77）：M3 开思考
         # 手写 JSON 太长必被截断；M3.1-Flash low 单次 7~12k 接得住，

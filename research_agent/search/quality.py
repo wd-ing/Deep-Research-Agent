@@ -38,10 +38,35 @@ def load_rules() -> dict:
                       (raw.get("drop_title_regex") or [])],
             "head": [re.compile(p) for p in
                      (raw.get("drop_text_head_regex") or [])],
+            # 线索级（2026-11-04）：文库转存域名，不丢弃只降级——
+            # 见 CLUE_MARK/clue_grade()。同样后缀匹配。
+            "clue": {d.strip().lower() for d in
+                     (raw.get("clue_grade_domains") or []) if d},
         }
     except Exception:
-        _rules = {"domains": set(), "title": [], "head": []}
+        _rules = {"domains": set(), "title": [], "head": [], "clue": set()}
     return _rules
+
+
+# 来源清单里给写手看的标记文本（nodes.py 拼到行尾，
+# write.py 的线索级筛句也靠它认行——改文案要两处一起改）。
+CLUE_MARK = "⚠线索级"
+
+
+def clue_grade(domain: str | None) -> str | None:
+    """domain 命中线索级域名就返回该规则域名，否则 None。
+
+    后缀匹配与 `page_defect` 同规则：m.docin.com 命中 docin.com，
+    notrenrendoc.com 不命中。只标不丢——这些站的内容可能相关，
+    但其中的具体数字无法溯源（见 prompts.WRITE_RULES 第 8 条）。
+    """
+    if not domain:
+        return None
+    dom = domain.strip().lower()
+    for d in load_rules()["clue"]:
+        if dom == d or dom.endswith("." + d):
+            return d
+    return None
 
 
 def page_defect(url: str, title: str | None, text: str | None) -> str | None:
