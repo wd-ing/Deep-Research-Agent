@@ -156,7 +156,7 @@ ra = "research_agent.cli:main"
 2026-10-17 把它们从 `/tmp` 搬进来，只解决了「`/tmp` 被清」，
 **没解决「`data/` 被删」**。详见 `CONTEXT.md` 第四节「参考库」。
 
-**待定**：要不要做仓库外备份，以及备份到哪。
+**2026-11-03 已做一次仓库外备份**：`~/Documents/deep-research-refs-backup-20261103.tar.gz`（33MB，24 个库，用 `sqlite3 .backup` 取一致快照、`integrity_check` 全部 ok，sha256 `31a85a9b…fd84da`）。仍在同一块磁盘上——**不是异地备份**；`data/refs/` 新增/变更后要重打。待定：是否再拷一份到网盘/外置盘。
 
 ---
 
