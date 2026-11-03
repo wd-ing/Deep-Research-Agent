@@ -43,6 +43,18 @@ def main():
           and p["ark_glm"]["base_url"] == p["ark_mini"]["base_url"]
           and p["ark_mini"]["api_key_env"] == "ARK_API_KEY")
     check("文件无密钥值", "sk-" not in open(reg.path).read())
+    # ark_ds 备选档案：存在、字段对、没有环节用它
+    ds = p.get("ark_ds") or {}
+    check("ark_ds 档案字段",
+          ds.get("provider") == "ark"
+          and ds.get("model") == "deepseek-v4-flash-ga-260731"
+          and ds.get("base_url") == "https://ark.cn-beijing.volces.com/api/plan/v3"
+          and ds.get("api_key_env") == "ARK_API_KEY"
+          and ds.get("effort_off") == "none", str(ds))
+    check("无环节指向 ark_ds",
+          not any((v or {}).get("provider") == "ark_ds"
+                  for v in (yml.get("stages") or {}).values())
+          and yml["defaults"].get("provider") != "ark_ds")
     # glm 硬约束：缺省 / disabled→None / max / xhigh 都 ConfigError
     import copy
     for bad in (None, "max", "xhigh"):

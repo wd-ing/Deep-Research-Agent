@@ -156,6 +156,22 @@ providers:
     # 开思考 low），但语义会骗人——“关思考”在 glm 上不存在。
     # 需要它的环节一律写显式档位，不写 disabled。
     rate_limit_per_min: 400
+  ark_ds:
+    provider: ark
+    # 备选档案（2026-11-04 实测，尚未切任何环节）。
+    # deepseek-v4-flash（别名；响应里 model 是带日期的 -ga-260731，钉死 ID）。
+    #   · reasoning_effort=none/minimal = 真关思考（rc=0）；不传 = 开思考
+    #     （默认 high）；low 真思考（小题 44~204 tok，难题 1471 tok）；
+    #     medium→low、xhigh→high；thinking:{type:disabled} 也能关
+    #   · 工具 forced/required 都被遵守；缓存生效（第二次 cached=2048）
+    #   · 首字延迟 ~1.5~2s（glm 约 8s）；但长输出吞吐 ~48 tok/s 与 glm
+    #     同量级（mini ~86 tok/s）；难题 high 120s+ 超时
+    #   · 备选：若 glm 的首字延迟/吞吐成瓶颈，规划类环节可改用它
+    #     （none 关思考 或 low）
+    model: deepseek-v4-flash-ga-260731
+    base_url: https://ark.cn-beijing.volces.com/api/plan/v3
+    api_key_env: ARK_API_KEY
+    effort_off: none
   opencode:
     provider: opencode
     base_url: https://api.opencode.ai/v1
