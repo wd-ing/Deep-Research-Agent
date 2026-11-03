@@ -521,3 +521,61 @@ textarea:focus-visible {
   .metrics > div:nth-child(n+3) { border-top: 1px solid rgb(0 0 0 / .05); }
   .big { font-size: 30px; }
 }
+
+/* ============================================================
+   P2 流程页：节点步进器 / 光圈绿点 / 厚度动画
+   ============================================================ */
+/* 轨上节点：落在轨道上的 14px 圆点。已完成=绿实心对勾，
+   当前=绿点+呼吸光圈，未到=空心灰环；审批节点用近黑 ink
+   （「这一步是你的」——未到空心黑环、已批准黑实心对勾）。 */
+.wf-node {
+  position: absolute; top: 50%; transform: translate(-50%, -50%);
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 1.5px solid rgb(0 0 0 / .26); background: #FBFAF9;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0; cursor: pointer; z-index: 2;
+}
+.wf-node:disabled { cursor: default; }
+.wf-node.done { background: rgb(62 143 79); border-color: rgb(62 143 79); color: #fff; }
+.wf-node.done-ink { background: #1a1a1a; border-color: #1a1a1a; color: #fff; }
+.wf-node.future-ink { border-color: #1a1a1a; }
+.wf-node.cur { background: rgb(62 143 79); border-color: rgb(62 143 79); }
+.wf-node.cur::after {
+  content: ""; position: absolute; inset: -6px; border-radius: 50%;
+  border: 1.5px solid rgb(62 143 79 / .45);
+  animation: wf-halo 1.7s var(--ease-out) infinite;
+}
+.wf-node:focus-visible { outline: 2px solid rgb(46 80 200 / .55); outline-offset: 2px; }
+@keyframes wf-halo {
+  0% { transform: scale(.62); opacity: 1; }
+  100% { transform: scale(1.15); opacity: 0; }
+}
+
+/* 执行记录里「正在跑」的光圈绿点（比 wf-running-dot 多一圈晕） */
+.wf-live-dot {
+  position: relative; width: 8px; height: 8px; border-radius: 50%;
+  background: rgb(62 143 79); flex-shrink: 0;
+}
+.wf-live-dot::after {
+  content: ""; position: absolute; inset: -5px; border-radius: 50%;
+  border: 1.5px solid rgb(62 143 79 / .4);
+  animation: wf-halo 1.7s var(--ease-out) infinite;
+}
+
+/* 小节卡厚度条：首载 scaleX 生长（transform，不是 width） */
+.sc-grow { transform-origin: left center; animation: grow-x .55s var(--ease) both; }
+
+/* 环节吸顶：轨高由 ResizeObserver 实测写进 --wf-rail-h（替代写死的 89px） */
+.wf-phase-head { top: var(--wf-rail-h, 89px); }
+
+/* 指标条 2×2 时奇数格跨满（在 P1 的 <900px 规则里一并生效） */
+@media (max-width: 899px) {
+  .metrics > div:last-child:nth-child(odd) { grid-column: span 2; border-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-node.cur::after, .wf-live-dot::after, .sc-grow { animation: none !important; }
+}
+
+/* P2 指标格：长秒表/单位允许折行，不外溢 */
+.metrics .big { overflow-wrap: anywhere; }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Phase, Step } from './workflow'
 import type { ProgressEntry } from '../types'
 import { Icon } from '../components/Icon'
+import { useCountUp } from '../lib/motion'
 
 /** 状态点的形状：完成=实心圆，进行中=呼吸环，需注意=菱形。
  *  **形状**比颜色更能区分——色弱用户也能读出来。
@@ -20,7 +21,7 @@ function Dot({ state, warn }: { state?: Step['state']; warn?: boolean }) {
   if (state === 'running') {
     return (
       <span className="mt-1 flex h-3 w-3 shrink-0 items-center justify-center">
-        <span className="wf-running-dot h-2 w-2 rounded-full bg-live" />
+        <span className="wf-live-dot" />
       </span>
     )
   }
@@ -219,6 +220,11 @@ const ORDER = ['规划', '审批', '写作', '收尾'] as const
 // 快速档的事件流永远走不到它——阶段条给它留一格等于撒谎。
 const FAST_ORDER = ['规划', '写作', '收尾'] as const
 
+/** 显示名≠phase key：快速档的「写作」对外叫「整理作答」，
+ *  锚点/#wfphase-写作/jumpToPhase 仍用 key——显示名只给界面。 */
+const phaseLabel = (key: string, mode?: string) =>
+  key === '写作' && mode === 'fast' ? '整理作答' : key
+
 function num(e: ProgressEntry, k: string): number | undefined {
   return typeof e[k] === 'number' ? (e[k] as number) : undefined
 }
@@ -314,7 +320,7 @@ function deriveFlow(progress: ProgressEntry[], writingNow: boolean) {
  *  - 当前环节只有写作能算比例（完成任务/计划任务），
  *    其它环节没有可量化依据就空着、靠绿点说「在跑」。 */
 function TrackRail({
-  phases, activeIdx, doneAll, writeFrac, writeDone, writeTotal, onJump, order,
+  phases, activeIdx, doneAll, writeFrac, writeDone, writeTotal, onJump, order, mode,
 }: {
   phases: Phase[]
   activeIdx: number
@@ -329,6 +335,7 @@ function TrackRail({
   onJump: (key: string) => void
   /** 环节序列（C2）：标准档 4 段、快速档 3 段——列数和占比都跟它走 */
   order: readonly string[]
+  mode?: string
 }) {
   const segPct = 100 / order.length
   const fill = doneAll
@@ -355,9 +362,8 @@ function TrackRail({
                 done ? 'text-muted' : cur ? 'font-medium text-ink' : 'text-faint',
               ].join(' ')}
             >
-              {done && <Icon name="check" size={13} strokeWidth={2.5} className="text-muted" />}
               {cur && <span className="dot live" />}
-              {k}
+              {phaseLabel(k, mode)}
               {cur && k === '写作' && writeTotal != null && writeTotal > 0 && (
                 <span className="font-normal text-faint">
                   · {writeDone} / {writeTotal} 节
@@ -367,8 +373,32 @@ function TrackRail({
           )
         })}
       </div>
-      <div className="wf-track">
+      <div className="wf-track relative">
         <div className="wf-track-fill" style={{ width: `${fill}%` }} />
+        {/* 轨上节点：每环节一个圆点，位置与该段起点对齐——
+            填充走到「下一个节点」才算本环节完成。审批节点用 ink。 */}
+        {order.map((k, i) => {
+          const p = phases.find((x) => x.key === k)
+          const done = doneAll || i < activeIdx
+          const cur = !doneAll && i === activeIdx
+          const isApproval = k === '审批'
+          const cls = cur ? 'wf-node cur'
+            : done ? (isApproval ? 'wf-node done-ink' : 'wf-node done')
+            : isApproval ? 'wf-node future-ink' : 'wf-node'
+          return (
+            <button
+              key={k}
+              onClick={() => p && onJump(k)}
+              disabled={!p}
+              aria-current={cur ? 'step' : undefined}
+              aria-label={phaseLabel(k, mode)}
+              className={cls}
+              style={{ left: `${(i / order.length) * 100}%` }}
+            >
+              {done && <Icon name="check" size={9} strokeWidth={3} />}
+            </button>
+          )
+        })}
       </div>
     </div>
   )
@@ -408,7 +438,7 @@ function SectionRow({
         </div>
       </div>
       <div
-        className="flex items-end gap-[2px]"
+        className="sc-grow flex items-end gap-[2px]"
         title={`${sec.n} 段证据 · 相对其它小节；数值为任务级分配的近似`}
       >
         {Array.from({ length: 10 }, (_, k) => (
@@ -437,15 +467,18 @@ function SectionRow({
         {sec.status === '失败' && <span className="text-seal">失败</span>}
         {sec.status === '待写' && !sec.thin && '待写'}
       </div>
+      {sec.status === '写作中' && <div className="run-scan col-span-full mt-1" />}
     </div>
   )
 }
 
 /** 一个大环节。**标题吸顶**——滚过长规划时仍知道自己在哪一段。 */
 function PhaseBlock({
-  phase, defaultOpen, isLast, runningSince, openSignal, active,
+  phase, defaultOpen, isLast, runningSince, openSignal, active, num, mode,
 }: {
   phase: Phase
+  num: number
+  mode?: string
   defaultOpen: boolean
   isLast: boolean
   runningSince: number | null
@@ -485,17 +518,18 @@ function PhaseBlock({
         >
           <Icon name="chevron-right" size={11} />
         </span>
+        <span className="shrink-0 font-mono text-[11px] text-faint">
+          {String(num).padStart(2, '0')}
+        </span>
         <span
           className={[
             'shrink-0 text-[13px] font-medium transition-colors',
             running ? 'text-live' : 'text-ink',
           ].join(' ')}
         >
-          {phase.label}环节
+          {phaseLabel(phase.key, mode)}环节
         </span>
-        {running && (
-          <span className="wf-running-dot h-1.5 w-1.5 shrink-0 rounded-full bg-live" />
-        )}
+        {running && <span className="wf-live-dot" />}
         <span className="min-w-0 flex-1 truncate text-2xs leading-5 text-muted/90">
           {phase.summary}
         </span>
@@ -561,6 +595,21 @@ export function WorkflowView({
   onOpenReport?: () => void
 }) {
   const wrapRef = useRef<HTMLDivElement>(null)
+  const railRef = useRef<HTMLDivElement>(null)
+  const started = phases.some((p) => p.steps.some((s) => s.state !== 'running'))
+    || progress.length > 0
+
+  /* sticky 轨真实高度（含窄屏换行）写进 --wf-rail-h，
+     .wf-phase-head 的 top 用它，不写死。 */
+  useEffect(() => {
+    const rail = railRef.current, wrap = wrapRef.current
+    if (!rail || !wrap || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      wrap.style.setProperty('--wf-rail-h', `${rail.offsetHeight}px`)
+    })
+    ro.observe(rail)
+    return () => ro.disconnect()
+  }, [started])
   const endRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const [wide, setWide] = useState(false)
@@ -616,15 +665,13 @@ export function WorkflowView({
   const writeFrac = fdata.planTasks && fdata.planTasks > 0
     ? Math.min(1, fdata.doneTasks / fdata.planTasks) : 0
 
-  /* ---- 空态 ---- */
-  const started = phases.some((p) => p.steps.some((s) => s.state !== 'running'))
-    || progress.length > 0
+  /* ---- 空态（started 提前声明，RO 依赖它） ---- */
   if (!started) {
     if (histLoaded && !running) {
       // 老会话（事件历史不存在）：明示空态，不能冒充「正在启动」
       return (
-        <div ref={wrapRef} className="mx-auto w-full max-w-[1080px] px-6 py-7 md:px-10">
-          <PageHead running={running} flow={flow} question={question} onOpenReport={onOpenReport} />
+        <div ref={wrapRef} className="view-in mx-auto w-full max-w-[1080px] px-6 py-7 md:px-10">
+          <PageHead running={running} flow={flow} question={question} onOpenReport={onOpenReport} mode={mode} />
           <div className="card mt-8 px-6 py-10 text-sm text-faint">
             该会话没有事件历史
           </div>
@@ -632,10 +679,25 @@ export function WorkflowView({
       )
     }
     return (
-      <div ref={wrapRef} className="mx-auto w-full max-w-[1080px] px-6 py-7 md:px-10">
-        <PageHead running={running} flow={flow} question={question} onOpenReport={onOpenReport} />
-        <div className="card mt-8 px-6 py-10">
-          <div className="text-sm text-muted">
+      <div ref={wrapRef} className="view-in mx-auto w-full max-w-[1080px] px-6 py-7 md:px-10">
+        <PageHead running={running} flow={flow} question={question} onOpenReport={onOpenReport} mode={mode} />
+        <div className="card relative mt-8 overflow-hidden px-6 py-10">
+          {running && (
+            <>
+              <div className="paper-grid" />
+              {/* 空心步进器：预告三段（还没数据，只画壳）*/}
+              <div className="relative mb-6 flex items-center gap-3">
+                {(mode === 'fast' ? ['规划', '写作', '收尾'] : ['规划', '审批', '写作', '收尾']).map((k, i) => (
+                  <span key={k} className="flex items-center gap-3">
+                    {i > 0 && <span className="h-px w-10 bg-line" />}
+                    <span className="h-3 w-3 rounded-full border-[1.5px] border-black/25" />
+                    <span className="text-2xs text-faint">{phaseLabel(k, mode)}</span>
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
+          <div className="relative text-sm text-muted">
             {running ? '正在启动…' : '载入中…'}
           </div>
           {running && (
@@ -651,18 +713,26 @@ export function WorkflowView({
   }
 
   /* ---- 指标条：每一项都要有真实事件来源，全无则整条不渲染 ---- */
-  const metrics: { k: string; v: string; unit?: string }[] = []
+  const metrics: { k: string; v: number; unit?: string; fmt?: (n: number) => string }[] = []
   if (fdata.sources !== null) {
-    metrics.push({ k: '已读来源', v: String(fdata.sources), unit: '个' })
+    metrics.push({ k: '已读来源', v: fdata.sources, unit: '个' })
   }
   if (fdata.segments !== null) {
-    metrics.push({ k: '可用段落', v: String(fdata.segments), unit: '段' })
+    metrics.push({ k: '可用段落', v: fdata.segments, unit: '段' })
   }
   if (fdata.written !== null) {
     metrics.push({
       k: '已写入',
-      v: fdata.written >= 10000 ? (fdata.written / 10000).toFixed(1) : String(fdata.written),
+      v: fdata.written,
       unit: fdata.written >= 10000 ? '万字' : '字',
+      fmt: (n) => n >= 10000 ? (n / 10000).toFixed(1) : String(Math.round(n)),
+    })
+  }
+  // 「已用 token」从页脚并入指标条；cost=0（回放/老库）不出格子，不编。
+  if (cost !== null && cost > 0) {
+    metrics.push({
+      k: '已用', v: cost, unit: 'token',
+      fmt: (n) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)),
     })
   }
   // 用时：running 用「现在 - 会话创建」；done/flow 没有可靠的结束时刻
@@ -672,12 +742,12 @@ export function WorkflowView({
   const maxN = Math.max(0, ...fdata.sections.map((s) => s.n))
 
   return (
-    <div ref={wrapRef} className="mx-auto w-full max-w-[1080px] px-6 pb-4 pt-7 md:px-10">
+    <div ref={wrapRef} className="view-in mx-auto w-full max-w-[1080px] px-6 pb-4 pt-7 md:px-10">
       <PageHead running={running} flow={flow} question={question} onOpenReport={onOpenReport} />
 
       {/* L0 刻度轨：sticky——长流程往下滚也要一眼看到走到哪了 */}
       {/* 底色跟页面 paper 走：纯白会浮出一条和底 #FBFAF9 有色差的带子 */}
-      <div className="sticky top-0 z-20 -mx-2 bg-paper/95 px-2 pb-3 pt-1 backdrop-blur">
+      <div ref={railRef} className="sticky top-0 z-20 -mx-2 bg-paper/95 px-2 pb-3 pt-1 backdrop-blur">
         <TrackRail
           phases={phases}
           activeIdx={activeIdx}
@@ -687,6 +757,7 @@ export function WorkflowView({
           writeDone={fdata.doneTasks}
           writeTotal={fdata.planTasks}
           onJump={jumpToPhase}
+          mode={mode}
         />
       </div>
 
@@ -695,13 +766,13 @@ export function WorkflowView({
       )}
 
       {(metrics.length > 0 || showElapsed) && (
-        <div className="card mt-4">
+        <div className="card mt-4 reveal">
           <div className="metrics">
             {metrics.map((m) => (
               <div key={m.k}>
                 <div className="k">{m.k}</div>
                 <div className="big tabular-nums">
-                  {m.v}{m.unit && <small>{m.unit}</small>}
+                  <CountUp v={m.v} fmt={m.fmt} />{m.unit && <small> {m.unit}</small>}
                 </div>
               </div>
             ))}
@@ -718,7 +789,7 @@ export function WorkflowView({
       )}
 
       <div className={wide && fdata.sections.length > 0
-        ? 'mt-5 grid grid-cols-[minmax(0,1fr)_minmax(0,330px)] gap-4'
+        ? 'stagger mt-5 grid grid-cols-[minmax(0,1fr)_minmax(0,330px)] gap-4'
         : 'mt-5 space-y-4'}>
         {fdata.sections.length > 0 && (
           <div className="card self-start p-1.5">
@@ -734,6 +805,8 @@ export function WorkflowView({
               <PhaseBlock
                 key={p.key}
                 phase={p}
+                num={i + 1}
+                mode={mode}
                 defaultOpen={running && i === phases.length - 1}
                 isLast={i === phases.length - 1}
                 runningSince={runningSince}
@@ -741,12 +814,7 @@ export function WorkflowView({
                 active={running && i === phases.length - 1}
               />
             ))}
-            {/* 活性信号：累计 token */}
-            {cost !== null && (
-              <div className="px-4 pb-3 pt-2 text-2xs text-faint tabular-nums">
-                已用约 {cost >= 1000 ? `${(cost / 1000).toFixed(1)}k` : cost} token
-              </div>
-            )}
+
           </div>
         </div>
       </div>
@@ -757,16 +825,22 @@ export function WorkflowView({
 
 /** 页头：进行中「报告正在成形」/回看「研究流程」+ 原问题。 */
 function PageHead({
-  running, flow, question, onOpenReport,
+  running, flow, question, onOpenReport, mode,
 }: {
   running: boolean; flow: boolean
-  question?: string; onOpenReport?: () => void
+  question?: string; onOpenReport?: () => void; mode?: string
 }) {
   return (
     <div className="flex items-end justify-between gap-4">
       <div className="min-w-0">
-        <h1 className="text-2xl font-semibold tracking-[-.01em]">
+        <h1 className="flex items-center gap-2.5 text-[32px] font-semibold tracking-[-.02em]">
           {running ? '报告正在成形' : '研究流程'}
+          {running && (
+            <span className="pill mt-1.5 inline-flex items-center gap-1 text-live">
+              <span className="dot live" />进行中
+            </span>
+          )}
+          {mode === 'fast' && <span className="tag-fast mt-1.5">快速</span>}
         </h1>
         {question && (
           <div className="mt-1 truncate text-[13px] text-faint">{question}</div>
@@ -791,4 +865,11 @@ function ElapsedSince({ iso }: { iso: string }) {
   const t0 = Date.parse(iso)
   const s = Number.isFinite(t0) ? Math.max(0, Math.floor((Date.now() - t0) / 1000)) : 0
   return <span className="tabular-nums">{fmtDur(s)}</span>
+}
+
+/** 指标格里的滚动数字：hooks 规则要求无条件调用，
+ *  所以做成子组件——每格自己挂一份 hook。 */
+function CountUp({ v, fmt }: { v: number; fmt?: (n: number) => string }) {
+  const n = useCountUp(v)
+  return <>{fmt ? fmt(n) : Math.round(n)}</>
 }
