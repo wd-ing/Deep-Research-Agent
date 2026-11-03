@@ -244,6 +244,13 @@ def t_fallback():
     check("③ ≥200 字符干净文本通过",
           secs == {"sec1": ok_body} and err is None, f"{secs} {err}")
 
+    # 机制是 MiniMax 专属（2026-11-03 迁 Ark 后 write_section 不再配
+    # forced_thinking）——测「同档位重试」机制本身，注入带开关的桩 stage。
+    import copy as _copy
+    _cfg = _copy.copy(W.LLM.registry.stage("write_section"))
+    _cfg.forced_thinking = "disabled"
+    _cfg.provider = "minimax"
+    W.LLM.registry._cache["write_section"] = _cfg
     # _run_task 层接线：模型到强制轮都在回文本 → via=fallback → 走清洗。
     stub = StubLLM([blocks(txt("]<]minimax[>[<tool_call> junk"))])
     orig = W.LLM.complete_with_tools
@@ -254,8 +261,9 @@ def t_fallback():
         W.LLM.complete_with_tools = orig
     check("③ _run_task 污染文本不入稿", secs == {} and "污染" in (err or ""),
           f"{secs} {err}")
-    # write_section 配了 forced_thinking=disabled → 强制轮失败后
-    # 应出现一次同档位（thinking=False）的重试（第一次强制不传 thinking）。
+    # 机制是 MiniMax 专属（2026-11-03 迁 Ark 后 write_section 不再配它）。
+    # 这里测的是「forced_thinking=disabled 时同档位重试」这条机制本身——
+    # 给 registry 注入一个带开关的桩 stage，不依赖线上配置。
     kws = [c["kw"] for c in stub.seen]
     check("③ 关思考首次不带 thinking、失败重试带 False",
           len(kws) >= 3 and "thinking" not in kws[1]
@@ -388,8 +396,11 @@ def t_provider_payload():
                          "usage": {}}
     llm._minimax_once = fake_once  # payload 在这层定型，桩这里最准
 
-    base = llm.registry.stage("write_section")   # 已带 forced_thinking=disabled
+    base = llm.registry.stage("write_section")   # 2026-11-03 后不再带开关
     cfg = copy.copy(base)
+    # 本段测的是 _minimax_tools 的 payload 整形——开关是 MiniMax 专属，
+    # 显式补回（迁 Ark 后线上配置已不含它，机制覆盖不依赖线上配置）。
+    cfg.forced_thinking = "disabled"
     cfg.stage = "_t5"
     cfg.provider = "minimax"
     cfg.base_url = "https://api.minimaxi.com/anthropic"

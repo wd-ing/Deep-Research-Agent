@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("MINIMAX_API_KEY", "stub-not-used")
+os.environ.setdefault("ARK_API_KEY", "stub-not-used")
 os.environ["RA_DB_PATH"] = str(Path(tempfile.mkdtemp()) / "t.db")
 
 import research_agent.llm.provider as P               # noqa: E402
@@ -66,6 +67,14 @@ def _client(script):
     client = LLMClient()
     client._minimax_once = rig.once
     cfg = client.registry.stage("relevance")
+    # 2026-11-03 迁 Ark 后该环节走 _opencode 真 HTTP——本测的是重试/护栏机制，
+    # 不是平台，把 stage 换成走 _minimax_once 桩的 minimax 配置（不联网）。
+    import copy as _copy
+    cfg = _copy.copy(cfg)
+    cfg.provider = "minimax"
+    cfg.base_url = "https://api.minimaxi.com/anthropic"
+    cfg.api_key_env = "MINIMAX_API_KEY"
+    client.registry._cache["relevance"] = cfg
     cfg.overload_retry.max_retries = 0   # 不挡我们脚本化的过载路径
     cfg.guard.retry_on_transport = 1
     old_sleep = P._sleep

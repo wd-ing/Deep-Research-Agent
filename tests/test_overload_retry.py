@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("MINIMAX_API_KEY", "stub-not-used")
+os.environ.setdefault("ARK_API_KEY", "stub-not-used")
 os.environ["RA_DB_PATH"] = str(Path(tempfile.mkdtemp()) / "t.db")
 
 import research_agent.llm.provider as P               # noqa: E402
@@ -88,6 +89,13 @@ def _client(script, stage="relevance") -> tuple[Rig, LLMClient, object]:
     client = LLMClient()
     client._minimax_once = rig.once
     cfg = client.registry.stage(stage)
+    # 同上：桩只覆盖 _minimax_once，迁 Ark 后把 stage 换成 minimax 配置不联网。
+    import copy as _copy
+    cfg = _copy.copy(cfg)
+    cfg.provider = "minimax"
+    cfg.base_url = "https://api.minimaxi.com/anthropic"
+    cfg.api_key_env = "MINIMAX_API_KEY"
+    client.registry._cache[stage] = cfg
     cfg.overload_retry.max_retries = 5
     cfg.overload_retry.base_s = 10.0
     cfg.overload_retry.cap_s = 60.0
@@ -209,6 +217,14 @@ def t5_both_entries():
         return item[0], item[1], (parsed_json if item[0] == 200 else None)
     client._minimax_once = once_json
     cfg = client.registry.stage("relevance")
+    # 2026-11-03 迁 Ark 后该环节走 _opencode 真 HTTP——本测的是重试/护栏机制，
+    # 不是平台，把 stage 换成走 _minimax_once 桩的 minimax 配置（不联网）。
+    import copy as _copy
+    cfg = _copy.copy(cfg)
+    cfg.provider = "minimax"
+    cfg.base_url = "https://api.minimaxi.com/anthropic"
+    cfg.api_key_env = "MINIMAX_API_KEY"
+    client.registry._cache["relevance"] = cfg
     old_sleep = P._sleep
     P._sleep = rig.sleep
     try:
@@ -231,6 +247,13 @@ def t5_both_entries():
         item = rig.script.pop(0) if rig.script else (200, "")
         return item[0], item[1], (OK_TOOL if item[0] == 200 else None)
     client._minimax_once = once_tool
+    # 同上：summarize 也要走桩住的 _minimax_tools，不联网。
+    import copy as _copy
+    cfg2 = _copy.copy(client.registry.stage("summarize"))
+    cfg2.provider = "minimax"
+    cfg2.base_url = "https://api.minimaxi.com/anthropic"
+    cfg2.api_key_env = "MINIMAX_API_KEY"
+    client.registry._cache["summarize"] = cfg2
     P._sleep = rig.sleep
     try:
         sid = _new_session()

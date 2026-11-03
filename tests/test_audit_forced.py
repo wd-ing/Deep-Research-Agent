@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("MINIMAX_API_KEY", "stub-not-used")
+os.environ.setdefault("ARK_API_KEY", "stub-not-used")
 
 from research_agent.llm import provider as P            # noqa: E402
 from research_agent.graph.subgraphs import write as W   # noqa: E402
@@ -290,51 +291,62 @@ def t_transient_http():
 def t_config_and_payload():
     reg = P.ModelRegistry()
     cfg = reg.stage("write_audit")
-    check("③ write_audit 指向 M3.1-Flash / minimax 协议",
-          cfg.provider == "minimax" and cfg.model == "MiniMax-M3.1-Flash",
+    check("③ write_audit 指向 ark_glm glm-5-3-flash-260828",
+          cfg.provider == "ark" and cfg.model == "glm-5-3-flash-260828",
           f"{cfg.provider}/{cfg.model}")
-    check("③ effort 组合 = reasoning low + thinking_effort low",
-          cfg.reasoning_effort == "low" and cfg.thinking_effort == "low",
+    check("③ effort 组合 = reasoning low（glm 无 thinking_effort）",
+          cfg.reasoning_effort == "low" and cfg.thinking_effort is None,
           f"{cfg.reasoning_effort!r}/{cfg.thinking_effort!r}")
     check("③ max_output_tokens=24576、timeout 420",
           cfg.max_output_tokens == 24576 and cfg.timeout_s == 420.0,
           f"{cfg.max_output_tokens}/{cfg.timeout_s}")
 
-    # 兄弟环节必须还在 M3 上——它们靠 forced_thinking: disabled 吃饭。
+    # 兄弟环节：迁 Ark 后写手写修订走 ark_mini（doubao-seed-2-0-mini）。
     for st in ("write_section", "write_revise"):
-        check(f"③ {st} 没被误换，仍是 MiniMax-M3",
-              reg.stage(st).model == "MiniMax-M3", reg.stage(st).model)
+        check(f"③ {st} 指向 ark_mini doubao-seed-2-0-mini-260428",
+              reg.stage(st).model == "doubao-seed-2-0-mini-260428"
+              and reg.stage(st).provider == "ark",
+              reg.stage(st).model)
 
-    # payload 定型：M3.1 的强制交卷发 adaptive + output_config.effort=low。
+    # payload 定型（OpenAI 形状）：glm 的强制交卷发 reasoning_effort=low +
+    # OpenAI tool_choice。write_audit 是 stream 环节，为走可截获的 post
+    # 分支复制一份 cfg 关 stream——payload 组装在分支之前，不受影响。
+    import copy
     llm = P.LLMClient()
     sent: list[dict] = []
 
-    def fake_once(cfg, url, headers, payload):
-        sent.append(payload)
-        return 200, "", {"content": [{"type": "tool_use", "id": "u1",
-                                      "name": "submit_audit",
-                                      "input": FIXTURES["clean"]}],
-                         "usage": {}}
-    llm._minimax_once = fake_once
+    class _FakeResp:
+        status_code = 200
+        def json(self):
+            return {"choices": [{"finish_reason": "tool_calls", "message": {
+                        "tool_calls": [{"id": "u1", "function": {
+                            "name": "submit_audit",
+                            "arguments": __import__('json').dumps(
+                                FIXTURES["clean"])}}]}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+    def fake_post(url, headers=None, json=None, timeout=None):
+        sent.append(json)
+        return _FakeResp()
+    llm._client.post = fake_post
     try:
-        llm._minimax_tools(
-            cfg, "sys", [{"role": "user", "content": "p"}],
-            [{"name": "submit_audit", "description": "d",
-              "input_schema": W.AUDIT_SCHEMA}],
-            tool_choice="submit_audit")
+        cfg2 = copy.copy(cfg); cfg2.stream = False
+        llm._openai_compat_forced(
+            cfg2, "sys", "p",
+            {"type": "function", "function": {
+                "name": "submit_audit", "description": "d",
+                "parameters": W.AUDIT_SCHEMA}})
         p0 = sent[0]
-        check("③ payload：model/max_tokens/stream",
-              p0.get("model") == "MiniMax-M3.1-Flash"
+        check("③ payload：model/max_tokens/effort",
+              p0.get("model") == "glm-5-3-flash-260828"
               and p0.get("max_tokens") == 24576
-              and p0.get("stream") is True,
-              f"{p0.get('model')}/{p0.get('max_tokens')}")
-        check("③ payload：adaptive + effort low（不是 disabled）",
-              p0.get("thinking") == {"type": "adaptive"}
-              and p0.get("output_config") == {"effort": "low"},
-              f"{p0.get('thinking')} {p0.get('output_config')}")
+              and p0.get("reasoning_effort") == "low",
+              f"{p0.get('model')}/{p0.get('max_tokens')}/{p0.get('reasoning_effort')}")
+        check("③ payload：无 MiniMax 专属字段",
+              "thinking" not in p0 and "output_config" not in p0,
+              str([k for k in p0 if k in ("thinking", "output_config")]))
         check("③ payload：tool_choice 指名 submit_audit",
-              p0.get("tool_choice") == {"type": "tool",
-                                       "name": "submit_audit"},
+              (p0.get("tool_choice") or {}).get("function", {}).get("name")
+              == "submit_audit",
               str(p0.get("tool_choice")))
     finally:
         llm.close()

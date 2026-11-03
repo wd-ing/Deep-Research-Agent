@@ -37,6 +37,7 @@ sys.path.insert(0, str(ROOT))
 # 「未设置 MINIMAX_API_KEY」——**症状与本测试要验的东西完全无关**。
 os.environ.setdefault("INTERN_AI_API_KEY", "stub-not-used")
 os.environ.setdefault("MINIMAX_API_KEY", "stub-not-used")
+os.environ.setdefault("ARK_API_KEY", "stub-not-used")
 
 from research_agent.llm.provider import (  # noqa: E402
     LLMClient, _lower_effort,

@@ -99,7 +99,7 @@ REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "disabled"}
 # 全部从 `config/models.yaml` 读。换平台只改配置，不动这里。
 #   · opencode —— 已有，接过 write 板块
 #   · xj189    —— 2026-10-09 加，DeepSeek 系（deepseek-v4-flash-0731）
-OPENAI_COMPAT = {"opencode", "xj189", "internai"}
+OPENAI_COMPAT = {"opencode", "xj189", "internai", "ark"}
 
 
 # ---------- 当前会话 ----------
@@ -626,6 +626,28 @@ class StageConfig:
         #   → 翻译后的值仍是 False → `if cfg.reasoning_effort:` 是假
         #   → payload 里**根本不带这个字段** → 平台按默认开思考。
         # 全程**不报错**，只是安静地多烧 token。必须在这里拦住。
+        # 火山方舟 glm-* 的硬约束（2026-11-03 实测，探测脚本 /tmp/ark/probe*.py）：
+        # glm-5-3-flash **关不掉思考**——`thinking.type=disabled` 直接 400；
+        # 不发 reasoning_effort = 默认 max 思考（实测 120s+ 超时、长思考烧
+        # token）；`disabled` 经档案翻译后是「不发字段」→ 同样走 max。
+        # 所以两种情况都要拦：缺省/翻译后 None，以及显式 max/xhigh
+        # （max 在 task_timeout=300s 里跑不完，实测超时被 kill）。
+        # 正确写法是 `reasoning_effort: low`（或 high——只给真能烧的环节）。
+        if (self.provider == "ark"
+                and (self.model or "").startswith("glm-")):
+            if self.reasoning_effort is None:
+                raise ConfigError(
+                    f"环节 {self.stage} 用 {self.model} 但 reasoning_effort "
+                    "缺省（或 disabled 被档案翻译成不发字段）：glm 关不掉思考，"
+                    "缺省 = 默认 max 思考，实测 120s+ 超时。必须显式写 "
+                    "reasoning_effort（配 low；高速档只有 medium/high 也映射 low）。"
+                )
+            if self.reasoning_effort in ("max", "xhigh"):
+                raise ConfigError(
+                    f"环节 {self.stage} 用 {self.model} 配了 reasoning_effort "
+                    f"{self.reasoning_effort}——glm 的 max/xhigh 是长思考档，"
+                    "实测难题上超 task_timeout=300s 被 kill。只允许 low/high。"
+                )
         if self.reasoning_effort is not None:
             if not isinstance(self.reasoning_effort, str):
                 raise ConfigError(

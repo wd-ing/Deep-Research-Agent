@@ -1,13 +1,17 @@
 """`config/models.yaml` 环节→模型钉死关系的守门测试（2026-10-20）。
 
-背景：assess / write_plan_spec / write_plan_tasks 迁到 M3.1-Flash low
-（A/B 实测：分派输出 16~38k→6~10k token、耗时 140~424s→34~62s，
-依据 /tmp/exp_model_ab/summary.txt）；write_section / write_revise /
-write_patch **必须留 M3 + forced_thinking: disabled**（它们靠关思考
-+ round_max_tokens 吃饭，M3.1 关不掉思考，disabled → 400）。
+背景：2026-11-03 MiniMax 订阅到期，迁火山方舟（Ark）。
+难环节（assess / write_plan_spec / write_plan_tasks / write_audit /
+outline / probe_outline）走 ark_glm = glm-5-3-flash-260828 +
+`reasoning_effort: low`（glm 关不掉思考，缺省=max 会 120s+ 超时，
+validate() 拦死）；其余 11 个环节走默认 ark_mini =
+doubao-seed-2-0-mini-260428，`reasoning_effort: disabled` 经档案
+effort_off:none 翻译成发 `none`。write_* 的 MiniMax 专属键
+（forced_thinking / round_max_tokens）必须删掉——validate() 对
+非 minimax 会拦。
 
-有人把这三个环节改回 defaults（M3）或把 write_* 挪到 minimax31 时，
-这里会当场指出来。
+有人把环节挪回 MiniMax 档案、给 glm 环节删了 reasoning_effort、
+或把 MiniMax 专属键留在 ark 环节上时，这里会当场指出来。
 
 用法：
     .venv/bin/python tests/test_stage_migration.py
@@ -23,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("MINIMAX_API_KEY", "stub-not-used")
+os.environ.setdefault("ARK_API_KEY", "stub-not-used")
 
 from research_agent.llm.provider import ModelRegistry  # noqa: E402
 
@@ -37,17 +42,17 @@ def check(label: str, cond: bool, detail: str = "") -> None:
 
 
 def main() -> int:
-    print("=== stages → M3.1/M3 钉死校验 ===")
+    print("=== stages → ark_mini/ark_glm 钉死校验 ===")
     reg = ModelRegistry()
 
     for stage in ("assess", "write_plan_spec", "write_plan_tasks",
                   "write_audit", "outline", "probe_outline"):
         c = reg.stage(stage)
-        check(f"{stage}: M3.1-Flash + low/low + 无 forced_thinking",
-              c.provider == "minimax"
-              and c.model == "MiniMax-M3.1-Flash"
+        check(f"{stage}: ark_glm glm-flash + low + 无 forced_thinking",
+              c.provider == "ark"
+              and c.model == "glm-5-3-flash-260828"
               and c.reasoning_effort == "low"
-              and c.thinking_effort == "low"
+              and c.thinking_effort is None
               and c.forced_thinking is None,
               f"{c.provider}/{c.model} "
               f"{c.reasoning_effort}/{c.thinking_effort} "
@@ -55,10 +60,14 @@ def main() -> int:
 
     for stage in ("write_section", "write_revise", "write_patch"):
         c = reg.stage(stage)
-        check(f"{stage}: 仍 M3 + forced_thinking=disabled",
-              c.model == "MiniMax-M3"
-              and c.forced_thinking == "disabled",
-              f"{c.model} forced={c.forced_thinking}")
+        check(f"{stage}: ark_mini + 关思考无 MiniMax 专属键",
+              c.provider == "ark"
+              and c.model == "doubao-seed-2-0-mini-260428"
+              and c.reasoning_effort == "none"
+              and c.forced_thinking is None
+              and c.round_max_tokens is None,
+              f"{c.provider}/{c.model} effort={c.reasoning_effort} "
+              f"forced={c.forced_thinking} round={c.round_max_tokens}")
 
     # 迁移三环节的具体额度/超时（M3.1 思考与正文共享 max_tokens，
     # 按 A/B 实测峰值 2~4 倍富余给；timeout 与 write_audit 同款 420）。
@@ -101,9 +110,9 @@ def main() -> int:
           f"max={c.max_output_tokens}")
 
     c = reg.stage("write_section")
-    check("write_section: max_output_tokens=16384 + round 2048",
+    check("write_section: max_output_tokens=16384 且无 round_max_tokens",
           c.max_output_tokens == 16384
-          and c.round_max_tokens == 2048
+          and c.round_max_tokens is None
           and c.guard.max_output_tokens == 16384
           and c.timeout_s == 300.0,
           f"max={c.max_output_tokens} round={c.round_max_tokens} "
@@ -113,9 +122,9 @@ def main() -> int:
     # submit_section 入参两次被 4096 顶断）；round_max_tokens 2048 是
     # P2 的读证据轮压上限设计，不许跟着涨。
     c = reg.stage("write_revise")
-    check("write_revise: max_output_tokens=8192 + round 2048",
+    check("write_revise: max_output_tokens=8192 且无 round_max_tokens",
           c.max_output_tokens == 8192
-          and c.round_max_tokens == 2048
+          and c.round_max_tokens is None
           and c.guard.max_output_tokens == 8192,
           f"max={c.max_output_tokens} round={c.round_max_tokens} "
           f"guard={c.guard.max_output_tokens}")
