@@ -54,6 +54,13 @@ export interface SessionSummary {
   /** 研究档位（C1/C2）：'fast' = 检索整理简报，无审批/写作子图/审查。
    *  0012 迁移前的老库行没有这列——读取处一律用 === 'fast' 判断。 */
   mode?: 'standard' | 'fast'
+  /** 一键补深度（0013）：'fast' = 这场是从快速档升级上来的。
+   *  升级后 mode 已变 'standard'，靠这个字段认「升过级」。 */
+  upgraded_from?: 'fast' | null
+  /** 升级前的快速简报快照（升级会话才有，没升过=null）。 */
+  fast_brief?: string | null
+  /** 现在能升：快速档 done + 没升过 + checkpoint 可续跑。 */
+  upgradable?: boolean
 }
 
 /** `GET /api/sessions/search` 的一条命中（D2 跨会话搜索）。 */

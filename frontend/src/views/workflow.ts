@@ -86,7 +86,8 @@ function phaseOf(node: string | null, view: string): PhaseName {
 }
 
 /** 单个 progress 事件 → 一个子环节。没有就返回 null（不留空条目）。 */
-function toStep(e: ProgressEntry, seq: number): Step | null {
+function toStep(e: ProgressEntry, seq: number,
+               upgraded = false): Step | null {
   const id = `${e.kind}-${seq}`
   switch (e.kind) {
     case 'probe_light':
@@ -98,6 +99,9 @@ function toStep(e: ProgressEntry, seq: number): Step | null {
         id, label: '归纳领域轮廓',
         summary: `${n(e, 'subtopics')} 个子话题 · ${n(e, 'entities')} 实体 · ${n(e, 'controversies')} 争议`,
       }
+    case 'upgrade':
+      return { id, label: '升级为标准档',
+               summary: '沿用证据与检索进度，从评估继续' }
     case 'outline':
       return { id, label: '定框架', summary: `${n(e, 'sections') ?? '?'} 个小节` }
     case 'search_query': {
@@ -388,6 +392,12 @@ function toStep(e: ProgressEntry, seq: number): Step | null {
         return { id, label: '整理作答', summary: '没有可用来源', warn: true }
       }
       const rm = n(e, 'citations_removed') ?? 0
+      if (upgraded) {
+        // 一键补深度：这是**快速阶段**的成文——标成注记，不许被当成
+        // 后面标准档写作的完成项（真实时间照原事件）。
+        return { id, label: '快速简报已生成',
+                 summary: '升级前的一次成文版本', kind: 'answer' }
+      }
       const deg = e.degraded === true
       return {
         id, label: '整理作答',
@@ -519,6 +529,8 @@ export function buildPhases(
 ): Phase[] {
   const phases: Record<string, Phase> = {}
   for (const p of PHASE_ORDER) phases[p] = { key: p, label: p, summary: '', steps: [] }
+  // 升级会话：快速阶段的 answer 要当注记看——扫一眼有没有 upgrade 标记。
+  const upgraded = progress.some((e) => e.kind === 'upgrade')
 
   // ⚠️ **按事件自带的 `node` 归类，一个都不能用 `currentNode` 推。**
   // 原来这里写的是
@@ -529,7 +541,7 @@ export function buildPhases(
   // 「规划」整个消失；一到 finalize 又全部弹回「规划」。
   // （v5 里 write 占整轮 58%，所以这个错法全程可见。）
   progress.forEach((e, i) => {
-    const st = toStep(e, i)
+    const st = toStep(e, i, upgraded)
     if (!st) return
     st.kind = e.kind
     phases[phaseOf(e.node, view)].steps.push(st)

@@ -114,11 +114,12 @@ function SessionRow({
           </div>
           {/* 稿子的元信息行：状态点 + 「已完成 · 1 天前」。
               绿呼吸点归「在跑」，灰点归静止——同一套 dot 语言。 */}
-          <div className="mt-1 flex items-center gap-1.5 text-2xs text-faint">
+          <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-2xs text-faint">
             <span className={['dot', s.status === 'running' ? 'live' : ''].join(' ')} />
-            <span>{s.status === 'running' ? '进行中' : s.status === 'done' ? '已完成' : s.status}</span>
+            <span className="shrink-0 whitespace-nowrap">{s.status === 'running' ? '进行中' : s.status === 'done' ? '已完成' : s.status}</span>
             {/* 快速档识别章（C2）：老库行没 mode 字段 === 'fast' 判假 */}
             {s.mode === 'fast' && <span className="tag-fast">快速</span>}
+            {s.upgraded_from === 'fast' && <span className="tag-fast">快速→标准</span>}
             {s.archived_at && <span>· 已归档</span>}
             {s.cost_tokens > 0 && <span>· {tokens(s.cost_tokens)}</span>}
             <span>· {ago(s.created_at)}</span>

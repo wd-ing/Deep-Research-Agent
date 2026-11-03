@@ -122,6 +122,9 @@ export function useSession(sid: string | null) {
   const timerRef = useRef<number | null>(null)
   // 历史回放+实时 SSE 的事件指纹集：/events 与 /stream 在接缝处
   // 可能各送一份同一事件，用它去重。每次换会话重建。
+  // 升级后要让「会话加载 effect」重跑一遍（重新取详情、建 SSE、灌历史）：
+  // done 会话在加载时**不开 SSE**，升级后若不重连就收不到 assess→审批点的事件。
+  const [reloadTick, setReloadTick] = useState(0)
   const seenRef = useRef<Set<string>>(new Set())
   // 轮询回调里读 view 需要最新值：effect 不随 view 重跑，留个 ref
   const viewRef = useRef(view)
@@ -399,7 +402,7 @@ export function useSession(sid: string | null) {
       }
       if (costTimer !== null) window.clearInterval(costTimer)
     }
-  }, [sid, loadApproval, loadDetail, track])
+  }, [sid, reloadTick, loadApproval, loadDetail, track])
 
   const start = useCallback(async (id: string) => {
     askNotifyPermission()
@@ -413,6 +416,30 @@ export function useSession(sid: string | null) {
     askNotifyPermission()
     setView('running'); setApproval(null)
     await track(jpost(`/api/sessions/${id}/approve`, { approved: true }))
+  }, [])
+
+  const upgrade = useCallback(async (id: string): Promise<
+      { ok: true } | { ok: false; reason: string; message: string }> => {
+    // 不用 jpost：409 要带 detail.reason 给文案分支，得原样拿到。
+    const r = await fetch(`/api/sessions/${id}/upgrade`, { method: 'POST' })
+    if (r.ok) {
+      askNotifyPermission()
+      // ⚠️ 不能只 setView('running')：done 会话载入时没开 SSE（见加载 effect），
+      // 升级后必须让 effect 重跑——它会取新详情（status 已是 running）、
+      // 建 SSE、再灌完整历史（快速阶段 + upgrade 标记 + 之后的标准阶段事件）。
+      setError(null)
+      setReloadTick((t) => t + 1)
+      return { ok: true }
+    }
+    let reason = 'error'
+    let message = `HTTP ${r.status}`
+    try {
+      const d = (await r.json() as { detail?: { reason?: string; message?: string } })
+        .detail ?? {}
+      reason = d.reason ?? reason
+      message = d.message ?? message
+    } catch { /* 非 JSON 错误体就留默认 */ }
+    return { ok: false, reason, message }
   }, [])
 
   const create = useCallback(async (question: string,
@@ -450,7 +477,7 @@ export function useSession(sid: string | null) {
     view, detail, progress, node, nodeAt, cost, approval, error,
     thinking, draft, seg, busy, histLoaded, histTruncated,
     notice, notify, setNotice,
-    start, approve, create, archive, openSeg,
+    start, approve, create, archive, openSeg, upgrade,
     setSeg, setView, setProgress, setNode, setApproval, setError, loadDetail,
   }
 }

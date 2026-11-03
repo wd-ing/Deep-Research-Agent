@@ -573,6 +573,7 @@ function PhaseBlock({
 export function WorkflowView({
   phases, progress, running, runningSince, cost, flow,
   histLoaded, truncated, question, startedAt, onOpenReport, mode, billing,
+  upgradedFrom,
 }: {
   phases: Phase[]
   progress: ProgressEntry[]
@@ -595,6 +596,8 @@ export function WorkflowView({
   onOpenReport?: () => void
   /** 运行账单（done+available 才渲染，取数失败为 null） */
   billing?: import('../types').BillingResp | null
+  /** 一键补深度：升级会话显示「快速→标准」章。 */
+  upgradedFrom?: 'fast' | null
 }) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const railRef = useRef<HTMLDivElement>(null)
@@ -673,7 +676,7 @@ export function WorkflowView({
       // 老会话（事件历史不存在）：明示空态，不能冒充「正在启动」
       return (
         <div ref={wrapRef} className="view-in mx-auto w-full max-w-[1080px] px-6 py-7 md:px-10">
-          <PageHead running={running} flow={flow} question={question} onOpenReport={onOpenReport} mode={mode} />
+          <PageHead running={running} flow={flow} question={question} onOpenReport={onOpenReport} mode={mode} upgradedFrom={upgradedFrom} />
           <div className="card mt-8 px-6 py-10 text-sm text-faint">
             该会话没有事件历史
           </div>
@@ -682,7 +685,7 @@ export function WorkflowView({
     }
     return (
       <div ref={wrapRef} className="view-in mx-auto w-full max-w-[1080px] px-6 py-7 md:px-10">
-        <PageHead running={running} flow={flow} question={question} onOpenReport={onOpenReport} mode={mode} />
+        <PageHead running={running} flow={flow} question={question} onOpenReport={onOpenReport} mode={mode} upgradedFrom={upgradedFrom} />
         <div className="card relative mt-8 overflow-hidden px-6 py-10">
           {running && (
             <>
@@ -829,11 +832,12 @@ export function WorkflowView({
 }
 
 /** 页头：进行中「报告正在成形」/回看「研究流程」+ 原问题。 */
-function PageHead({
+function PageHead({ upgradedFrom,
   running, flow, question, onOpenReport, mode,
 }: {
   running: boolean; flow: boolean
   question?: string; onOpenReport?: () => void; mode?: string
+  upgradedFrom?: 'fast' | null
 }) {
   return (
     <div className="flex items-end justify-between gap-4">
@@ -846,6 +850,7 @@ function PageHead({
             </span>
           )}
           {mode === 'fast' && <span className="tag-fast mt-1.5">快速</span>}
+          {upgradedFrom === 'fast' && <span className="tag-fast mt-1.5">快速→标准</span>}
         </h1>
         {question && (
           <div className="mt-1 truncate text-[13px] text-faint">{question}</div>

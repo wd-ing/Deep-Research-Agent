@@ -107,6 +107,10 @@ export default function App() {
   // 报告正文的滚动容器。目录跳转、阅读进度、当前节高亮全靠它——
   // 滚动的是这个容器，不是报告自己（报告是里面一块静态内容）。
   const reportScrollRef = useRef<HTMLDivElement>(null)
+  // 版本切换（一键补深度）：'deep' 深度报告 / 'brief' 升级前的快速简报。
+  const [ver, setVer] = useState<'deep' | 'brief'>('deep')
+  const [upgrading, setUpgrading] = useState(false)
+  useEffect(() => { setVer('deep'); setUpgrading(false) }, [sid])
 
   // ⚠️ `/api/sessions` 里的 `deleted_at IS NULL` 是**硬过滤**（server.py:114），
   // 回收站的会话根本不在这一份里。必须单独打 `/api/trash`，
@@ -226,6 +230,31 @@ export default function App() {
       s.notify(`会话已建好，但启动失败：${(e as Error).message}`))
   }
 
+  /** 一键补深度：快速档→标准档续跑。成功即跳流程页（s.upgrade 已置
+   *  view='running'，SSE 订阅续着走）；失败按 reason 给人话。 */
+  async function doUpgrade() {
+    if (!sid || upgrading) return
+    setUpgrading(true)
+    try {
+      const r = await s.upgrade(sid)
+      if (r.ok) return
+      const msg: Record<string, string> = {
+        already_upgraded: '这场已经升级过了',
+        not_done: '快速档还没跑完，结束后再升级',
+        no_checkpoint: '检查点已清理，无法续跑——可改用「以标准档重新研究」',
+        busy: '已有一次升级在进行',
+      }
+      s.notify(msg[r.reason] ?? `升级失败：${r.message}`)
+      if (r.reason === 'no_checkpoint') await s.loadDetail(sid)   // 刷新出回退按钮
+    } finally { setUpgrading(false) }
+  }
+
+  /** 「以标准档重新研究」：同一问题新开会话（start 会建+跑+跳新会话）。 */
+  function doRestart() {
+    if (!d?.question) return
+    void start(d.question, 'standard')
+  }
+
   /** 首页输入卡提交：和对话框走同一个 `start`——只是入口不同。 */
   const submitHome = () => {
     const q = homeQ.trim()
@@ -239,7 +268,8 @@ export default function App() {
   const liveList = list.filter((x) => !x.archived_at)
 
   const d = s.detail
-  const report = d?.report ?? ''
+  const report = (ver === 'brief' && d?.fast_brief)
+    ? d.fast_brief : (d?.report ?? '')
 
   // `buildPhases` 是纯函数，但每次渲染都重算会造出一个**新数组**——
   // `WorkflowView` 的 `useEffect([phases])` 于是每次渲染都触发一次
@@ -621,6 +651,7 @@ export default function App() {
                           <span className={['dot', x.status === 'running' ? 'live' : ''].join(' ')} />
                           {x.status === 'running' ? '进行中' : x.status === 'done' ? '已完成' : x.status}
                           {x.mode === 'fast' && <span className="tag-fast">快速</span>}
+                        {x.upgraded_from === 'fast' && <span className="tag-fast">快速→标准</span>}
                           <span>· {ago(x.created_at)}</span>
                         </div>
                         {x.status === 'running' && <div className="run-scan mt-1.5" />}
@@ -682,6 +713,7 @@ export default function App() {
               startedAt={d?.created_at}
               mode={d?.mode}
               billing={billing}
+              upgradedFrom={d?.upgraded_from}
               onOpenReport={report ? () => s.setView('done') : undefined}
             />
             {debug && <DebugPanel thinking={s.thinking} draft={s.draft} />}
@@ -713,6 +745,15 @@ export default function App() {
               marksOn={marksOn}
               sources={d?.sources}
               mode={d?.mode}
+              upgradedFrom={d?.upgraded_from}
+              upgradable={d?.upgradable}
+              hasBrief={!!d?.fast_brief}
+              status={d?.status}
+              ver={ver}
+              onVer={setVer}
+              onUpgrade={() => void doUpgrade()}
+              onRestart={doRestart}
+              upgrading={upgrading}
             />
           </div>
         )}

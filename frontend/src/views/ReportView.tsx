@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import type { IgnoredCitation, ReviewPatch, ReviewResp, SegPreview, SegPreviews, SourceRow } from '../types'
 import { NatureBadge } from '../components/SegDrawer'
 import { ProgressBar, TocBar, scanHeadings, type TocItem } from '../components/Toc'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { CountUp } from '../components/CountUp'
 import { Icon } from '../components/Icon'
 
@@ -585,6 +586,8 @@ function doubtCount(doubt: string): number {
 export function ReportView({
   markdown, onRef, ignoredCitations = [], onOpenSource, previews = {}, scrollRef,
   review, marksOn = false, sources, mode, lead,
+  upgradedFrom, upgradable, hasBrief, status, ver, onVer,
+  onUpgrade, onRestart, upgrading,
 }: {
   markdown: string
   onRef: (ref: string) => void
@@ -608,6 +611,23 @@ export function ReportView({
   /** 正文列顶部的随文内容（App 传入 RoundChart）——不再是常驻区，
    *  滚过去就没了。 */
   lead?: ReactNode
+  /** 一键补深度：升级标记。升级后 mode 已是 standard，靠它认。 */
+  upgradedFrom?: 'fast' | null
+  /** 后端判定的「现在可升」；false/null 时给「以标准档重新研究」回退。 */
+  upgradable?: boolean
+  /** 有没有 fast_brief 快照——有才显示版本切换。 */
+  hasBrief?: boolean
+  /** 会话状态（done/running/awaiting…），升级进行中态靠它区分。 */
+  status?: string
+  /** 版本切换：'deep'=深度报告 / 'brief'=快速简报（App 持有）。 */
+  ver?: 'deep' | 'brief'
+  onVer?: (v: 'deep' | 'brief') => void
+  /** 「补深度报告」确认后的动作（App 做 POST+跳流程页+人话错误）。 */
+  onUpgrade?: () => void
+  /** 「以标准档重新研究」（App 走 start(question,'standard')）。 */
+  onRestart?: () => void
+  /** 升级请求在飞（确认按钮的 pending 锁，同审批按钮手法）。 */
+  upgrading?: boolean
 }) {
   const parts = useMemo(() => {
     const clean = cleanReportMd(markdown)
@@ -628,6 +648,7 @@ export function ReportView({
    *  跨正文和存疑节才是读者心里的那个数。 */
   const counts = useMemo(() => refCounts(markdown), [markdown])
   const [openToc, setOpenToc] = useState(false)
+  const [confirmUp, setConfirmUp] = useState<null | 'up' | 'restart'>(null)
   const [showAllSrc, setShowAllSrc] = useState(false)
   const [activeId, setActiveId] = useState('')
   const [pct, setPct] = useState(0)
@@ -1015,6 +1036,62 @@ export function ReportView({
               </p>
             </div>
           )}
+          {/* 快速档「补深度」操作区：可升→补深度报告；不可升→以标准档重开 */}
+          {mode === 'fast' && status === 'done' && (onUpgrade || onRestart) && (
+            <div className="mb-6 flex flex-wrap items-center gap-3 print:hidden">
+              {upgradable ? (
+                <button className="btn-ghost text-accent"
+                        onClick={() => setConfirmUp('up')} disabled={upgrading}>
+                  {upgrading ? '升级中…' : '补深度报告'}
+                </button>
+              ) : onRestart ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button className="btn-ghost text-accent"
+                          onClick={() => setConfirmUp('restart')}>
+                    以标准档重新研究
+                  </button>
+                  <span className="text-2xs text-faint">
+                    这场的检查点已清理，没法接着做；会用同一个问题新开一场标准档研究
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          )}
+          {/* 升级进行中：正文仍是快速简报，明示+给进度入口 */}
+          {upgradedFrom === 'fast' && status !== 'done' && (
+            <div className="mb-5 flex items-center gap-2 print:hidden">
+              <span className="tag-fast mt-0.5">深度报告生成中</span>
+              <p className="text-2xs leading-relaxed text-faint">
+                当前显示的是快速简报
+              </p>
+              <a href="#flow" className="text-2xs text-accent"
+                 onClick={(e) => { e.preventDefault(); onVer?.('deep') }}>
+                查看进度
+              </a>
+            </div>
+          )}
+          {/* 升级完成且有简报快照：版本切换 + 简报版本标注 */}
+          {upgradedFrom === 'fast' && status === 'done' && hasBrief && onVer && (
+            <div className="mb-5 flex items-center gap-3 print:hidden">
+              <div className="flex rounded-lg border border-line text-2xs">
+                {(['deep', 'brief'] as const).map((v) => (
+                  <button key={v} onClick={() => onVer(v)}
+                    className={`px-3 py-1.5 first:rounded-l-lg last:rounded-r-lg ${
+                      ver === v ? 'bg-ink text-white' : 'text-faint hover:text-ink'}`}>
+                    {v === 'deep' ? '深度报告' : '快速简报'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {ver === 'brief' && (
+            <div className="mb-5 flex items-start gap-2 print:hidden">
+              <span className="tag-fast mt-0.5">快速简报（升级前版本）</span>
+              <p className="text-2xs leading-relaxed text-faint">
+                未经模型审查；深度报告见上一个标签。
+              </p>
+            </div>
+          )}
 
           {/* 运行状况条：真数据才列项，一项都没有整条不渲染。
               打印不出现——纸质件不需要运行指标。 */}
@@ -1164,6 +1241,35 @@ export function ReportView({
         ].join(' ')}
         title="回到顶部"
       ><Icon name="arrow-up" size={16} /></button>
+
+      {confirmUp === 'up' && (
+        <ConfirmDialog
+          title="补成深度报告？"
+          lines={[
+            '沿用已有来源与检索进度继续做标准档深度报告。',
+            '预计再花约 6–7 分钟、约 30 万 token（一次实测口径，因题而异）。',
+            '中途会停在审批页等你确认框架。',
+            '原来的快速简报会保留，可随时切回查看。',
+          ]}
+          confirmText={upgrading ? '升级中…' : '开始升级'}
+          danger={false}
+          onCancel={() => setConfirmUp(null)}
+          onConfirm={() => { setConfirmUp(null); onUpgrade?.() }}
+        />
+      )}
+      {confirmUp === 'restart' && (
+        <ConfirmDialog
+          title="以标准档重新研究？"
+          lines={[
+            '这场的检查点已清理，没法接着做。',
+            '会用同一个问题新开一场标准档研究，并跳到新会话。',
+          ]}
+          confirmText="新开研究"
+          danger={false}
+          onCancel={() => setConfirmUp(null)}
+          onConfirm={() => { setConfirmUp(null); onRestart?.() }}
+        />
+      )}
     </div>
   )
 }
