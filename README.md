@@ -114,7 +114,8 @@ fixture 用 v13 真跑录制，含 B1 全部细粒度事件（坑 68）。
 回放里的补丁明细和 `run_health` 是合成演示数据；视觉与交互改动用 Chromium 截图验收
 （无头浏览器 + 溢出/控制台/HTTP 断言），流程与脚本见 CONTEXT 坑 85/86。
 前端新增只读端点：`GET /api/sessions/{sid}/review`（补丁明细 + 运行健康）、
-`GET /api/sessions/{sid}/events`（已落库的可回放事件）。报告页顶栏「导出」支持
+`GET /api/sessions/{sid}/events`（已落库的可回放事件）、
+`GET /api/sessions/{sid}/billing`（运行账单：分阶段节点耗时 + token/调用数，只读；耗时不含等待审批）。报告页顶栏「导出」支持
 Markdown / PDF（浏览器打印）/ Word（前端生成 .docx）。
 
 回放会话建的时候会把 donor 的 **report + source + chunk** 克隆进来
@@ -246,6 +247,6 @@ data/               默认 SQLite 位置（用 RA_DB_PATH 覆盖）
 data/refs/          ★ 真实跑出来的参考库（探针输入 + 实测数字出处，见 CONTEXT 第四节）
 tests/              守门测试 + 生产路径入口
 tests/fixtures/     回放与端到端验的固定数据（replay_server / verify_nature_e2e 读它）
-CONTEXT.md          ★ 交接文档：架构 / 决策 / 63 个坑 / 已知缺口
+CONTEXT.md          ★ 交接文档：架构 / 决策 / 坑 / 已知缺口
 TECH_DEBT.md        已知但有意押后的工程欠账
 ```
