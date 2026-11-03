@@ -2275,6 +2275,15 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
 **必须看清的局限**：①n=1/臂，写手有方差；on 臂报告更短（24.4k vs 31.1k 字，引用句 195 vs 239），**无法区分是「写手少用了文库来源」还是随机波动**——少依赖这类来源是预期副作用，但不能证明没丢有用内容；②**审查环节的贡献无法单独归因**：规则 8（写手）与审查候选同时生效，且 `write_trace` 只存最后一轮审查结论和各轮摘要计数（`audit_history_json` 的 findings 是数量不是明细），第 0 轮审查有没有提「线索」类 finding **取不回来**；③on 臂 `write_plan_tasks` 调用 4 次、输入 104k（off 1 次/24k）——这是规划环节的工具读段轮次，机制只改了来源清单行尾，我判断是方差，但没验证；④只有 6 个域名在名单里，没见过的文库站不会被标；名单是人工的；⑤非预加载回退路径（块超 70k 字符）与返修路径的写手 listing 不带来源行，看不到标记（返修时审查的 fix 指令本身带降级措辞）；⑥限定语豁免是正则，写手换说法（如「该文称」）会被判成漏网候选（偏严不偏松）；⑦「线索级」对应的是**数字无法溯源**，不等于内容错误，定性描述照常使用。
 **⚠️ 文档债**：`data/refs/` 现新增 `ra_v31_std_ck / ra_v32_solid_clue / ra_v33_replay_clue_off / ra_v33_replay_clue_on` 等快照，**不在本机备份包里**（用户决定暂不重打）。
 
+
+### 97. 快速档「一键补深度」设计（用户 2026-11-04 采纳，实施中）
+**用户已定三点**：①升级后**保留标准档审批点**（快速档的大纲没人审过；以后可加「跳过审批」，这次不做）；②快速简报**保留为第二个版本**（新表 `report_version`，深度版写完不覆盖）；③没有 checkpoint 时回退按钮「以标准档重新研究」（同一问题新开会话，独立动作）。
+**核心思路：原会话原地续跑，不重跑**。快速档与标准档的图在「检索→抽取→闸门」之前完全相同，闸门之后才分叉（快速：answer→finalize→summary→END；标准：assess→审批→多轮→write）。升级 = 把已完成快速档会话的 checkpoint 状态 `mode` 改成 standard，对最终状态 `update_state({"mode":"standard"}, as_node="gate")`，使下一节点变为 `assess`，再 `astream(None)` 续跑。**可行性验证（离线，在 v34 快速档 checkpoint 副本上，未动任何真库）**：自动裁剪后只剩最终状态（45KB），其中有 outline/probe/visited_urls/used_queries/sources/all_evidence/merged_gate 等全部字段、无 `stop_reason` 残留；`update_state(..., as_node="gate")` 后 `next` 由 `()` 变为 `('assess',)`，`round=1`、11 来源保留。**未验证（需实现后真跑）**：续跑后整条标准流程能否正常走完。
+**设计要点**：①`session.upgraded_from TEXT`（迁移 0013）+ `report_version(id, session_id, kind, markdown, created_at)`；升级前把快速简报存为 kind='fast_brief'；②`POST /api/sessions/{sid}/upgrade`：校验（404 / 409 原因码 `already_upgraded`/`not_fast`/`not_done`/`no_checkpoint`/`busy`）→ 存简报 → 带条件 `UPDATE session SET mode='standard',status='running',upgraded_from='fast' WHERE id=? AND mode='fast' AND status='done'`（防双击）→ `update_state` → 用 checkpoint 里已有 events 的指纹预置 `_last_seen[sid]`（否则服务重启后内存去重集合为空，会把快速阶段事件全部重发）→ 发 `upgrade` 事件作为前端流程页切换标记 → `astream(None)`；`update_state` 失败要回滚 session 行；③`GET /api/sessions/{sid}` 增 `upgradable`、`fast_brief`；④前端：快速档报告页「补深度报告」按钮+确认框（写明预计耗时/token）、流程页重放遇 `upgrade` 事件切到标准轨道、报告页「深度报告｜快速简报」版本切换、侧栏标签「快速→标准」、无 checkpoint 时回退按钮。
+**能省多少（诚实）**：只省快速档那一段的探针/大纲/第一轮检索/抽取/闸门，上限约 2 分钟、11 万 token（v34 快速档 136s/113k 近似，含 answer 那步，实际可复用更少）；标准档整场 8–11 分钟、28–33 万 token。价值主要是体验连续，成本节省是顺带的。
+**验收判据（实施前先定）**：①升级后 `run_trace` 无新增 `node:probe`/`node:outline`，快速档已访问 URL 不重抓；②深度版健康：`llm_bad` 空、引用不越界、审查真的跑了（`final_audit_skipped:false`）、无 `<!-- task` 残留；③`report_version` 里的快速简报与升级前逐字相同；④重复点击只升一次；无 checkpoint 时 409 且界面出回退按钮；续跑失败时快速简报仍可看；⑤固态电池与 Rust 对 Go 两题各跑一次「快速→升级」，与已有从零标准档基线（v31/v32）对比耗时与 token（n=1，方向性，不设通过线）；⑥离线测试用 `update_state` 伪造已完成快速档线程覆盖各分支。
+**已知风险**：快速档最终状态的 `last_round_segments`=0，标准档闸门后可能不同（验收要逐字段对比）；所有 `mode == "fast"` 分支（账单、`/review`、前端流程页）要逐处检查；老快速档会话的 checkpoint 若被维护脚本清掉则不可升级。
+
 ---
 
 ## 十、已知缺口（写下来，别假装没有）
