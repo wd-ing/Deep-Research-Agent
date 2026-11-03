@@ -240,6 +240,55 @@ class Repo:
         """真删（清空回收站用）。级联删掉报告/来源/段，靠的是外键 ON DELETE CASCADE。"""
         self.x("DELETE FROM session WHERE id=?", (session_id,))
 
+    def snapshot_report(self, session_id: str, kind: str) -> bool:
+        """把 report 表当前 markdown 存进 report_version（升级用）。
+
+        同 session+kind 已存在就不重写（幂等）；该会话还没有报告也
+        返回 False——没有东西可快照不算错误。
+        """
+        cur = self.q1(
+            "SELECT markdown FROM report WHERE session_id=?", (session_id,))
+        if not cur:
+            return False
+        if self.q1(
+                "SELECT 1 FROM report_version WHERE session_id=? AND kind=?",
+                (session_id, kind)):
+            return False
+        self.x(
+            "INSERT INTO report_version (id,session_id,kind,markdown,created_at) "
+            "VALUES (?,?,?,?,?)",
+            (new_id("rv_"), session_id, kind, cur["markdown"], now()))
+        return True
+
+    def get_report_version(self, session_id: str, kind: str) -> dict | None:
+        r = self.q1(
+            "SELECT markdown,created_at FROM report_version "
+            "WHERE session_id=? AND kind=?", (session_id, kind))
+        return dict(r) if r else None
+
+    def claim_upgrade(self, session_id: str) -> bool:
+        """原子认领升级：快速档 done 且未升过的行才改，返回是否抢到。
+
+        `x()` 返回 sqlite3.Cursor，`rowcount` 即受影响行数——
+        单条 UPDATE 完成「检查+置位」，不会有「校验过了却抢不到」的
+        中间态（竞态时输的一方 rowcount=0）。
+        """
+        cur = self.x(
+            "UPDATE session SET mode='standard', status='running', "
+            "upgraded_from='fast', updated_at=? "
+            "WHERE id=? AND mode='fast' AND status='done' "
+            "AND upgraded_from IS NULL",
+            (now(), session_id))
+        return cur.rowcount == 1
+
+    def release_upgrade(self, session_id: str) -> None:
+        """回滚升级认领（update_state 失败时）：恢复 fast/done、清标记。"""
+        self.x(
+            "UPDATE session SET mode='fast', status='done', "
+            "upgraded_from=NULL, updated_at=? "
+            "WHERE id=? AND upgraded_from='fast'",
+            (now(), session_id))
+
     def set_summary(self, session_id: str, summary: dict) -> None:
         import json
         self.x("UPDATE session SET summary_json=?, updated_at=? WHERE id=?",

@@ -165,7 +165,7 @@ def list_sessions(
     order = "archived_at DESC, created_at DESC" if archived == "1" else "created_at DESC"
     rows = repo.q(
         "SELECT id,title,question,status,cost_tokens,created_at,archived_at,"
-        "       deleted_at,folder_id,summary_json,degraded,mode FROM session "
+        "       deleted_at,folder_id,summary_json,degraded,mode,upgraded_from FROM session "
         f"WHERE {' AND '.join(where)} ORDER BY {order}", tuple(params))
     out = []
     for r in rows:
@@ -604,6 +604,23 @@ def get_session(sid: str) -> dict:
     out["report"] = rep["markdown"] if rep else None
     out["sources"] = [dict(r) for r in srcs]
     out["ignored_citations"] = _ignored_citations(repo, sid)
+    # 一键补深度（0013）：fast_brief=升级前简报快照；upgradable=现在可升。
+    rv = repo.get_report_version(sid, "fast_brief")
+    out["fast_brief"] = rv["markdown"] if rv else None
+    upgradable = False
+    if (s["mode"] == "fast" and s["status"] == "done"
+            and not s["upgraded_from"]):
+        try:
+            # 仅前三项满足才开 saver 读 checkpoint；任何异常都当 False，
+            # GET 绝不能因为一个没装 checkpointer 的库 500。
+            st = graph().get_state(
+                {"configurable": {"thread_id": sid}})
+            upgradable = bool(st and st.values
+                              and st.values.get("mode") == "fast"
+                              and not st.next)
+        except Exception:
+            upgradable = False
+    out["upgradable"] = upgradable
     return out
 
 
@@ -1414,6 +1431,118 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
     else:
         asyncio.create_task(asyncio.to_thread(_go_plain))
     return {"ok": True, "streaming": streaming}
+
+
+# ---------- 快速档一键补深度（2026-11-05，方案已定）----------
+# 快速档与标准档在「闸门」之前同一条图：对已完成的快速档 checkpoint
+# update_state(mode→standard, as_node="gate") 后 next=('assess',)，
+# 从这里 astream(None) 续跑，之后停在 await_approval 走现有 /approve。
+
+
+async def _resume_after_upgrade(sid: str, cfg: dict, seen_keys: set,
+                                streaming: bool) -> None:
+    """升级后的后台续跑：镜像 run_session/approve 的事件与收尾行为。
+
+    抽成模块级函数是**为了测试可桩**——桩掉它接口的单测不用发 LLM。
+    与 _task_stream/_go_stream 相同：
+    progress_scope 套 progress 推送 → astream(None) 逐节点 → 结束
+    get_state 读回推 done → _autoprune；事件用 seen_keys 指纹去重。
+    """
+    from .llm.provider import progress_scope
+    try:
+        with progress_scope(lambda session_id, node, ev: _emit(
+                session_id or sid,
+                {"kind": "progress", "node": node, "event": ev})):
+            if streaming:
+                async for update in (await agraph()).astream(
+                        None, config=cfg, stream_mode="updates"):
+                    for node, delta in (update or {}).items():
+                        if not isinstance(delta, dict):
+                            continue
+                        _emit(sid, {"kind": "node", "node": node})
+                        for e in delta.get("events") or []:
+                            k = _event_key(e)
+                            if k in seen_keys:
+                                continue
+                            seen_keys.add(k)
+                            _emit(sid, {"kind": "progress", "node": node,
+                                        "event": e})
+            else:
+                # 同 approve._go_plain 的非流式回退
+                graph().invoke(None, config=cfg)
+        st = graph().get_state(cfg)
+        out = dict(st.values or {})
+        _emit(sid, {"kind": "done", "state": {
+            "report": (out.get("report_markdown") or "")[:2000],
+            "report_chars": len(out.get("report_markdown") or ""),
+            "round": out.get("round"), "url_count": out.get("url_count"),
+            "cost_tokens": out.get("cost_tokens"),
+        }})
+        _autoprune(sid)
+    except Exception as e:
+        _emit(sid, {"kind": "error", "error": f"{type(e).__name__}: {e}"})
+    finally:
+        _last_seen[sid] = seen_keys
+
+
+@app.post("/api/sessions/{sid}/upgrade")
+async def upgrade_session(sid: str, streaming: bool = True) -> dict:
+    """快速档一键补深度：对已完成的快速档会话续跑标准档。
+
+    检查顺序固定（见注释编号），冲突一律 409、detail 带 reason 码，
+    前端按码给文案而不是猜 message。
+    """
+    repo = get_repo()
+    s = repo.q1("SELECT * FROM session WHERE id=?", (sid,))
+    if not s:
+        raise HTTPException(404, "会话不存在")                       # ①
+
+    def _conflict(reason: str, message: str):
+        raise HTTPException(409, detail={"reason": reason, "message": message})
+
+    if s["upgraded_from"]:                                          # ②
+        _conflict("already_upgraded", "这场会话已经升级过，不能重复升级")
+    if s["mode"] != "fast":                                         # ③
+        _conflict("not_fast", "只有快速档会话可以升级")
+    if s["status"] != "done":                                       # ④
+        _conflict("not_done", "快速档还没跑完，结束后再升级")
+
+    # ⑤ checkpoint 校验：必须是「停在闸门后的快速档终态」
+    cfg = {"configurable": {"thread_id": sid}}
+    try:
+        # 与 run_session 一致：get_state 是同步调用。approve 端点同样
+        # 同步调 get_state 没有 to_thread，保持一致（读写都是一次性小查询）。
+        st = graph().get_state(cfg)
+        ok_ckpt = (st and st.values
+                   and st.values.get("mode") == "fast"
+                   and not st.next)
+    except Exception:
+        ok_ckpt = False
+    if not ok_ckpt:
+        _conflict("no_checkpoint", "没找到可续跑的快速档检查点，无法升级")
+
+    repo.snapshot_report(sid, "fast_brief")                          # ⑥
+    if not repo.claim_upgrade(sid):                                  # ⑦
+        _conflict("busy", "这次升级已被另一个请求认领，稍后重试")
+
+    try:
+        graph().update_state(cfg, {"mode": "standard"}, as_node="gate")  # ⑧
+    except Exception as e:
+        repo.release_upgrade(sid)
+        raise HTTPException(500, detail={
+            "reason": "update_state_failed",
+            "message": f"检查点更新失败，已回滚：{type(e).__name__}: {e}"})
+
+    # ⑨ 事件去重预置：快速阶段已推过的事件不要重发（用更新前的 state）
+    seen_keys = _last_seen[sid] = (_last_seen.get(sid) or set()) | {
+        _event_key(e) for e in (st.values.get("events") or [])}
+    # ⑩ 升级本身也是一条进度事件，前端时间线能显示「升档」
+    _emit(sid, {"kind": "progress", "node": "upgrade",
+                "event": {"kind": "upgrade", "from": "fast", "to": "standard"}})
+    # ⑪ 后台续跑（测测试桩 _resume_after_upgrade 即不触网）
+    asyncio.create_task(_resume_after_upgrade(sid, cfg, seen_keys, streaming))
+    return {"ok": True, "streaming": streaming,
+            "note": "已升级为标准档，从评估继续；事件流见 /api/stream/{sid}"}
 
 
 @app.get("/api/stream/{sid}")
