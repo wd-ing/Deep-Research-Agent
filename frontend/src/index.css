@@ -237,11 +237,6 @@ body { @apply bg-paper text-ink antialiased; }
 
 /* 运行状况条：几项大数字竖线分隔。只做「快读」——
    真细看的人往下翻正文和存疑节。 */
-.health { @apply flex; }
-.health > div { @apply border-l border-line px-[22px] py-0.5; }
-.health > div:first-child { @apply border-l-0 pl-0; }
-.health b { @apply block text-[22px] font-medium leading-[1.15] tracking-[-.02em]; }
-.health span { @apply text-[11.5px] text-faint; }
 
 /* 引用 chip（稿子 .cite）：mono 小号 + accent 浅底，悬停实底白字。
    比正文小一号——它是引文标记不是正文，不能抢读。 */
@@ -579,3 +574,45 @@ textarea:focus-visible {
 
 /* P2 指标格：长秒表/单位允许折行，不外溢 */
 .metrics .big { overflow-wrap: anywhere; }
+
+/* ============================================================
+   P3 报告页：刻度进度 / 目录竖尺 / 读数行 / 层级标题
+   ============================================================ */
+/* 顶部进度：密刻度底 + ink 填充（进度不可点 → 不用蓝） */
+.rpt-progress {
+  height: 10px; width: 100%;
+  background: repeating-linear-gradient(to right,
+    rgb(0 0 0 / .12) 0 1px, transparent 1px 6px);
+}
+.rpt-progress-fill {
+  height: 100%;
+  background: repeating-linear-gradient(to right,
+    rgb(26 26 26 / .85) 0 1px, transparent 1px 6px);
+  transition: width .15s ease-out;
+}
+/* 左列目录旁的竖向刻度尺：填充=阅读进度 */
+.rpt-vruler {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
+  background: repeating-linear-gradient(to bottom,
+    rgb(0 0 0 / .13) 0 1px, transparent 1px 7px);
+}
+.rpt-vruler > i {
+  display: block; width: 100%;
+  background: repeating-linear-gradient(to bottom,
+    rgb(26 26 26 / .85) 0 1px, transparent 1px 7px);
+}
+/* 读数行（原 .health 升级）：上下发丝线、26px 大数字 */
+.health {
+  @apply flex border-y border-line2;
+}
+.health > div { @apply border-l border-line px-[22px] py-3; }
+.health > div:first-child { @apply border-l-0 pl-0; }
+.health b { @apply block text-[26px] font-medium leading-[1.15] tracking-[-.02em] tabular-nums; }
+.health span { @apply text-[11.5px] text-faint; }
+/* 层级标题：h2 加发丝上线（首枚不上线），h3 收一层 */
+.rpt-article h2 { border-top: 1px solid rgb(0 0 0 / .07); padding-top: 26px; }
+.rpt-article h2:first-of-type { border-top: 0; padding-top: 0; }
+/* 内联 code 的长 token（ObjectJsonIter/tokio_util::…）允许折行，
+   否则 390px 下会把正文列撑出 ~170px；pre 块不碰（它横向滚）。 */
+.rpt-article :not(pre) > code { overflow-wrap: anywhere; }
+.rpt-article { overflow-wrap: break-word; }

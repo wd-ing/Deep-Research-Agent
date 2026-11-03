@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Phase, Step } from './workflow'
 import type { ProgressEntry } from '../types'
 import { Icon } from '../components/Icon'
-import { useCountUp } from '../lib/motion'
+import { CountUp } from '../components/CountUp'
 
 /** 状态点的形状：完成=实心圆，进行中=呼吸环，需注意=菱形。
  *  **形状**比颜色更能区分——色弱用户也能读出来。
@@ -865,11 +865,4 @@ function ElapsedSince({ iso }: { iso: string }) {
   const t0 = Date.parse(iso)
   const s = Number.isFinite(t0) ? Math.max(0, Math.floor((Date.now() - t0) / 1000)) : 0
   return <span className="tabular-nums">{fmtDur(s)}</span>
-}
-
-/** 指标格里的滚动数字：hooks 规则要求无条件调用，
- *  所以做成子组件——每格自己挂一份 hook。 */
-function CountUp({ v, fmt }: { v: number; fmt?: (n: number) => string }) {
-  const n = useCountUp(v)
-  return <>{fmt ? fmt(n) : Math.round(n)}</>
 }

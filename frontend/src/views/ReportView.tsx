@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import type { IgnoredCitation, ReviewPatch, ReviewResp, SegPreview, SegPreviews, SourceRow } from '../types'
 import { NatureBadge } from '../components/SegDrawer'
 import { ProgressBar, TocBar, scanHeadings, type TocItem } from '../components/Toc'
+import { CountUp } from '../components/CountUp'
 import { Icon } from '../components/Icon'
 
 const REF_RE = /\[(S\d+·\d+)\]/g
@@ -433,18 +434,18 @@ function mdComponents(
     h2: ({ children }: { children?: ReactNode }) => (
       <h2 id={idOf(children)} className={
         compact
-          ? 'mb-2 mt-3 scroll-mt-24 text-sm font-semibold'
+          ? 'mb-2 mt-3 scroll-mt-[calc(var(--rpt-bar-h,96px)+12px)] text-sm font-semibold'
           // 稿子 h2=21px、无分割线——靠字距和上下空白分段，
           // 不再用旧式的压线。
           // `scroll-mt-24` 给顶部常驻区（进度条+目录条）让位。
-          : 'mb-1 mt-[26px] scroll-mt-24 text-[21px] font-semibold tracking-[-.005em]'
+          : 'mb-1 mt-[34px] scroll-mt-[calc(var(--rpt-bar-h,96px)+12px)] text-[22px] font-semibold tracking-[-.01em]'
       }>{R(children)}</h2>
     ),
     // 稿子 h3=16px/600，与 h2 靠尺寸和间距分层，不加左侧色条。
     h3: ({ children }: { children?: ReactNode }) => (
       <h3 id={idOf(children)} className={compact
-        ? 'scroll-mt-24 text-sm font-medium'
-        : 'mb-2.5 mt-2 scroll-mt-24 text-base font-semibold'
+        ? 'scroll-mt-[calc(var(--rpt-bar-h,96px)+12px)] text-sm font-medium'
+        : 'mb-2.5 mt-2 scroll-mt-[calc(var(--rpt-bar-h,96px)+12px)] text-[16.5px] font-semibold'
       }>{R(children)}</h3>
     ),
     p: ({ children }: { children?: ReactNode }) => (
@@ -583,7 +584,7 @@ function doubtCount(doubt: string): number {
 
 export function ReportView({
   markdown, onRef, ignoredCitations = [], onOpenSource, previews = {}, scrollRef,
-  review, marksOn = false, sources, mode,
+  review, marksOn = false, sources, mode, lead,
 }: {
   markdown: string
   onRef: (ref: string) => void
@@ -602,8 +603,11 @@ export function ReportView({
   /** 档位（C2）：'fast' 时头部显示「快速简报」标签+提示；
    *  老库行没有这个字段，=== 'fast' 判假就什么都不渲。 */
   mode?: string
-  /** 会话来源列表（健康条的「来源 · 一手」）。 */
+  /** 会话来源列表（健康条的「来源 · 一手」+ 文末「引用来源」块）。 */
   sources?: SourceRow[]
+  /** 正文列顶部的随文内容（App 传入 RoundChart）——不再是常驻区，
+   *  滚过去就没了。 */
+  lead?: ReactNode
 }) {
   const parts = useMemo(() => {
     const clean = cleanReportMd(markdown)
@@ -624,13 +628,14 @@ export function ReportView({
    *  跨正文和存疑节才是读者心里的那个数。 */
   const counts = useMemo(() => refCounts(markdown), [markdown])
   const [openToc, setOpenToc] = useState(false)
+  const [showAllSrc, setShowAllSrc] = useState(false)
   const [activeId, setActiveId] = useState('')
   const [pct, setPct] = useState(0)
 
-  // ---- 右侧批注栏（rail）：主区够宽才有 ----
-  // 量的是滚动容器宽而不是视口——侧栏折叠会改变主区宽度，
-  // 媒体查询看不到这个变化。
-  const [wide, setWide] = useState(false)
+  // ---- 三档布局：量滚动容器宽（侧栏折叠会改主区宽，媒体查询看不到）----
+  //  tier 2 = ≥1160 三列(目录|正文|批注)；tier 1 = 1000–1159 两列；
+  //  tier 0 = <1000 单列。
+  const [tier, setTier] = useState(0)
   const [tick, setTick] = useState(0)
   // ⚠️ 不能用 useLayoutEffect：scrollRef 挂在父 div 上，ref 自底向上
   //  attach——子的 layout effect 先跑，此时 current 还是 null，
@@ -639,7 +644,7 @@ export function ReportView({
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    const check = () => setWide(el.clientWidth >= 1000)
+    const check = () => setTier(el.clientWidth >= 1160 ? 2 : el.clientWidth >= 1000 ? 1 : 0)
     check()
     const ro = new ResizeObserver(() => { check(); setTick((t) => t + 1) })
     ro.observe(el)
@@ -670,7 +675,7 @@ export function ReportView({
       if (el) t[i] = el.getBoundingClientRect().top - gTop
     }
     setTops(t)
-  }, [marked, wide, tick, parts])
+  }, [marked, tier, tick, parts])
 
   // 朱批卡的最终 y：想落在对应标记的 y 上，但两条补丁挤在
   // 同一段时卡片会叠住——按标记 y 排序后逐张往下让位；
@@ -704,7 +709,7 @@ export function ReportView({
   const [hoverCard, setHoverCard] = useState<
     { seg: SegPreview; ref: string; top: number } | null>(null)
   const chipCtx = useMemo<ChipCtx>(() => ({
-    rail: wide,
+    rail: tier >= 1,
     problems,
     onRail: (rect, seg, ref) => {
       const g = gridRef.current
@@ -715,7 +720,7 @@ export function ReportView({
       })
     },
     onRailLeave: () => setHoverCard(null),
-  }), [wide, problems])
+  }), [tier, problems])
 
   const bodyMd = useMemo(
     () => mdComponents(onRef, previews, ids, counts, chipCtx),
@@ -755,9 +760,8 @@ export function ReportView({
     const onScroll = () => {
       const max = el.scrollHeight - el.clientHeight
       setPct(max <= 0 ? 0 : Math.min(100, Math.round((el.scrollTop / max) * 100)))
-      // 当前节 = 最后一个越过「距容器顶 96px」这条线的标题。
-      // 96px 是给常驻的进度条+目录条留的位置，标题不能算在它底下。
-      const top = el.getBoundingClientRect().top + 96
+      // 当前节 = 最后一个越过「常驻区下沿 +12」这条线的标题。
+      const top = el.getBoundingClientRect().top + barHRef.current + 12
       let cur = ''
       for (const t of toc) {
         const h = el.querySelector(`#${t.id}`)
@@ -777,6 +781,24 @@ export function ReportView({
   // ---- 查找条（C2）----
   // 用 CSS Custom Highlight API，不去 React 渲染的 DOM 里插 <mark>——
   // 动了那棵树，React 下次重渲会对不上。Range + ::highlight 是纯叠加层。
+  const barRef = useRef<HTMLDivElement>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const barHRef = useRef(96)
+  const [barBottom, setBarBottom] = useState(72)
+  /* sticky 区实测高 → --rpt-bar-h：scroll-margin 和当前节判定线
+     都用它，三档各不一样（三列档只有一条进度线）。 */
+  useEffect(() => {
+    const bar = barRef.current, root = rootRef.current
+    if (!bar || !root || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      barHRef.current = bar.offsetHeight
+      root.style.setProperty('--rpt-bar-h', `${bar.offsetHeight}px`)
+      setBarBottom(bar.getBoundingClientRect().bottom)
+    })
+    ro.observe(bar)
+    return () => ro.disconnect()
+  }, [tier])
+
   const [findOpen, setFindOpen] = useState(false)
   const [findQ, setFindQ] = useState('')
   const [matches, setMatches] = useState<Range[]>([])
@@ -854,34 +876,44 @@ export function ReportView({
   }
 
   return (
-    <>
+    <div ref={rootRef} className="view-in">
       {/* 进度条 + 目录，合成**一个**常驻区。
           原来 IgnoredBanner 也在里面——那是「常驻」的由来：
           它有 6~7 行高，在窄窗口下吃掉约 35% 的阅读高度，
           而报告有 2 万字、要读很久。2026-10-14 用户定：提示不常驻。 */}
-      <div className="sticky top-0 z-20 bg-white/95 backdrop-blur print:hidden">
+      <div ref={barRef} className="sticky top-0 z-20 bg-white/95 backdrop-blur print:hidden">
         <ProgressBar pct={pct} />
-        <div className="mx-auto flex max-w-3xl items-center px-6">
-          <div className="min-w-0 flex-1">
-            <TocBar
-              toc={toc} active={activeId} open={openToc}
-              onToggle={() => setOpenToc((v) => !v)} onJump={jump}
-            />
+        {tier < 2 && (
+          /* 三列档的目录+查找搬去左列，这里只剩刻度线。
+              栏内层与正文列**同左边缘**（解决旧版 max-w-3xl 居中
+              和 w-fit 网格两套坐标系错开的问题）。 */
+          /* 栏内层与正文网格同构：同 w-fit/同列宽/同 padding，
+             保证栏内容左边缘 = 正文列左边缘。 */
+          <div className={tier === 1
+            ? 'mx-auto grid w-fit grid-cols-[640px_280px] items-center gap-8 px-6'
+            : 'mx-auto flex max-w-[640px] items-center px-6'}>
+            <div className="min-w-0">
+              <TocBar
+                toc={toc} active={activeId} open={openToc}
+                onToggle={() => setOpenToc((v) => !v)} onJump={jump}
+              />
+            </div>
+            <button
+              onClick={() => setFindOpen(true)}
+              className="shrink-0 justify-self-start rounded px-1.5 py-0.5 text-2xs text-accent hover:bg-black/[.03]"
+              title="在报告中查找（⌘F / Ctrl+F）"
+            >
+              查找
+            </button>
           </div>
-          <button
-            onClick={() => setFindOpen(true)}
-            className="ml-2 shrink-0 rounded px-1.5 py-0.5 text-2xs text-muted hover:bg-gray-100 hover:text-ink"
-            title="在报告中查找（⌘F / Ctrl+F）"
-          >
-            查找
-          </button>
-        </div>
+        )}
       </div>
 
       {/* 查找条（C2）：浮动在右上，不进正文流。带计数和上一个/下一个，
           匹配高亮走 CSS.highlights 叠加层，不碰 React 的 DOM。 */}
       {findOpen && (
-        <div className="fixed right-6 top-[72px] z-30 flex items-center gap-1 rounded-md border border-line bg-white px-2 py-1 shadow-md print:hidden">
+        <div className="dialog-in fixed right-6 z-30 flex items-center gap-1 rounded-md border border-line bg-white px-2 py-1 shadow-float print:hidden"
+             style={{ top: barBottom + 12 }}>
           <input
             autoFocus
             value={findQ}
@@ -924,10 +956,50 @@ export function ReportView({
           折叠会改变主区宽，媒体查询看不见）；不够宽时 rail 不存在，
           行内标记和引用气泡照旧。 */}
       <div ref={gridRef}
-           className={wide
+           className={tier === 2
+             ? 'mx-auto grid w-fit grid-cols-[176px_620px_260px] gap-7 px-6 pb-8 pt-4 print:block'
+             : tier === 1
              ? 'mx-auto grid w-fit grid-cols-[640px_280px] gap-8 px-6 pb-8 pt-4 print:block'
              : 'mx-auto max-w-[640px] px-6 pb-8 pt-4'}>
+        {tier === 2 && (
+          /* 左列：目录 + 查找 + 竖向刻度进度尺（ink，不可点不用蓝）。
+              sticky 顶到常驻区下沿。 */
+          <aside className="print:hidden">
+            <div className="sticky" style={{ top: 'calc(var(--rpt-bar-h, 96px) + 12px)' }}>
+              <div className="mb-2 flex items-baseline justify-between">
+                <span className="lbl">目录</span>
+                <button
+                  onClick={() => setFindOpen(true)}
+                  className="rounded px-1.5 py-0.5 text-2xs text-accent hover:bg-black/[.03]"
+                  title="在报告中查找（⌘F / Ctrl+F）"
+                >查找</button>
+              </div>
+              <div className="relative">
+                <span className="rpt-vruler" aria-hidden>
+                  <i style={{ height: `${pct}%` }} />
+                </span>
+                <ul className="max-h-[70vh] overflow-auto pl-3.5">
+                  {toc.map((t) => (
+                    <li key={t.id}>
+                      <button
+                        onClick={() => jump(t.id)}
+                        className={[
+                          'block w-full truncate rounded px-1.5 py-1 text-left text-xs',
+                          t.level === 3 ? 'pl-4 text-muted' : 'font-medium text-ink',
+                          t.id === activeId
+                            ? 'bg-black/[.055] text-ink'
+                            : 'hover:bg-black/[.03]',
+                        ].join(' ')}
+                      >{t.text || '（无标题）'}</button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </aside>
+        )}
         <div ref={contentRef}>
+          {lead}
           {/* 排除提示改成**一次性**：跟着正文流走，滚过去就没了。
               仍然保留是因为它是唯一一处告诉用户「这份报告引用了你后来
               标为不可信的材料」的地方，直接删掉等于让不可信结论悄悄留着。 */}
@@ -948,18 +1020,25 @@ export function ReportView({
               打印不出现——纸质件不需要运行指标。 */}
           {healthItems.length > 0 && (
             <div className="health mb-6 overflow-x-auto print:hidden">
-              {healthItems.map((it) => (
-                <div key={it.k} className="whitespace-nowrap">
-                  <b className={it.seal ? 'text-seal' : ''}>{it.v}</b>
-                  <span>{it.k}</span>
-                </div>
-              ))}
+              {healthItems.map((it) => {
+                const m = typeof it.v === 'string' ? it.v.match(/^(\d+(?:\.\d+)?)(.*)$/) : null
+                return (
+                  <div key={it.k} className="whitespace-nowrap">
+                    <b className={it.seal ? 'text-seal' : ''}>
+                      {typeof it.v === 'number'
+                        ? <CountUp v={it.v} />
+                        : m ? <><CountUp v={parseFloat(m[1])} />{m[2]}</> : it.v}
+                    </b>
+                    <span>{it.k}</span>
+                  </div>
+                )
+              })}
             </div>
           )}
 
           {/* ⚠️ 这里原来写的是 `prose-sm`——那个类从未生效，见 mdComponents 的说明 */}
           {/* 稿子正文档：15.5px / 1.95 行高 */}
-          <article className="text-[15.5px] leading-[1.95] text-ink">
+          <article className="rpt-article text-[15.5px] leading-[1.95] text-ink">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={bodyMd}>
               {bodySource}
             </ReactMarkdown>
@@ -979,9 +1058,40 @@ export function ReportView({
               </article>
             </section>
           )}
+
+          {/* 引用来源：原来常驻在 App 底部页脚（390 下吃掉 ~90px
+              阅读高、芯片不可点）。挪进正文末尾，可展开、芯片可点。 */}
+          {sources && sources.length > 0 && (
+            <section className="mt-12 border-t border-line2 pt-5 print:hidden">
+              <div className="lbl mb-3">引用来源</div>
+              <div className="flex flex-wrap gap-2">
+                {(showAllSrc ? sources : sources.slice(0, 12)).map((x, i) => (
+                  <button
+                    key={x.id}
+                    onClick={() => onOpenSource?.(x.id)}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-accent transition-colors hover:border-black/20"
+                  >
+                    <span className="tabular-nums">[S{i + 1}]</span>
+                    <NatureBadge nature={x.source_nature} />
+                    <span className="max-w-[180px] truncate text-ink/80">
+                      {x.title || x.domain || x.id}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              {sources.length > 12 && (
+                <button
+                  onClick={() => setShowAllSrc((v) => !v)}
+                  className="mt-3 text-xs text-accent hover:underline"
+                >
+                  {showAllSrc ? '收起' : `展开全部 ${sources.length} 个`}
+                </button>
+              )}
+            </section>
+          )}
         </div>
 
-        {wide && (
+        {tier >= 1 && (
           // 右侧批注栏：朱批卡纵向对齐到行内标记的 y。
           // 卡片全部绝对定位，最终 y 在测量过后写进 notePos——
           // 两条补丁挤在同一段时，后面的卡要往下让，不能叠住。
@@ -1054,6 +1164,6 @@ export function ReportView({
         ].join(' ')}
         title="回到顶部"
       ><Icon name="arrow-up" size={16} /></button>
-    </>
+    </div>
   )
 }

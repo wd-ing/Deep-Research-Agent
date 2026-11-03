@@ -6,7 +6,7 @@ import { ApprovalView } from './views/ApprovalView'
 import { ReportView } from './views/ReportView'
 import { WorkflowView } from './views/WorkflowView'
 import { buildPhases } from './views/workflow'
-import { SegDrawer, NatureBadge } from './components/SegDrawer'
+import { SegDrawer } from './components/SegDrawer'
 import { DebugPanel } from './components/DebugPanel'
 import { MODES, loadDefaultMode, type ResearchMode } from './lib/mode'
 import { useCountUp } from './lib/motion'
@@ -486,13 +486,6 @@ export default function App() {
           </div>
         </header>
 
-        {/* 检索轮次图。**运行中不显示**——那时候工作流列表正在逐轮叙述
-            （「检索（第 N 轮）· 累计 X 段」），图上是重复信息；
-            要看的是停下来之后回头看：为什么停在这、这几轮各捞到什么。 */}
-        {sid && s.view !== 'running' && (
-          <RoundChart sid={sid} refreshKey={s.progress.length} />
-        )}
-
         {/* 首页（2026-10-20 视觉稿落地）：标题+刻度线、问题输入卡、
             指标条、「继续之前的」卡片网格。
             ⚠️ 指标只用列表接口里的真实字段（status/cost_tokens/created_at）——
@@ -687,6 +680,7 @@ export default function App() {
              锁 body 没用：它压根不滚，报告会从抽屉底下划过去。 */
           <div ref={reportScrollRef} className={s.seg ? 'flex-1 overflow-hidden print:overflow-visible' : 'flex-1 overflow-auto print:overflow-visible'}>
             <ReportView
+              lead={<RoundChart sid={sid!} refreshKey={s.progress.length} />}
               scrollRef={reportScrollRef}
               markdown={report}
               previews={previews}
@@ -721,17 +715,6 @@ export default function App() {
           </div>
         )}
 
-        {/* 报告的来源清单 */}
-        {s.view === 'done' && d && d.sources.length > 0 && (
-          <div className="border-t border-line px-6 py-3 text-xs text-muted print:hidden">
-            来源：{d.sources.slice(0, 12).map((x, i) => (
-              <span key={x.id} className="mr-3 inline-flex items-center gap-1">
-                <span>[S{i + 1}]</span><NatureBadge nature={x.source_nature} />
-              </span>
-            ))}
-            {d.sources.length > 12 && ` …共 ${d.sources.length} 个`}
-          </div>
-        )}
       </main>
       )}
 

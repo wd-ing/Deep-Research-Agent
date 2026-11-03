@@ -94,14 +94,12 @@ export function TocBar({
   )
 }
 
-/** 顶部 2px 阅读进度条。23,130 字符的文档，滚动到哪儿全靠这个指示。 */
+/** 顶部阅读进度：细刻度尺底 + ink 填充（不可点进度不用蓝，
+ *  蓝只留给可点/选中的东西）。 */
 export function ProgressBar({ pct }: { pct: number }) {
   return (
-    <div className="h-0.5 w-full bg-line" aria-hidden>
-      <div
-        className="h-full bg-accent transition-[width] duration-150 ease-out"
-        style={{ width: `${pct}%` }}
-      />
+    <div className="rpt-progress" aria-hidden>
+      <div className="rpt-progress-fill" style={{ width: `${pct}%` }} />
     </div>
   )
 }
