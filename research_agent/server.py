@@ -766,6 +766,164 @@ def session_review(sid: str) -> dict:
     return {"patches": patches, "health": health}
 
 
+# ---- 运行账单（只读）----
+# node → 阶段：sse/node 名固定枚举，映射见 workflow.ts 的环节口径。
+_NODE_PHASE = {
+    "probe": "planning", "outline": "planning",
+    "retrieve": "research", "extract": "research", "gate": "research",
+    "assess": "research", "apply_revision": "research",
+    "write": "writing", "answer": "writing",
+    "finalize": "wrap", "summary": "wrap",
+}
+_PHASE_ORDER = ["planning", "research", "writing", "wrap", "other"]
+
+
+def _stage_phase(stage: str) -> str:
+    """llm_call.stage → 阶段（前缀口径）。"""
+    if stage == "outline" or stage.startswith("probe_"):
+        return "planning"
+    if stage in ("extract", "summarize", "relevance", "assess", "dedupe"):
+        return "research"
+    if stage.startswith("write_") or stage == "fast_answer":
+        return "writing"
+    if stage == "session_summary":
+        return "wrap"
+    return "other"
+
+
+def _phase_label(key: str, mode: str) -> str:
+    return {
+        "planning": "规划",
+        "research": "检索与整理",
+        # 快速档的「写作」环节对外叫「整理作答」（与流程页 phaseLabel 同一口径）
+        "writing": "整理作答" if mode == "fast" else "写作",
+        "wrap": "收尾",
+    }.get(key, "其他")
+
+
+@app.get("/api/sessions/{sid}/billing")
+def session_billing(sid: str) -> dict:
+    """运行账单：节点墙钟耗时 + LLM 调用/ token 聚合。
+
+    全部从落库读：run_trace 的 `node:*` 行给各节点墙钟 ms（**不含**
+    等待审批时间，也不是会话总墙钟），llm_call 给 stage/model/token。
+    status='retry'/'error' 的行不进 calls/token（token 本就为 0，
+    calls 数进去只会摊薄），单列 retries/errors。
+    """
+    repo = get_repo()
+    sess = repo.q1("SELECT status, mode FROM session WHERE id=?", (sid,))
+    if not sess:
+        raise HTTPException(404, "会话不存在")
+    mode = sess["mode"] or "standard"
+
+    # ---- 节点耗时：kind='node:*' 的 detail_json.ms，maintenance.* 排除 ----
+    node_ms: dict[str, int] = {}
+    node_runs: dict[str, int] = {}
+    n_node_rows = 0
+    for r in repo.q(
+            "SELECT kind, detail_json FROM run_trace "
+            "WHERE session_id=? AND kind LIKE 'node:%' "
+            "AND kind NOT LIKE 'node:maintenance.%'", (sid,)):
+        n_node_rows += 1
+        node = r["kind"][5:]
+        try:
+            d = json.loads(r["detail_json"] or "{}")
+            ms = int(d.get("ms") or 0)
+        except (ValueError, TypeError):
+            continue                # 损坏行跳过，同 /review
+        node_ms[node] = node_ms.get(node, 0) + ms
+        node_runs[node] = node_runs.get(node, 0) + 1
+
+    # ---- LLM 调用：status!='retry'/'error' 才算 calls/token ----
+    phase_tok: dict[str, dict] = {}
+    stage_agg: dict[tuple, dict] = {}
+    calls = retries = errors = 0
+    t_in = t_out = t_read = t_create = 0
+    n_llm_rows = 0
+    for r in repo.q(
+            "SELECT stage, model, input_tokens, output_tokens, "
+            "cache_read_tokens, cache_creation_tokens, latency_ms, status "
+            "FROM llm_call WHERE session_id=?", (sid,)):
+        n_llm_rows += 1
+        st = r["status"] or "ok"
+        if st == "retry":
+            retries += 1
+            continue
+        if st == "error":
+            errors += 1
+            continue
+        calls += 1
+        ph = _stage_phase(r["stage"] or "")
+        p = phase_tok.setdefault(ph, {"input_tokens": 0, "output_tokens": 0,
+                                      "cache_read_tokens": 0,
+                                      "cache_creation_tokens": 0, "calls": 0})
+        p["input_tokens"] += r["input_tokens"] or 0
+        p["output_tokens"] += r["output_tokens"] or 0
+        p["cache_read_tokens"] += r["cache_read_tokens"] or 0
+        p["cache_creation_tokens"] += r["cache_creation_tokens"] or 0
+        p["calls"] += 1
+        key = (r["stage"] or "", r["model"] or "")
+        a = stage_agg.setdefault(key, {"calls": 0, "input_tokens": 0,
+                                       "output_tokens": 0,
+                                       "cache_read_tokens": 0, "latency_ms": 0})
+        a["calls"] += 1
+        a["input_tokens"] += r["input_tokens"] or 0
+        a["output_tokens"] += r["output_tokens"] or 0
+        a["cache_read_tokens"] += r["cache_read_tokens"] or 0
+        a["latency_ms"] += r["latency_ms"] or 0
+        t_in += r["input_tokens"] or 0
+        t_out += r["output_tokens"] or 0
+        t_read += r["cache_read_tokens"] or 0
+        t_create += r["cache_creation_tokens"] or 0
+
+    # ---- 组阶段：ms>0 或 calls>0 才出现 ----
+    phase_ms: dict[str, int] = {}
+    phase_nodes: dict[str, list] = {}
+    for node, ms in node_ms.items():
+        ph = _NODE_PHASE.get(node, "other")
+        phase_ms[ph] = phase_ms.get(ph, 0) + ms
+        phase_nodes.setdefault(ph, []).append(
+            {"node": node, "ms": ms, "runs": node_runs.get(node, 0)})
+    phases = []
+    for k in _PHASE_ORDER:
+        ms = phase_ms.get(k, 0)
+        t = phase_tok.get(k)
+        if ms <= 0 and not (t and t["calls"] > 0):
+            continue
+        phases.append({
+            "key": k, "label": _phase_label(k, mode), "ms": ms,
+            "nodes": sorted(phase_nodes.get(k, []),
+                            key=lambda x: -x["ms"]),
+            "input_tokens": t["input_tokens"] if t else 0,
+            "output_tokens": t["output_tokens"] if t else 0,
+            "cache_read_tokens": t["cache_read_tokens"] if t else 0,
+            "cache_creation_tokens": t["cache_creation_tokens"] if t else 0,
+            "calls": t["calls"] if t else 0,
+        })
+
+    total_ms = sum(phase_ms.values())
+    hit_den = t_read + t_create + t_in
+    return {
+        "mode": mode, "status": sess["status"],
+        "available": n_node_rows > 0 or n_llm_rows > 0,
+        "phases": phases,
+        "totals": {
+            "ms": total_ms,
+            "input_tokens": t_in, "output_tokens": t_out,
+            "total_tokens": t_in + t_out,
+            "cache_read_tokens": t_read,
+            "cache_creation_tokens": t_create,
+            # 与 repo.cache_stats 同一口径：读 /（读+写+未命中输入）
+            "cache_hit_ratio": round(t_read / hit_den, 4) if hit_den else 0.0,
+            "calls": calls, "retries": retries, "errors": errors,
+        },
+        "by_stage": sorted(
+            [{"stage": k[0], "model": k[1], **v}
+             for k, v in stage_agg.items()],
+            key=lambda x: -(x["input_tokens"] + x["output_tokens"])),
+    }
+
+
 @app.get("/api/sessions/{sid}/events")
 def session_events(sid: str) -> dict:
     """整场会话的事件流——给「回看流程」页供数。

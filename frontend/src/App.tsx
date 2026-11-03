@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSession, api } from './useSession'
 import { nav, useRoute } from './router'
-import type { Folder, SessionSummary, SourceLibrary, SourceDetailRow, SegPreviews, ReviewResp } from './types'
+import type { Folder, SessionSummary, SourceLibrary, SourceDetailRow, SegPreviews, ReviewResp, BillingResp } from './types'
 import { ApprovalView } from './views/ApprovalView'
 import { ReportView } from './views/ReportView'
 import { WorkflowView } from './views/WorkflowView'
@@ -52,6 +52,7 @@ export default function App() {
   // 补丁明细 + run_health：报告页「朱批」开关和运行状况条的供数。
   // 老会话接口返回 patches:[]，不是错误——review 为 null 一律静默缺席。
   const [review, setReview] = useState<ReviewResp | null>(null)
+  const [billing, setBilling] = useState<BillingResp | null>(null)
   const [marksOn, setMarksOn] = useState(false)
 
   // ---- 新建研究对话框（替掉原生 prompt）----
@@ -310,6 +311,18 @@ export default function App() {
       .catch(() => { if (alive) setReview(null) })
     return () => { alive = false }
   }, [sid, d?.report])
+
+  /** 运行账单：done 会话才有看头（running 的节点表还没收齐）。
+   *  取数失败静默缺席——同 review 的缺席风格，不出空面板。 */
+  useEffect(() => {
+    setBilling(null)
+    if (!sid || d?.status !== 'done') return
+    let alive = true
+    api.jget<BillingResp>(`/api/sessions/${sid}/billing`)
+      .then((r) => { if (alive) setBilling(r?.available ? r : null) })
+      .catch(() => { if (alive) setBilling(null) })
+    return () => { alive = false }
+  }, [sid, d?.status])
 
   return (
     <div className="flex h-screen text-ink">
@@ -668,6 +681,7 @@ export default function App() {
               question={d?.title || d?.question}
               startedAt={d?.created_at}
               mode={d?.mode}
+              billing={billing}
               onOpenReport={report ? () => s.setView('done') : undefined}
             />
             {debug && <DebugPanel thinking={s.thinking} draft={s.draft} />}

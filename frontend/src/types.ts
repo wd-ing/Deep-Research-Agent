@@ -302,3 +302,27 @@ export interface SourceDetailRow {
   }[]
 }
 
+
+/** `GET /api/sessions/{sid}/billing`：运行账单（节点墙钟+token 聚合）。 */
+export interface BillingResp {
+  mode: string
+  status: string
+  available: boolean
+  phases: {
+    key: string; label: string; ms: number
+    nodes: { node: string; ms: number; runs: number }[]
+    input_tokens: number; output_tokens: number
+    cache_read_tokens: number; cache_creation_tokens: number; calls: number
+  }[]
+  totals: {
+    ms: number; input_tokens: number; output_tokens: number
+    total_tokens: number; cache_read_tokens: number
+    cache_creation_tokens: number; cache_hit_ratio: number
+    calls: number; retries: number; errors: number
+  }
+  by_stage: {
+    stage: string; model: string; calls: number
+    input_tokens: number; output_tokens: number
+    cache_read_tokens: number; latency_ms: number
+  }[]
+}

@@ -572,7 +572,7 @@ function PhaseBlock({
  */
 export function WorkflowView({
   phases, progress, running, runningSince, cost, flow,
-  histLoaded, truncated, question, startedAt, onOpenReport, mode,
+  histLoaded, truncated, question, startedAt, onOpenReport, mode, billing,
 }: {
   phases: Phase[]
   progress: ProgressEntry[]
@@ -593,6 +593,8 @@ export function WorkflowView({
   startedAt?: string | null
   /** flow 态的回报告入口 */
   onOpenReport?: () => void
+  /** 运行账单（done+available 才渲染，取数失败为 null） */
+  billing?: import('../types').BillingResp | null
 }) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const railRef = useRef<HTMLDivElement>(null)
@@ -818,6 +820,9 @@ export function WorkflowView({
           </div>
         </div>
       </div>
+      {/* 运行账单：只读真实落库数据，done+available 才出现 */}
+      {flow && billing?.available && <BillingPanel b={billing} />}
+
       <div ref={endRef} />
     </div>
   )
@@ -865,4 +870,117 @@ function ElapsedSince({ iso }: { iso: string }) {
   const t0 = Date.parse(iso)
   const s = Number.isFinite(t0) ? Math.max(0, Math.floor((Date.now() - t0) / 1000)) : 0
   return <span className="tabular-nums">{fmtDur(s)}</span>
+}
+
+/** 运行账单：产品里唯一一块深色面板（近黑底 #111 系、白字、
+ *  白色低透明度分隔）。数据全部来自 /billing，拿不到就不显示。 */
+function BillingPanel({ b }: { b: import('../types').BillingResp }) {
+  const [open, setOpen] = useState<string | null>(null)
+  const t = b.totals
+  const fmtMs = (ms: number) => {
+    const s2 = Math.round(ms / 1000)
+    return s2 >= 3600 ? `${Math.floor(s2 / 3600)}h${Math.floor((s2 % 3600) / 60)}m`
+      : s2 >= 60 ? `${Math.floor(s2 / 60)}m${s2 % 60}s` : `${s2}s`
+  }
+  const fmtTok = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(2)}M`
+    : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+  const hitPct = Math.round((t.cache_hit_ratio || 0) * 100)
+  return (
+    <section className="bill mt-6 overflow-hidden rounded-2xl bg-[#141414] px-6 py-5 text-white/90 print:hidden">
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="text-[13px] font-medium tracking-[.06em] text-white/95">运行账单</h2>
+        {b.mode !== 'fast' && (
+          <span className="text-2xs text-white/40">节点合计耗时，不含等待审批的时间</span>
+        )}
+      </div>
+      <div className="mt-4 flex items-end gap-10">
+        <div>
+          <div className="text-2xs text-white/45">节点合计耗时</div>
+          <div className="mt-1 text-[30px] font-medium leading-none tabular-nums">
+            <CountUp v={t.ms} fmt={fmtMs} />
+          </div>
+        </div>
+        <div>
+          <div className="text-2xs text-white/45">总 token（in+out）</div>
+          <div className="mt-1 text-[30px] font-medium leading-none tabular-nums">
+            <CountUp v={t.total_tokens} fmt={fmtTok} />
+          </div>
+          {(t.cache_read_tokens > 0 || hitPct > 0) && (
+            <div className="mt-1 text-2xs text-white/45 tabular-nums">
+              缓存读 {fmtTok(t.cache_read_tokens)}{hitPct > 0 && ` · 命中 ${hitPct}%`}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="mt-4 space-y-1">
+        {b.phases.map((p) => {
+          const frac = t.ms > 0 ? p.ms / t.ms : 0
+          const isOpen = open === p.key
+          return (
+            <div key={p.key}>
+              <button
+                onClick={() => setOpen(isOpen ? null : p.key)}
+                aria-expanded={isOpen}
+                className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 rounded px-1 py-1.5 text-left transition-colors hover:bg-white/[.04]"
+              >
+                <span className="w-[80px] shrink-0 text-xs text-white/75">{p.label}</span>
+                <span className="relative h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-white/10">
+                  <i className="bill-bar" style={{ transform: `scaleX(${frac})` }} />
+                </span>
+                <span className="w-[52px] shrink-0 text-right text-2xs tabular-nums text-white/60">
+                  {fmtMs(p.ms)}
+                </span>
+                <span className="w-[84px] shrink-0 text-right text-2xs tabular-nums text-white/45">
+                  {p.calls > 0 && `${p.calls} 次 · `}{fmtTok(p.input_tokens + p.output_tokens)}
+                </span>
+                <span className={`shrink-0 text-white/40 transition-transform ${isOpen ? 'rotate-90' : ''}`}>
+                  <Icon name="chevron-right" size={11} />
+                </span>
+              </button>
+              {isOpen && (
+                <ul className="mb-1 ml-[98px] space-y-0.5 border-l border-white/10 pl-3 pt-0.5">
+                  {p.nodes.map((n) => (
+                    <li key={n.node} className="flex items-baseline gap-2 font-mono text-2xs text-white/55">
+                      <span className="min-w-0 flex-1 truncate">{n.node}</span>
+                      {n.runs > 1 && <span className="shrink-0 text-white/35">×{n.runs}</span>}
+                      <span className="shrink-0 tabular-nums">{fmtMs(n.ms)}</span>
+                    </li>
+                  ))}
+                  {p.nodes.length === 0 && (
+                    <li className="text-2xs text-white/35">（该阶段只有 LLM 调用耗时记录）</li>
+                  )}
+                </ul>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      <div className="mt-3 border-t border-white/10 pt-3 text-2xs text-white/45 tabular-nums">
+        LLM 调用 {t.calls} 次
+        {t.retries > 0 && ` · 重试 ${t.retries}`}
+        {t.errors > 0 && ` · 失败 ${t.errors}`}
+      </div>
+      {b.by_stage.length > 0 && (
+        <details className="mt-2 text-2xs text-white/45">
+          <summary className="cursor-pointer text-white/55 hover:text-white/80">按环节·模型</summary>
+          <div className="mt-2 overflow-x-auto">
+            <table className="w-full tabular-nums">
+              <tbody>
+                {b.by_stage.map((x, i) => (
+                  <tr key={i} className="border-t border-white/[.06]">
+                    <td className="py-1 pr-3 font-mono">{x.stage}</td>
+                    <td className="py-1 pr-3 text-white/35">{x.model}</td>
+                    <td className="py-1 pr-3 text-right">{x.calls} 次</td>
+                    <td className="py-1 text-right">
+                      {x.input_tokens + x.output_tokens} tok
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+    </section>
+  )
 }

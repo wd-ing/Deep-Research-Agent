@@ -46,6 +46,23 @@ export function SettingsView({ onNotify }: { onNotify: (m: string, kind?: 'err' 
 
   const dirty = cfg !== null && text !== cfg.content
 
+  // ⌘S/Ctrl+S 保存：只在 dirty 时拦（否则别抢浏览器默认行为）
+  useEffect(() => {
+    if (!dirty) return
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); save() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [dirty, text])  // eslint-disable-line react-hooks/exhaustive-deps
+  // dirty 时离开页面提示
+  useEffect(() => {
+    if (!dirty) return
+    const h = (e: BeforeUnloadEvent) => { e.preventDefault() }
+    window.addEventListener('beforeunload', h)
+    return () => window.removeEventListener('beforeunload', h)
+  }, [dirty])
+
   const save = () => {
     setSaving(true)
     void api.jput<{ ok: boolean; note?: string }>('/api/config', { content: text })
@@ -64,17 +81,20 @@ export function SettingsView({ onNotify }: { onNotify: (m: string, kind?: 'err' 
 
   return (
     <div className="mx-auto w-full max-w-3xl px-6 py-8">
-      <h2 className="text-lg font-medium text-ink">设置</h2>
-      <p className="mt-1 text-sm text-muted">
+      <div className="font-mono text-2xs tracking-[.14em] text-faint">PREFERENCES</div>
+      <h2 className="mt-1.5 text-[30px] font-semibold tracking-[-.02em] text-ink">设置</h2>
+      <p className="mt-1.5 text-sm text-muted">
         模型与环节的映射来自 <code className="font-mono text-xs">{cfg?.path ?? 'config/models.yaml'}</code>。
-        改动保存后<b>重启后端服务才生效</b>——进程里的配置是启动时读的那一份。
       </p>
+      <div className="mt-3 rounded-lg bg-black/[.04] px-3.5 py-2.5 text-xs leading-relaxed text-ink/80">
+        改动保存后<b>重启后端服务才生效</b>——进程里的配置是启动时读的那一份。
+      </div>
 
       {/* 默认档位是浏览器偏好（localStorage），不进 models.yaml——
           它和「重启生效」的服务端配置不是一个生命周期，放最上面。 */}
       <div className="card mt-5">
         <div className="border-b border-line px-4 py-2.5 text-xs font-medium text-muted">
-          默认研究档位
+          <span className="mr-2 font-mono text-faint">01</span>默认研究档位
         </div>
         <div className="px-4 py-3">
           <div className="grid grid-cols-2 gap-2 max-sm:grid-cols-1" role="radiogroup" aria-label="默认研究档位">
@@ -122,7 +142,7 @@ export function SettingsView({ onNotify }: { onNotify: (m: string, kind?: 'err' 
         <>
           <div className="card mt-5">
             <div className="border-b border-line px-4 py-2.5 text-xs font-medium text-muted">
-              当前生效的环节 → 模型
+              <span className="mr-2 font-mono text-faint">02</span>当前生效的环节 → 模型
             </div>
             <table className="w-full text-xs">
               <tbody>
@@ -149,7 +169,7 @@ export function SettingsView({ onNotify }: { onNotify: (m: string, kind?: 'err' 
 
           <div className="card mt-5">
             <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
-              <span className="text-xs font-medium text-muted">models.yaml 原文</span>
+              <span className="text-xs font-medium text-muted"><span className="mr-2 font-mono text-faint">03</span>models.yaml 原文</span>
               <span className="text-2xs text-faint">编辑的是磁盘上的文件本身</span>
             </div>
             <textarea
@@ -160,24 +180,20 @@ export function SettingsView({ onNotify }: { onNotify: (m: string, kind?: 'err' 
             />
           </div>
 
-          <div className="mt-3 flex items-center justify-end gap-2">
-            {savedAt && (
-              <span className="pill mr-auto">
-                已保存。重启后端服务后生效。
-              </span>
-            )}
-            {dirty && (
+          {savedAt && (
+            <div className="mt-3"><span className="pill">已保存。重启后端服务后生效。</span></div>
+          )}
+          {dirty && (
+            <div className="sticky bottom-0 -mx-6 mt-4 flex items-center justify-end gap-2 border-t border-line2 bg-white/95 px-6 py-3 backdrop-blur">
               <button
                 onClick={() => { setText(cfg.content); setSavedAt(null) }}
                 className="btn-ghost"
-              >
-                还原
+              >还原</button>
+              <button onClick={save} disabled={saving} className="btn-primary">
+                {saving ? '保存中…' : '保存（⌘S）'}
               </button>
-            )}
-            <button onClick={save} disabled={!dirty || saving} className="btn-primary">
-              {saving ? '保存中…' : '保存'}
-            </button>
-          </div>
+            </div>
+          )}
         </>
       )}
     </div>

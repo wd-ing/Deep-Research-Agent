@@ -142,33 +142,33 @@ export function SourcesView({
   return (
     <div ref={rootRef} className="flex min-h-0 flex-1 flex-col">
       {/* 页头：标题 + 读数行 + 性质构成色带（全真数据） */}
-      <header className="reveal shrink-0 border-b border-line2 px-8 pb-4 pt-6">
+      <header className={`reveal shrink-0 border-b border-line2 ${wide ? 'px-8 pb-4 pt-6' : 'px-4 pb-2.5 pt-4'}`}>
         <div className="flex items-end justify-between gap-4">
-          <h1 className="text-[32px] font-semibold tracking-[-.02em]">来源库</h1>
+          <h1 className={`${wide ? 'text-[32px]' : 'text-[26px]'} font-semibold tracking-[-.02em]`}>来源库</h1>
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1">
+        <div className={`${wide ? 'mt-3' : 'mt-2'} flex flex-wrap items-center gap-x-6 gap-y-1`}>
           <div className="flex items-baseline gap-1.5">
-            <b className="text-[26px] font-medium leading-none tabular-nums"><CountUp v={lib.total} /></b>
+            <b className={`${wide ? 'text-[26px]' : 'text-[20px]'} font-medium leading-none tabular-nums`}><CountUp v={lib.total} /></b>
             <span className="text-2xs text-faint">来源</span>
           </div>
           <div className="flex items-baseline gap-1.5">
-            <b className="text-[26px] font-medium leading-none tabular-nums"><CountUp v={lib.segments} /></b>
+            <b className={`${wide ? 'text-[26px]' : 'text-[20px]'} font-medium leading-none tabular-nums`}><CountUp v={lib.segments} /></b>
             <span className="text-2xs text-faint">段</span>
           </div>
           <div className="flex items-baseline gap-1.5">
-            <b className="text-[26px] font-medium leading-none tabular-nums"><CountUp v={lib.citations} /></b>
+            <b className={`${wide ? 'text-[26px]' : 'text-[20px]'} font-medium leading-none tabular-nums`}><CountUp v={lib.citations} /></b>
             <span className="text-2xs text-faint">处引用</span>
           </div>
           {nIgnored > 0 && (
             <div className="flex items-baseline gap-1.5">
-              <b className="text-[26px] font-medium leading-none tabular-nums text-seal"><CountUp v={nIgnored} /></b>
+              <b className={`${wide ? 'text-[26px]' : 'text-[20px]'} font-medium leading-none tabular-nums text-seal`}><CountUp v={nIgnored} /></b>
               <span className="text-2xs text-seal">已排除</span>
             </div>
           )}
         </div>
         {/* 性质构成色带：宽度=真实占比，颜色=NATURE_META（性质色不是状态色） */}
         {lib.total > 0 && (
-          <div className="mix mt-3.5 flex h-1.5 w-full overflow-hidden rounded-full">
+          <div className={`mix ${wide ? 'mt-3.5' : 'mt-2'} flex h-1.5 w-full overflow-hidden rounded-full`}>
             {lib.nature_order.map((k) => {
               const n = lib.by_nature[k] ?? 0
               if (!n) return null
@@ -181,7 +181,7 @@ export function SourcesView({
         )}
 
         {/* 工具行：搜索 + 性质 chips + 排序 */}
-        <div className="mt-4 flex flex-wrap items-center gap-2.5">
+        <div className={`${wide ? 'mt-4' : 'mt-2.5'} flex flex-wrap items-center gap-2`}>
           <div className="relative min-w-[200px] flex-1 sm:max-w-[300px]">
             <Icon name="search" size={13}
               className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
@@ -469,8 +469,12 @@ function Overview({
                 <button onClick={() => onPick(s.id)}
                   className="group flex w-full items-center gap-2.5 rounded px-1.5 py-1 text-left hover:bg-black/[.03]">
                   <span className="shrink-0 font-mono text-2xs tabular-nums text-accent">{s.citations} 引</span>
-                  <span className="min-w-0 flex-1 truncate text-xs text-ink">{s.title || '(无标题)'}</span>
-                  <span className="shrink-0 text-2xs text-faint">{s.domain}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs text-ink">{s.title || '(无标题)'}</span>
+                    <span className="block truncate text-2xs text-faint">
+                      {s.domain}{s.session_title ? ` · ${s.session_title}` : ''}
+                    </span>
+                  </span>
                 </button>
               </li>
             ))}

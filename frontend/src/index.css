@@ -616,3 +616,25 @@ textarea:focus-visible {
    否则 390px 下会把正文列撑出 ~170px；pre 块不碰（它横向滚）。 */
 .rpt-article :not(pre) > code { overflow-wrap: anywhere; }
 .rpt-article { overflow-wrap: break-word; }
+
+/* P5 账单面板：深色面板的阶段条（scaleX 入场） */
+.bill-bar { display: block; height: 100%; width: 100%;
+  transform-origin: left; background: rgb(255 255 255 / .55);
+  transition: transform .6s var(--ease-out); }
+@media (prefers-reduced-motion: reduce) {
+  .bill-bar { transition: none; }
+}
+
+/* P5 审批页：近黑主按钮的呼吸环（opacity/transform，RM 关） */
+.appr-cta::before {
+  content: ""; position: absolute; inset: -3px; border-radius: 14px;
+  border: 1.5px solid rgb(0 0 0 / .25); pointer-events: none;
+  animation: appr-halo 2.4s var(--ease-out) infinite;
+}
+@keyframes appr-halo {
+  0% { opacity: .55; transform: scale(.985); }
+  60%, 100% { opacity: 0; transform: scale(1.03); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .appr-cta::before { animation: none; }
+}
