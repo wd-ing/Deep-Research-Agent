@@ -165,7 +165,9 @@ ra = "research_agent.cli:main"
 2026-10-17 把它们从 `/tmp` 搬进来，只解决了「`/tmp` 被清」，
 **没解决「`data/` 被删」**。详见 `CONTEXT.md` 第四节「参考库」。
 
-**2026-11-03 已做一次仓库外备份**：`~/Documents/deep-research-refs-backup-20261103.tar.gz`（40MB，34 个库含 v27–v30 Ark 对照库，用 `sqlite3 .backup` 取一致快照、`integrity_check` 全部 ok，sha256 `da78c151…d16e6`；同名文件已覆盖旧版）。仍在同一块磁盘上——**不是异地备份**；`data/refs/` 新增/变更后要重打。待定：是否再拷一份到网盘/外置盘。
+**2026-11-04 重打（41 个库，integrity 全 ok）**：推荐包 `~/Documents/deep-research-refs-backup-20261103-pure.tar.gz`（纯 .db、无侧车，50,049,763B，sha256 `c8355b42…b30264`）；同目录另有带空侧车的 `…20261103.tar.gz`（覆盖了上一版，内容为超集，详见 CONTEXT 坑 97 后「备份已重打」）。仍是同盘备份，非异地。
+
+**（历史）2026-11-03 已做一次仓库外备份**：`~/Documents/deep-research-refs-backup-20261103.tar.gz`（40MB，34 个库含 v27–v30 Ark 对照库，用 `sqlite3 .backup` 取一致快照、`integrity_check` 全部 ok，sha256 `da78c151…d16e6`；同名文件已覆盖旧版）。仍在同一块磁盘上——**不是异地备份**；`data/refs/` 新增/变更后要重打。待定：是否再拷一份到网盘/外置盘。
 
 ---
 
