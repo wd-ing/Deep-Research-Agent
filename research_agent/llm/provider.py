@@ -671,7 +671,11 @@ class ModelRegistry:
     def __init__(self, path: str | Path | None = None) -> None:
         import yaml
 
-        self.path = Path(path or REPO_ROOT / "config" / "models.yaml")
+        # RA_MODELS_PATH（2026-11-04）：变体实验用独立 models.yaml，
+        # 不设时与原来完全一致。
+        self.path = Path(
+            path or os.environ.get("RA_MODELS_PATH")
+            or REPO_ROOT / "config" / "models.yaml")
         self.raw = yaml.safe_load(self.path.read_text(encoding="utf-8"))
         self._cache: dict[str, StageConfig] = {}
 

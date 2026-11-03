@@ -294,17 +294,17 @@ def t_config_and_payload():
     check("③ write_audit 指向 ark_glm glm-5-3-flash-260828",
           cfg.provider == "ark" and cfg.model == "glm-5-3-flash-260828",
           f"{cfg.provider}/{cfg.model}")
-    check("③ effort 组合 = reasoning low（glm 无 thinking_effort）",
-          cfg.reasoning_effort == "low" and cfg.thinking_effort is None,
+    check("③ effort 组合 = reasoning high（glm 无 thinking_effort）",
+          cfg.reasoning_effort == "high" and cfg.thinking_effort is None,
           f"{cfg.reasoning_effort!r}/{cfg.thinking_effort!r}")
     check("③ max_output_tokens=24576、timeout 420",
           cfg.max_output_tokens == 24576 and cfg.timeout_s == 420.0,
           f"{cfg.max_output_tokens}/{cfg.timeout_s}")
 
-    # 兄弟环节：迁 Ark 后写手写修订走 ark_mini（doubao-seed-2-0-mini）。
+    # 兄弟环节：定稿后写手写修订走 ark_glm low。
     for st in ("write_section", "write_revise"):
-        check(f"③ {st} 指向 ark_mini doubao-seed-2-0-mini-260428",
-              reg.stage(st).model == "doubao-seed-2-0-mini-260428"
+        check(f"③ {st} 指向 ark_glm glm-5-3-flash-260828",
+              reg.stage(st).model == "glm-5-3-flash-260828"
               and reg.stage(st).provider == "ark",
               reg.stage(st).model)
 
@@ -339,7 +339,7 @@ def t_config_and_payload():
         check("③ payload：model/max_tokens/effort",
               p0.get("model") == "glm-5-3-flash-260828"
               and p0.get("max_tokens") == 24576
-              and p0.get("reasoning_effort") == "low",
+              and p0.get("reasoning_effort") == "high",
               f"{p0.get('model')}/{p0.get('max_tokens')}/{p0.get('reasoning_effort')}")
         check("③ payload：无 MiniMax 专属字段",
               "thinking" not in p0 and "output_config" not in p0,

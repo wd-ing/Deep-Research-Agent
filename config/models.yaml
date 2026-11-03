@@ -71,6 +71,17 @@
 #   · MODEL_SEAT_QUOTA_EXHAUSTED      → **重试无效**，得管理员调额度
 # 所以限流额度与传输断连额度**分开计**，否则一次限流就把重试机会耗光。
 
+# ── 2026-11-03 定稿（v28/v29 六个变体真跑后）：最终环节分配 ───────────────
+#   mini(none)  : probe_light/probe_degraded/extract/relevance/dedupe/summarize/session_summary
+#   glm high    : probe_outline/outline/assess/write_plan_spec/write_plan_tasks/write_audit（规划链路）
+#   glm low     : write_section/write_revise/write_patch/fast_answer（写手）
+# 依据（同题 Rust 对 Go，n=1，方向性证据，原始数据 data/refs/ra_v27~v29_*.db、CONTEXT 坑 93）：
+#   · 写手用 mini none 每节只写 ~500–1000 token（~1k 字），glm low / ds none 约 1.5–3k token（~2.7k 字）；
+#   · 规划链路 glm low 太薄（5–6 节、mandate ~100 字），ds low 虽充实（7 节、mandate ~376 字）但烧思考
+#     （write_plan_tasks 输出 16–22k token/120–250s，整场 12–14 分钟），ds none 仍只有 5 节，
+#     glm high 达到 8 节、mandate ~305 字（v26 MiniMax：10 节/327 字），整场 ~650s；
+#   · 仍与 v26 有差距：报告 ~23k 字 vs 72k 字（单节 ~2.5k vs ~6.5k 字）——写手深度未追平，待继续调。
+
 providers:
   minimax:
     provider: minimax
@@ -384,7 +395,7 @@ stages:
     #   entities/jargon/controversies 三组全非空。
     #   **退路：删 provider/reasoning/thinking 三行即回 M3。**
     provider: ark_glm
-    reasoning_effort: low
+    reasoning_effort: high
     # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
     stream: true
     temperature: 0.0
@@ -432,7 +443,7 @@ stages:
     #   grounded_in 100% 通过、queries zh/en 各 5 条。
     #   **退路：删 provider/reasoning/thinking 三行即回 M3。**
     provider: ark_glm
-    reasoning_effort: low
+    reasoning_effort: high
     # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
     stream: true
     temperature: 0.0
@@ -494,7 +505,7 @@ stages:
     #   gaps/has_enough 结构一致。**退路：出问题把 provider 改回
     #   defaults 的老配置（删 provider/reasoning/thinking 三行即回 M3）。**
     provider: ark_glm
-    reasoning_effort: low
+    reasoning_effort: high
     # 流式：绕开 xj189 前面 nginx 的 60 秒读超时（2026-10-10 实测）
     stream: true
     temperature: 0.0
@@ -579,7 +590,7 @@ stages:
     # 规约文本约长 35%——按用户决定一并迁。
     # **退路：删 provider/reasoning/thinking 三行即回 M3 high 老配置。**
     provider: ark_glm
-    reasoning_effort: low
+    reasoning_effort: high
     stream: true
     temperature: 0.0
     # ⚠️ 2026-10-17 实测定死（`tests/probe_plan_spec.py`，真实数据回放 n=3：
@@ -604,7 +615,7 @@ stages:
     #   uncovered=[]、n_claim 相当。**退路：删 provider/reasoning/
     #   thinking 三行即回 M3 high（65536/1200s）老配置。**
     provider: ark_glm
-    reasoning_effort: low
+    reasoning_effort: high
     stream: true
     temperature: 0.0
     # ⚠️ **4,096 → 16,384 → 65,536，前两次都是错的修法（M3 时代）。**
@@ -646,7 +657,7 @@ stages:
     # M3.1 关不掉思考（disabled→400）：reasoning_effort 在这只当
     # truthy 开关发 adaptive，深度由 thinking_effort=low 控制。
     # validate() 会拦死 reasoning_effort 缺省 / forced_thinking。
-    reasoning_effort: low
+    reasoning_effort: high
     temperature: 0.0
     # 24576 ≈ 实测最大输出（~12k）的 2 倍富余。这条路径不走 guard
     # 梯度提预算；guard 上限写同值只为满足 NEEDS_GUARD 的显式配置要求。
@@ -664,12 +675,13 @@ stages:
   # 失败成本乘以一遍。**抬上限不花钱**（只按实际用量计费），
   # 一次空返回浪费的是一整轮思考。
   write_section:
+    provider: ark_glm
     # ⚠️ 迁 Ark（2026-11-03）：暂放 ark_mini——速度/并发优先，
     #    质量待 A/B；若换 glm 必须补 reasoning_effort: low（关不掉思考）。
     # 流式：工具循环每轮带上一轮结果、输入更大，实测最长 48.9s
     # 已贴 60 秒墙（工具那一轮直接 504 且**静默降级**，不报错）
     stream: true
-    reasoning_effort: disabled
+    reasoning_effort: low
     # 强制交卷轮只负责把**已经想好**的正文填进 submit_section 参数，
     # 不需要再思考。实测（2026-10-19，n=5，t7/t5r 两个任务）：
     # 开思考干净 1/5 & 3/5（思考吃光 max_tokens 导致正文截断），
@@ -697,12 +709,13 @@ stages:
 
   # 子 agent 定点返修。同角色，温度略低以免它把没问题的部分也重写。
   write_revise:
+    provider: ark_glm
     # ⚠️ 迁 Ark（2026-11-03）：暂放 ark_mini——速度/并发优先，
     #    质量待 A/B；若换 glm 必须补 reasoning_effort: low（关不掉思考）。
     # 流式：工具循环每轮带上一轮结果、输入更大，实测最长 48.9s
     # 已贴 60 秒墙（工具那一轮直接 504 且**静默降级**，不报错）
     stream: true
-    reasoning_effort: disabled
+    reasoning_effort: low
     # 同 write_section：强制交卷轮关思考更干净、更省。
     # 单独再注一遍是因为 v13 的丢稿事故就出在**返修**——
     # 返修输出只有英文推理却覆盖了旧稿（merge 保护就是为它加的）。
@@ -731,10 +744,11 @@ stages:
   # ⚠️ 不许迁 M3.1：forced_thinking: disabled 在 M3.1 上被 validate()
   # 拦死（它关不掉思考），这是有意的——M3.1 没有「关思考」可给。
   write_patch:
+    provider: ark_glm
     # ⚠️ 迁 Ark（2026-11-03）：暂放 ark_mini——速度/并发优先，
     #    质量待 A/B；若换 glm 必须补 reasoning_effort: low（关不掉思考）。
     stream: true
-    reasoning_effort: disabled
+    reasoning_effort: low
     temperature: 0.1
     max_output_tokens: 8192
     guard: { retry_on_empty: 1, max_output_tokens: 8192 }
@@ -754,6 +768,7 @@ stages:
   # 一是 guard 的 `max_output_tokens` 是「空返回时翻倍的**目标**」，
   # 给小了无处可翻；二是与其它关思考的轻量档（relevance / summarize）保持一致。
   fast_answer:
+    provider: ark_glm
     # 快速档一次性简报（2026-10-27，C1）：纯文本流式，不带工具。
     # ⚠️ 2026-10-27 修：初版照 write_section 抄 `low`+`forced_thinking`，
     # 但 forced_thinking 只管强制工具轮；纯文本流式在 M3 上
@@ -763,7 +778,7 @@ stages:
     # `disabled` 走 profile effort_off 翻译后发出
     # `thinking.type=disabled`（provider.py ~2349 实测表）。
     stream: true
-    reasoning_effort: disabled
+    reasoning_effort: low
     temperature: 0.2
     # 基础预算降到 12288：关思考后 V2 实测 out 中位 3022、最大 3324
     # （exp_fast_answer n=3），12288 ≈ 3.7× 余量；guard 上限仍 16384，

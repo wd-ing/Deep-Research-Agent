@@ -48,10 +48,10 @@ def main() -> int:
     for stage in ("assess", "write_plan_spec", "write_plan_tasks",
                   "write_audit", "outline", "probe_outline"):
         c = reg.stage(stage)
-        check(f"{stage}: ark_glm glm-flash + low + 无 forced_thinking",
+        check(f"{stage}: ark_glm glm-flash + high + 无 forced_thinking",
               c.provider == "ark"
               and c.model == "glm-5-3-flash-260828"
-              and c.reasoning_effort == "low"
+              and c.reasoning_effort == "high"
               and c.thinking_effort is None
               and c.forced_thinking is None,
               f"{c.provider}/{c.model} "
@@ -60,10 +60,10 @@ def main() -> int:
 
     for stage in ("write_section", "write_revise", "write_patch"):
         c = reg.stage(stage)
-        check(f"{stage}: ark_mini + 关思考无 MiniMax 专属键",
+        check(f"{stage}: ark_glm + low 无 MiniMax 专属键",
               c.provider == "ark"
-              and c.model == "doubao-seed-2-0-mini-260428"
-              and c.reasoning_effort == "none"
+              and c.model == "glm-5-3-flash-260828"
+              and c.reasoning_effort == "low"
               and c.forced_thinking is None
               and c.round_max_tokens is None,
               f"{c.provider}/{c.model} effort={c.reasoning_effort} "
@@ -99,13 +99,14 @@ def main() -> int:
     yml = yaml.safe_load(open(reg.path, encoding="utf-8"))
     fa = yml["stages"]["fast_answer"]
     c = reg.stage("fast_answer")
-    check("fast_answer: reasoning_effort=disabled、无 forced_thinking",
-          fa.get("reasoning_effort") == "disabled"
+    check("fast_answer: ark_glm + low + 无 forced_thinking",
+          (fa.get("provider") or "") == "ark_glm"
+          and fa.get("reasoning_effort") == "low"
           and "forced_thinking" not in fa
           and c.stream is True
           and c.max_output_tokens == 12288
           and c.guard.max_output_tokens == 16384,
-          f"yaml effort={fa.get('reasoning_effort')} "
+          f"yaml prov={fa.get('provider')} effort={fa.get('reasoning_effort')} "
           f"forced={fa.get('forced_thinking')} "
           f"max={c.max_output_tokens}")
 

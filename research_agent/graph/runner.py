@@ -29,6 +29,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+import os
 from pathlib import Path
 
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -45,7 +46,10 @@ from .nodes import (
 from .state import ResearchState
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CKPT_DB = REPO_ROOT / "data" / "checkpoints.db"
+# RA_CKPT_DB（2026-11-04）：变体并行真跑要各自独立 checkpoint 库，
+# 不设时与原来完全一致。
+CKPT_DB = Path(os.environ["RA_CKPT_DB"]) if os.environ.get("RA_CKPT_DB") \
+    else REPO_ROOT / "data" / "checkpoints.db"
 
 
 def build_graph(checkpointer):

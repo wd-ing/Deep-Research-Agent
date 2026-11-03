@@ -15,9 +15,11 @@ def check(l, c, d=""):
     print(("✅" if c else "❌"), l, (f"—— {d}" if d else ""))
     if not c: FAILED.append(l)
 
-GLM = ["probe_outline","outline","assess","write_plan_spec","write_plan_tasks","write_audit"]
+GLM_HIGH = ["probe_outline","outline","assess","write_plan_spec","write_plan_tasks","write_audit"]
+GLM_LOW = ["write_section","write_revise","write_patch","fast_answer"]
+GLM = GLM_HIGH + GLM_LOW
 MINI = ["probe_light","probe_degraded","extract","relevance","dedupe","summarize",
-        "session_summary","fast_answer","write_section","write_revise","write_patch"]
+        "session_summary"]
 def main():
     reg = ModelRegistry()
     yml = yaml.safe_load(open(reg.path, encoding="utf-8"))
@@ -27,9 +29,14 @@ def main():
         check(f"{st}: 无 MiniMax 专属键",
               c.thinking_effort is None and c.forced_thinking is None
               and c.round_max_tokens is None)
-    for st in GLM:
+    for st in GLM_HIGH:
         c = reg.stage(st)
-        check(f"{st}: ark_glm/glm-5-3-flash-260828 + low",
+        check(f"{st}: glm + high（定稿：规划/审核上 high）",
+              c.model == "glm-5-3-flash-260828" and c.reasoning_effort == "high",
+              f"{c.model}/{c.reasoning_effort}")
+    for st in GLM_LOW:
+        c = reg.stage(st)
+        check(f"{st}: glm + low（定稿：写手/fast_answer 上 low）",
               c.model == "glm-5-3-flash-260828" and c.reasoning_effort == "low",
               f"{c.model}/{c.reasoning_effort}")
     for st in MINI:
