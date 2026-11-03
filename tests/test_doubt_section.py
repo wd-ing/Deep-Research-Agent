@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import _isolate  # noqa: F401, E402
 import research_agent.graph.subgraphs.write as W   # noqa: E402
 
 _ok = _fail = _n = 0

@@ -14,6 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import _isolate  # noqa: F401, E402
 os.environ.setdefault("MINIMAX_API_KEY", "stub-not-used")
 
 from research_agent.llm import provider as P            # noqa: E402

@@ -27,6 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import _isolate  # noqa: F401, E402
 
 # provider 启动时要 `api_key_env` 有值（`_headers` / `_opencode` 都会读），
 # 但本测试全程是桩、不打网络，所以这里只需要「有值」这个事实。
@@ -139,6 +140,8 @@ check("disabled/none 不再往下走（它们不是可靠的『关思考』）",
 
 print("\n=== ② 非流式：预算不变、effort 降档 ===")
 llm = LLMClient()
+# 2026-11-04：初始档位钉死 high——断言不该依赖线上配置碰巧是 high。
+llm.registry.stage("write_plan_tasks").reasoning_effort = "high"
 llm._client = FakeClient([empty_resp(), ok_resp()])
 txt, _ = llm._opencode(llm.registry.stage("write_plan_tasks"), "提示词", None, True)
 sent = llm._client.sent
@@ -175,6 +178,7 @@ except Exception as e:
 
 print("\n=== ④ 流式分支同规则 ===")
 llm3 = LLMClient()
+llm3.registry.stage("write_plan_tasks").reasoning_effort = "high"
 llm3._client = FakeClient([empty_resp(), empty_resp(), ok_resp()])
 cfg = llm3.registry.stage("write_plan_tasks")
 llm3.registry._cache["write_plan_tasks"].stream = True   # 临时开流式
@@ -190,6 +194,7 @@ check("④ 流式 effort 降档",
 
 print("\n=== ⑤ 非流式成功路径不触发重试 ===")
 llm4 = LLMClient()
+llm4.registry.stage("write_plan_tasks").reasoning_effort = "high"
 llm4._client = FakeClient([ok_resp("一次就成")])
 t4, _ = llm4._opencode(llm4.registry.stage("write_plan_tasks"), "提示词", None, True)
 check("⑤ 一次成功就返回", t4 == "一次就成" and len(llm4._client.sent) == 1,

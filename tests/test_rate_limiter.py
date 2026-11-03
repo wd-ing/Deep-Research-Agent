@@ -23,6 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import _isolate  # noqa: F401, E402
 
 from research_agent.llm.provider import (  # noqa: E402
     LLMClient, SendRateLimiter, get_limiter, reset_limiters,

@@ -40,6 +40,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import _isolate  # noqa: F401, E402
 os.environ.setdefault("MINIMAX_API_KEY", "test-key-not-real")   # 桩，不打网络
 
 from research_agent.llm.provider import (  # noqa: E402
@@ -108,6 +109,11 @@ def pin_minimax(llm: LLMClient, stage: str):
     cfg.base_url = "https://api.minimaxi.com/anthropic"
     cfg.api_key_env = "MINIMAX_API_KEY"
     cfg.stream = False
+    # 2026-11-04：环节迁 glm 后 guard.max_output_tokens == max_output_tokens
+    # （16384=16384），② 的「截断后预算翻倍」没有余量可翻。
+    # guard 浅拷贝再放大，不污染共享对象，也不依赖线上配置的余量。
+    cfg.guard = copy.copy(cfg.guard)
+    cfg.guard.max_output_tokens = cfg.max_output_tokens * 4
     llm.registry._cache[stage] = cfg
     return cfg
 

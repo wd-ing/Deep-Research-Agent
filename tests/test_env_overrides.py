@@ -5,6 +5,7 @@ import os, sys, tempfile
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import _isolate  # noqa: F401, E402
 os.environ.setdefault("ARK_API_KEY", "stub-not-used")
 
 FAILED = []

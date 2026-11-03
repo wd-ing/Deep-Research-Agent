@@ -17,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import _isolate  # noqa: F401, E402
 
 import research_agent.ingest.extract as ext            # noqa: E402
 from research_agent.ingest.extract import Fetcher, Page  # noqa: E402

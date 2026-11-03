@@ -28,6 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import _isolate  # noqa: F401, E402
 
 from research_agent.llm.provider import _anthropic_msgs_to_openai  # noqa: E402
 

@@ -33,6 +33,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import _isolate  # noqa: F401, E402
 os.environ.setdefault("MINIMAX_API_KEY", "test-key-not-real")   # 桩，不打网络
 
 from research_agent.llm.provider import (  # noqa: E402

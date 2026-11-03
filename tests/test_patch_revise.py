@@ -18,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import _isolate  # noqa: F401, E402
 
 from research_agent.graph.subgraphs import write as W   # noqa: E402
 # 重试判据 2026-10-20 抽到共享模块，等待常量的 patch 目标跟着搬过去。

@@ -17,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import _isolate  # noqa: F401, E402
 
 import httpx                                   # noqa: E402
 from research_agent.search.searxng import SearXNGProvider  # noqa: E402

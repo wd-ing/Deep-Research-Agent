@@ -113,17 +113,34 @@ def t3_writer_listing():
                        "must_cover": [], "not_yours": []}]
     task = state["tasks"][0]
     W.run_tool_loop = FakeLoop()
+    orig_preload = W._WRITE_PRELOAD
     try:
+        # 默认路径是预加载（RA_WRITE_PRELOAD=1）：写手直接拿原文，不看概括
+        # listing，所以「listing 里的无概括前缀」只在回退路径（预加载关闭 /
+        # 块超限 / 返修）才存在。2026-11-03 起分两路断言，避免测试跟着
+        # 默认值漂（原来只测 listing，默认开预加载后静默变成断言过期）。
+        W._WRITE_PRELOAD = False
         W._run_task(state, task, None)
+        p = captured.get("prompt") or ""
+        W._WRITE_PRELOAD = True
+        captured.clear()
+        W._run_task(state, task, None)
+        pre = captured.get("prompt") or ""
     finally:
         W.run_tool_loop = orig_loop
-    p = captured.get("prompt") or ""
-    check("③ 写手 listing 含 [无概括 前缀",
+        W._WRITE_PRELOAD = orig_preload
+    check("③ 回退路径 listing 含 [无概括 前缀",
           "[无概括·取原文开头]" in p,
           p[p.find("无概括") - 60:p.find("无概括") + 80]
           if "无概括" in p else p[:200])
-    check("③ 有概括段的概括原文也在",
+    check("③ 回退路径 有概括段的概括原文也在",
           "正常概括" in p)
+    check("③ 预加载路径 写手拿到两段原文（无概括段不会丢）",
+          "原文已全部附上" in pre and "[S1·1]" in pre and "[S1·2]" in pre
+          and "第一段话。" in pre and "正文全文" in pre,
+          pre[-200:])
+    check("③ 预加载路径 不走概括 listing",
+          "[无概括" not in pre and "只有概括" not in pre)
 
 
 def t4_plan_event_count():

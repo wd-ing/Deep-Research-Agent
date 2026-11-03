@@ -89,7 +89,9 @@ it["segments"] = segments                  # ← 每个分块的正文，又一�
 
 ---
 
-## 2. 🟡 离线守门测试会污染默认库 `data/research.db`
+## 2. ✅ 离线守门测试会污染默认库 `data/research.db`（2026-11-04 已修；遗留 714 条孤儿行未清）
+
+> **2026-11-04 已修**：新增 `tests/_isolate.py`（导入时 `setdefault` 把 `RA_DB_PATH`/`RA_CKPT_DB` 指到 `tempfile.mkdtemp()`），26 个原先不设 `RA_DB_PATH` 的 `tests/test_*.py` 在第一个 `import research_agent` 之前 `import _isolate`（显式设了环境变量的脚本/外部覆盖不受影响）。**验证**：不设两个环境变量把全部 44 个 `test_*.py` 跑一遍，退出码全 0，`data/research.db` 19 张表逐表行数与 `data/checkpoints.db` 字节数前后完全一致。**未做**：默认库里已有的孤儿 `llm_call`（现 714 条：2026-10-17 实测 404，后续又涨；其中约 19 条是本次修复过程里改测试时未隔离的跑法写的）没有删——删行属破坏性操作，也不影响正确性（统计口径都带 `where session_id=?`），等用户定。**新增测试脚本时必须带 `import _isolate`**，否则会复发。
 
 **2026-10-17 实测**（这是查「僵尸 server 往哪写」时顺带发现的，
 一开始归错因了，见下）：
@@ -110,13 +112,13 @@ data/research.db 的 llm_call：跑 tests/test_plan_tasks_forced.py 之前 401 �
 **影响**：不致命（统计口径都带 `where session_id=?`，见 `CONTEXT.md` 第六节），
 但它是个真实污染源，且让默认库单向变大。
 
-**修法（未做）**：守门测试统一在文件头把 `RA_DB_PATH` 指到临时库。
-`tests/test_summarize_retry.py` 已经这么做了（`tempfile.gettempdir()`），
-可以照抄。**属于结构性改动（动的是全部守门测试的前置），按约定先说方案。**
+**修法（已做，见上方 2026-11-04 更新）**：守门测试统一把 `RA_DB_PATH` 指到临时库。
 
 ---
 
-## 3. 🟢 `pyproject.toml` 声明的 `ra` 入口点不存在
+## 3. ✅ `pyproject.toml` 声明的 `ra` 入口点不存在（2026-11-04 已删）
+
+> 已处置：全仓 grep 无任何 `research_agent.cli` / `ra` 命令引用，删掉 `[project.scripts]` 段。以后若真要 CLI 再补，别先声明。
 
 ```toml
 [project.scripts]
@@ -131,7 +133,9 @@ ra = "research_agent.cli:main"
 
 ---
 
-## 4. 🟢 `providers.opencode` 档案缺 `model` 字段
+## 4. ✅ `providers.opencode` 档案缺 `model` 字段（2026-11-04 已删档案）
+
+> 已处置：确认没有任何 stage/测试引用该档案后，删除 `config/models.yaml` 的 `providers.opencode` 档案与 `alternatives:` 里三条 blocked 免费模型；provider 代码里的 `_opencode` 方法名与 `OPENAI_COMPAT` 里的 `"opencode"` 字符串是 OpenAI 兼容协议的**实现名**，故意没动（改名是纯重构，收益小）。
 
 `config/models.yaml` 的 `opencode` 档案只有 `provider` / `base_url` /
 `api_key_env`，**没有 `model`**。选中它会直接失败。
@@ -142,13 +146,15 @@ ra = "research_agent.cli:main"
 
 ---
 
-## 5. 🟢 `research_agent/docs/` 是个空包
+## 5. ✅ `research_agent/docs/` 是个空包（2026-11-04 已删）
+
+> 已处置：确认零 import、`pyproject` 的 hatch `packages=["research_agent"]` 不依赖，`git rm -r`；`import research_agent.server` 正常。
 
 只有一个 0 字节的 `__init__.py`。没有任何代码 import 它。
 
 ---
 
-## 6. 🟢 参考库不在 git 里
+## 6. 🟡 参考库不在 git 里（已有本机备份，未做异地）
 
 `data/refs/` 下的 6 份参考库是**不可再生的资产**（重造一份 25~40 分钟 +
 几十万 token），而 `.gitignore` 同时排除 `data/` 和 `*.db`。
@@ -168,7 +174,7 @@ ra = "research_agent.cli:main"
 `chunking.max_tokens: 500` 都和代码里写死的值（4 / 30 / 2000）矛盾，
 `loop.max_tokens_per_session` 对应的判据已被删除。
 
-已做的处置：文件头加了显眼警告，标为「文档、不生效」。
+已做的处置：文件头加了显眼警告，标为「文档、不生效」。**2026-11-04 复核结论：不属于「高把握的小问题」——接上与删除是二选一的产品决定，故这一档不动，留给用户定**（现状无害：文件头警告在，没有代码读它）。
 
 **待定（动手前要定的）**：接上（改成真正被加载、代码默认值改从它读）
 还是删掉（设计说明挪进 `CONTEXT.md`）。接上的话要先核对每条配置项
