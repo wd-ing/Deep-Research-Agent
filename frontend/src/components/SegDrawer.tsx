@@ -90,7 +90,7 @@ export function SegDrawer({
 /** 来源性质要标出来——community / media 的可信度不同于 research。 */
 /** 来源性质 → 标签与颜色。**唯一一份**。
  *
- *  `NatureBadge`（详情里的色块）和 `SourceList` 的分组标题（一个小圆点）
+ *  `NatureBadge`（详情里的色块）和来源列表的分组标题（一个小圆点）
  *  都从这里取色——两处各写一份的话，早晚漂移成两种紫。
  *  `chip` 是文字色块的类，`dot` 是同色系的小圆点（分组标题用，比色块安静）。 */
 export const NATURE_META: Record<string, { label: string; chip: string; dot: string }> = {

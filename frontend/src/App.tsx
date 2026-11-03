@@ -12,7 +12,7 @@ import { MODES, loadDefaultMode, type ResearchMode } from './lib/mode'
 import { useCountUp } from './lib/motion'
 import { RoundChart } from './components/RoundChart'
 import { Sidebar, type Pane } from './components/Sidebar'
-import { SourceDetail } from './components/SourceDetail'
+import { SourcesView } from './views/SourcesView'
 import { SettingsView } from './views/SettingsView'
 import { NewResearchDialog } from './components/NewResearchDialog'
 import { Menu, MenuItem, MenuSep } from './components/Menu'
@@ -39,6 +39,9 @@ export default function App() {
   const [libErr, setLibErr] = useState<string | null>(null)
   const [srcQ, setSrcQ] = useState('')
   const [srcDetail, setSrcDetail] = useState<SourceDetailRow | null>(null)
+  /** 来源库性质筛选：主区 chips 和侧栏「按性质」列共用一份。
+   *  '__ignored' = 仅看已排除（特殊值，不是一种性质）。 */
+  const [natureFilter, setNatureFilter] = useState<string | null>(null)
 
   // ---- 引用 hover 预览（seg_preview）----
   // ⚠️ state 声明可以放前面，**取数的 effect 必须放在 `const d = s.detail` 之后**——
@@ -327,13 +330,9 @@ export default function App() {
           : sid ? { name: 'session', sid } : { name: 'home' })}
         lib={lib}
         libErr={libErr}
-        onRetryLib={() => void refreshLib(srcQ)}
+        natureFilter={natureFilter}
+        onNatureFilter={setNatureFilter}
         onNotify={s.notify}
-        srcQuery={srcQ}
-        onSrcQuery={setSrcQ}
-        srcCur={srcId}
-        onPickSource={(id) => nav({ name: 'sources', srcId: id })}
-        onIgnoreSource={(id, ignore, reason) => void ignoreSource(id, ignore, reason)}
         onSettings={() => nav({ name: 'settings' })}
         onReplay={replayOn ? runReplay : null}
         collapsed={sideCollapsed}
@@ -348,10 +347,19 @@ export default function App() {
         </main>
       ) : pane === 'source' ? (
         <main key="source" className="view-in flex min-w-0 flex-1 flex-col">
-          <SourceDetail
-            src={srcDetail}
+          <SourcesView
+            lib={lib} libErr={libErr} onRetryLib={() => void refreshLib(srcQ)}
+            q={srcQ} onQuery={setSrcQ}
+            cur={srcId}
+            onPick={(id) => nav({ name: 'sources', srcId: id })}
+            onIgnore={(id, reason) => void ignoreSource(id, true, reason)}
+            onUnignore={(id) => void ignoreSource(id, false, '')}
+            srcDetail={srcDetail}
             onOpenSession={(id) => nav({ name: 'session', sid: id })}
             onToggleIgnore={(id, ignored) => void ignoreSource(id, !ignored, '')}
+            natureFilter={natureFilter}
+            onNatureFilter={setNatureFilter}
+            onBack={() => nav({ name: 'sources' })}
           />
         </main>
       ) : (

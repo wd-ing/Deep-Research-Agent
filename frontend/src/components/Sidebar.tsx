@@ -5,7 +5,8 @@ import { FolderTree, buildTree, findNodeById, subtreeIds, folderChoices } from '
 import { ago, tokens } from '../lib/format'
 import { Menu, MenuItem, MenuSep } from './Menu'
 import { ConfirmDialog } from './ConfirmDialog'
-import { SourceList } from './SourceList'
+import { natureMeta } from './SegDrawer'
+import { IGNORED_ONLY } from '../views/SourcesView'
 import { Icon } from './Icon'
 import { Empty } from './Empty'
 
@@ -245,7 +246,7 @@ function SessionRow({
 
 export function Sidebar({
   list, trash, cur, folders, onPick, onChanged, onNew, pane, onPane,
-  lib, libErr, onRetryLib, srcQuery, onSrcQuery, srcCur, onPickSource, onIgnoreSource,
+  lib, libErr, natureFilter, onNatureFilter,
   onNotify, onSettings, onReplay, collapsed, onToggleCollapse,
 }: {
   list: SessionSummary[]
@@ -263,16 +264,14 @@ export function Sidebar({
   /** 来源库加载失败的原因。`lib === null` 同时表示「加载中」和「失败」，
    *  光看它分不出来——分不出来时列表会一直停在「加载中…」。 */
   libErr: string | null
-  onRetryLib: () => void
   /** 写操作失败时弹提示。走 App 的 notice 通道——
    *  侧栏自己的红字条（FolderTree 里那个 `err`）在这里不合适：
    *  那是文件夹树的局部状态，而这里失败的是会话。 */
   onNotify: (msg: string) => void
-  srcQuery: string
-  onSrcQuery: (v: string) => void
-  srcCur: string | null
-  onPickSource: (id: string) => void
-  onIgnoreSource: (id: string, ignore: boolean, reason: string) => void
+  /** 主区来源库的性质筛选（与主区 chips 同一份状态）。
+   *  '__ignored' = 仅看已排除。 */
+  natureFilter: string | null
+  onNatureFilter: (v: string | null) => void
   /** 设置页入口（D1）。挂在侧栏底部——路由跳转的事不归侧栏管，
    *  这里只负责把「点了」报上去。 */
   onSettings: () => void
@@ -446,13 +445,67 @@ export function Sidebar({
       </div>
 
       {pane === 'source' ? (
-        <SourceList
-          lib={lib} libErr={libErr} onRetryLib={onRetryLib}
-          q={srcQuery} onQuery={onSrcQuery}
-          cur={srcCur} onPick={onPickSource}
-          onIgnore={(id, reason) => onIgnoreSource(id, true, reason)}
-          onUnignore={(id) => onIgnoreSource(id, false, '')}
-        />
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="mt-3 px-1">
+            <button
+              onClick={onNew}
+              className="btn-primary w-full py-2 text-[13.5px]"
+            ><Icon name="plus" size={14} className="-ml-0.5 mr-0.5" />新建研究</button>
+          </div>
+          {/* 按性质筛选：列表搬到了主区双栏，这里留纵向筛选——
+              和主区 chips 是同一个状态（natureFilter）。 */}
+          <div className="lbl mt-5 px-2">按性质</div>
+          {!lib ? (
+            libErr ? null : (
+              <div className="space-y-2 px-2 py-3" aria-busy="true">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="skel h-3 w-3/4" />
+                ))}
+              </div>
+            )
+          ) : (
+            <div className="mt-1 overflow-auto px-1 pb-4">
+              {lib.nature_order.map((k) => {
+                const n = lib.by_nature[k] ?? 0
+                if (!n) return null
+                const on = natureFilter === k
+                return (
+                  <button
+                    key={k}
+                    onClick={() => onNatureFilter(on ? null : k)}
+                    aria-pressed={on}
+                    className={[
+                      'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors',
+                      on ? 'sel text-accent' : 'text-muted hover:bg-white hover:text-ink',
+                    ].join(' ')}
+                  >
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{ background: natureMeta(k).dot }} />
+                    <span className="min-w-0 flex-1 truncate">
+                      {lib.nature_labels[k] ?? k}
+                    </span>
+                    <span className="shrink-0 text-2xs tabular-nums text-faint">{n}</span>
+                  </button>
+                )
+              })}
+              {(lib.sources.filter((x) => x.ignored).length > 0) && (
+                <button
+                  onClick={() => onNatureFilter(natureFilter === IGNORED_ONLY ? null : IGNORED_ONLY)}
+                  aria-pressed={natureFilter === IGNORED_ONLY}
+                  className={[
+                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors',
+                    natureFilter === IGNORED_ONLY ? 'sel text-seal' : 'text-seal/80 hover:bg-seal/5',
+                  ].join(' ')}
+                >
+                  <span className="min-w-0 flex-1 truncate">已排除</span>
+                  <span className="shrink-0 text-2xs tabular-nums">
+                    {lib.sources.filter((x) => x.ignored).length}
+                  </span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       ) : (
         <>
       <div className="mt-3 space-y-2.5">
