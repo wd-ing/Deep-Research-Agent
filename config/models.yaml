@@ -367,6 +367,17 @@ defaults:
 #    思考强度给对了没有。
 
 stages:
+  # ---- 输入意图识别（坑 98）----
+  # 会话创建前的分类器，不写 llm_call（record=False）。
+  # 极短输出（只吐 {"intent":"..."}）。两层超时：8s 是 httpx 读超时
+  # （单次发送），**总墙钟 6s（含 429 重试等待）在 intent.py 的
+  # 调用线程上兜**——用户最坏等 6s 就被放行。
+  intent:
+    reasoning_effort: disabled
+    temperature: 0.0
+    max_output_tokens: 64
+    timeout_s: 8.0
+
   # ---- 探针 ----
   probe_light:
     # `disabled` 是**平台中性的语义值**，不是字面量：这个环节要「关思考」，

@@ -15,6 +15,8 @@ import { Sidebar, type Pane } from './components/Sidebar'
 import { SourcesView } from './views/SourcesView'
 import { SettingsView } from './views/SettingsView'
 import { NewResearchDialog } from './components/NewResearchDialog'
+import { IntentReply } from './components/IntentReply'
+import { useIntentGate } from './lib/useIntentGate'
 import { Menu, MenuItem, MenuSep } from './components/Menu'
 import { Icon } from './components/Icon'
 import { ago, tokens } from './lib/format'
@@ -221,6 +223,11 @@ export default function App() {
       s.notify(`建不了这场研究：${(e as Error).message}`)
       return
     }
+    await startById(id)
+  }
+
+  /** 会话已建好之后的启动路径（`start` 与意图门 `useIntentGate` 共用）。 */
+  async function startById(id: string) {
     setNewOpen(false)
     nav({ name: 'session', sid: id })
     await refresh()
@@ -255,14 +262,20 @@ export default function App() {
     void start(d.question, 'standard')
   }
 
-  /** 首页输入卡提交：和对话框走同一个 `start`——只是入口不同。 */
+  const homeGate = useIntentGate((id) => void startById(id))
+
+  /** 首页输入卡提交：先过意图门（坑 98），通过才建会话并启动。 */
   const submitHome = () => {
     const q = homeQ.trim()
-    if (!q || s.busy) return
-    setHomeQ('')
+    if (!q || s.busy || homeGate.checking) return
     // 档位在首页输入面板里选——原来永远传 'standard'，
     // 把设置里的默认档和当面选择全吞了（P1 修）。
-    void start(q, homeMode)
+    void homeGate.submit(q, homeMode).then((o) => {
+      // 只在真建了就清输入——被回复卡拦下时留着，
+      // 「仍然作为调研提交」要拿原文去 force。
+      if (o === 'created') setHomeQ('')
+    }).catch((e: unknown) =>
+      s.notify(`建不了这场研究：${(e as Error).message}`))
   }
   /** 首页统计/卡片的口径：归档的不算「在做的研究」。 */
   const liveList = list.filter((x) => !x.archived_at)
@@ -560,7 +573,7 @@ export default function App() {
                 <textarea
                   rows={2}
                   value={homeQ}
-                  onChange={(e) => setHomeQ(e.target.value)}
+                  onChange={(e) => { setHomeQ(e.target.value); homeGate.dismiss() }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                       e.preventDefault(); submitHome()
@@ -606,10 +619,23 @@ export default function App() {
                   </span>
                   <button
                     onClick={submitHome}
-                    disabled={!homeQ.trim() || s.busy}
+                    disabled={!homeQ.trim() || s.busy || homeGate.checking}
                     className="btn-primary max-[899px]:w-full"
-                  ><Icon name="arrow-right" size={13} />开始研究</button>
+                  ><Icon name="arrow-right" size={13} />
+                  {homeGate.checking ? '判断中…' : '开始研究'}</button>
                 </div>
+                {homeGate.reply && (
+                  <IntentReply
+                    reply={homeGate.reply.reply}
+                    suggestions={homeGate.reply.suggestions}
+                    onPick={(t) => { setHomeQ(t); homeGate.dismiss() }}
+                    onForce={() => void homeGate
+                      .forceSubmit(homeQ.trim(), homeMode)
+                      .catch((e: unknown) =>
+                        s.notify(`建不了这场研究：${(e as Error).message}`))}
+                    onDismiss={homeGate.dismiss}
+                  />
+                )}
               </div>
 
               {/* 指标条：只用真数（列表接口有的那几列） */}
@@ -801,7 +827,8 @@ export default function App() {
           recent={list.filter((x) => !x.archived_at).slice(0, 4)
             .map((x) => ({ id: x.id, question: x.question }))}
           onCancel={() => setNewOpen(false)}
-          onSubmit={(q, mode) => void start(q, mode)}
+          onGatedCreated={(id) => void startById(id)}
+          onError={(m) => s.notify(m)}
         />
       )}
 

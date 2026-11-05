@@ -55,6 +55,13 @@ _subs: dict[str: set[queue.Queue]] = {}
 # 游标会被跨节点的累计长度带偏，把后续增量整段吞掉（2026-10-12 修）。
 _last_seen: dict[str, set] = {}
 
+# 意图判定缓存（坑 98）：research 判定结果按 normalize(question) 存 10 分钟，
+# 免同一输入被 /api/intent 和 /api/sessions 判两次。进程内、线程安全。
+from collections import OrderedDict as _OD  # noqa: E402
+import threading as _threading  # noqa: E402
+_intent_cache: "_OD[str, float]" = _OD()
+_intent_cache_lock = _threading.Lock()
+
 
 def _event_key(ev: dict) -> str:
     """事件指纹：同一个事件重复推时能被认出来。"""
@@ -107,10 +114,18 @@ def _autoprune(sid: str) -> None:
 
 class CreateIn(BaseModel):
     question: str = Field(min_length=1)
+    # 前端「仍然作为调研提交」的直通位——用户看过回复卡仍坚持，
+    # 这是明示决定不是绕过风控。
+    force_research: bool = False
     title: str | None = None
     # 快速档（2026-10-27，C1）：'fast' = 检索+整理简报，
     # 无审批/无评估循环/无写作子图；非法值 pydantic 直接 422。
     mode: Literal["standard", "fast"] = "standard"
+
+
+class IntentIn(BaseModel):
+    # 允许空白串——空白就该判 unclear，422 反而把「空输入」变成错误页。
+    question: str = ""
 
 
 class ApproveIn(BaseModel):
@@ -122,10 +137,50 @@ class ApproveIn(BaseModel):
 
 @app.post("/api/sessions")
 def create_session(body: CreateIn) -> dict:
+    # 服务端兜底（不信前端）：非调研输入不建会话。
+    # force_research 是用户看过回复卡后的明示选择，直通。
+    if not body.force_research:
+        from .intent import classify_intent, normalize
+        key = normalize(body.question)
+        with _intent_cache_lock:
+            hit = _intent_cache.get(key)
+            if hit is not None and time.time() - hit < 600:
+                _intent_cache.move_to_end(key)
+                ok = True
+            else:
+                ok = False
+        if not ok:
+            r = classify_intent(body.question)
+            if r.intent == "research":
+                with _intent_cache_lock:
+                    _intent_cache[key] = time.time()
+                    _intent_cache.move_to_end(key)
+                    while len(_intent_cache) > 500:
+                        _intent_cache.popitem(last=False)
+            else:
+                raise HTTPException(409, detail={
+                    "code": "not_research", "intent": r.intent,
+                    "reply": r.reply, "suggestions": r.suggestions})
     repo = get_repo()
     title = body.title or body.question[:40]
     sid = repo.create_session(title, body.question, mode=body.mode)
     return {"session_id": sid, "thread_id": sid}
+
+
+@app.post("/api/intent")
+def intent_classify(body: IntentIn) -> dict:
+    """会话创建前的意图判定。同步 def：classify_intent 是阻塞 LLM 调用，
+    FastAPI 会放线程池跑，不卡 event loop。"""
+    from .intent import classify_intent
+    r = classify_intent(body.question)
+    if r.intent == "research":      # 与 create_session 共用同一缓存
+        from .intent import normalize
+        with _intent_cache_lock:
+            _intent_cache[normalize(body.question)] = time.time()
+            while len(_intent_cache) > 500:
+                _intent_cache.popitem(last=False)
+    return {"intent": r.intent, "source": r.source,
+            "reply": r.reply, "suggestions": r.suggestions}
 
 
 @app.get("/api/sessions")

@@ -19,7 +19,7 @@ GLM_HIGH = ["probe_outline","outline","assess","write_plan_spec","write_plan_tas
 GLM_LOW = ["write_section","write_revise","write_patch","fast_answer"]
 GLM = GLM_HIGH + GLM_LOW
 MINI = ["probe_light","probe_degraded","extract","relevance","dedupe","summarize",
-        "session_summary"]
+        "session_summary","intent"]
 def main():
     reg = ModelRegistry()
     yml = yaml.safe_load(open(reg.path, encoding="utf-8"))

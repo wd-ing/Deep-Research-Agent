@@ -1,19 +1,24 @@
 import { useRef, useState } from 'react'
 import { useDialog } from './useDialog'
 import { MODES, loadDefaultMode, type ResearchMode } from '../lib/mode'
+import { IntentReply } from './IntentReply'
+import { useIntentGate } from '../lib/useIntentGate'
 
 /** 新建研究。不是 `window.prompt()`——
  *  原生弹窗没法显示历史问题、不能多行、样式不可控，移动端更是难用。
  *  而「新建一次研究」往往是顺着上一次的问题继续问，把最近问过的摆出来
  *  能省掉重新打字。 */
 export function NewResearchDialog({
-  recent, busy, onCancel, onSubmit,
+  recent, busy, onCancel, onGatedCreated, onError,
 }: {
   recent: { id: string; question: string }[]
   /** 创建请求在飞：禁掉按钮，防止连点建出两条一样的会话 */
   busy: boolean
   onCancel: () => void
-  onSubmit: (question: string, mode: ResearchMode) => void
+  /** gate 建好会话后的启动回调（App: startById）。 */
+  onGatedCreated: (sessionId: string) => void
+  /** 非 409 的错误上浮（App: notify）。 */
+  onError?: (msg: string) => void
 }) {
   const [q, setQ] = useState('')
   // 初始选中 = 设置页存的默认档；这次选择只影响本次，
@@ -25,8 +30,13 @@ export function NewResearchDialog({
   useDialog(panel, onCancel)
 
   const text = q.trim()
-  const ok = text.length > 0 && !busy
-  const submit = () => { if (ok) onSubmit(text, mode) }
+  const gate = useIntentGate(onGatedCreated)
+  const ok = text.length > 0 && !busy && !gate.checking
+  const submit = () => {
+    if (ok) void gate.submit(text, mode).catch((e: unknown) =>
+      onError?.(`建不了这场研究：${(e as Error).message}`))
+  }
+  const taRef = useRef<HTMLTextAreaElement>(null)
 
   return (
     // 遮罩点击关闭（和 SegDrawer / ConfirmDialog 统一）。
@@ -49,9 +59,10 @@ export function NewResearchDialog({
         <h3 className="text-sm font-medium text-ink">要研究什么问题？</h3>
 
         <textarea
+          ref={taRef}
           rows={3}
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(e) => { setQ(e.target.value); gate.dismiss() }}
           // Enter 换行、⌘/Ctrl+Enter 才提交：问题常常要写好几行，
           // 单行输入框会逼着人把话挤成一句
           onKeyDown={(e) => {
@@ -128,12 +139,24 @@ export function NewResearchDialog({
           </div>
         )}
 
+        {gate.reply && (
+          <IntentReply
+            reply={gate.reply.reply}
+            suggestions={gate.reply.suggestions}
+            onPick={(t) => { setQ(t); gate.dismiss(); taRef.current?.focus() }}
+            onForce={() => void gate.forceSubmit(text, mode)
+              .catch((e: unknown) =>
+                onError?.(`建不了这场研究：${(e as Error).message}`))}
+            onDismiss={gate.dismiss}
+          />
+        )}
+
         <div className="mt-5 flex items-center justify-between">
           <span className="text-2xs text-muted">⌘ / Ctrl + Enter 开始</span>
           <div className="flex gap-2">
             <button onClick={onCancel} className="btn-ghost">取消</button>
             <button onClick={submit} disabled={!ok} className="btn-primary">
-              {busy ? '正在创建…' : '开始研究'}
+              {gate.checking ? '判断中…' : busy ? '正在创建…' : '开始研究'}
             </button>
           </div>
         </div>

@@ -1551,8 +1551,15 @@ class LLMClient:
         prompt: str,
         system: str | None = None,
         json_mode: bool = False,
+        record: bool = True,
     ) -> str:
+        """`record=False`：这次调用连同其内部重试/护栏补记都不写 llm_call。
+        用途：会话之外的判定调用（输入意图识别）——没有 session_id，
+        记了就是孤儿行。实现靠 _TL.no_record 线程位包住整段调用，
+        所以四个 _record* 记账点（成功/失败/重试/护栏）都跟着跳过。"""
         cfg = self.registry.stage(stage)
+        if not record:
+            _TL.no_record = True
         t0 = time.time()
         try:
             if cfg.provider in OPENAI_COMPAT:
@@ -1563,14 +1570,19 @@ class LLMClient:
                 text, usage = self._gemini(cfg, prompt, system, json_mode)
             else:
                 raise ConfigError(f"未知 provider: {cfg.provider}")
+            # 成功路径的 _record 也在抑制位存活期内执行
+            # （挪进 try——先复位再记账等于白搭，测试抓到过）。
+            self._record(cfg, prompt, text, usage)
+            return text
         except Exception as e:
             # 抛出去之前先把这次失败记下来——重试是调用方的事，
             # 记账是这里的事，两者不能因为一个挂掉另一个。
             self._record_error(cfg, prompt, e,
                                int((time.time() - t0) * 1000), started_at=t0)
             raise
-        self._record(cfg, prompt, text, usage)
-        return text
+        finally:
+            if not record:
+                _TL.no_record = False
 
     def complete_json(self, stage: str, prompt: str, system: str | None = None) -> Any:
         raw = self.complete(stage, prompt, system=system, json_mode=True)
@@ -1804,6 +1816,8 @@ class LLMClient:
         token 记 0，但留 `est_input_tokens`——这次尝试的规模还是值得知道，
         它能回答「是不是长 prompt 更容易崩」这类问题。
         """
+        if getattr(_TL, "no_record", False):
+            return  # record=False：会话外调用不记账
         try:
             from ..db.repo import get_repo
 
@@ -1835,6 +1849,8 @@ class LLMClient:
 
             MiniMax 529 overloaded | attempt 2/5 | wait 20s
         """
+        if getattr(_TL, "no_record", False):
+            return  # record=False：会话外调用不记账
         try:
             from ..db.repo import get_repo
 
@@ -1879,6 +1895,8 @@ class LLMClient:
         （transport 也覆盖 HTTP 可重试状态，detail 里写状态码）。
         token 拿不到就 NULL——这是「尝试」不是「完成」，留空比编数诚实。
         """
+        if getattr(_TL, "no_record", False):
+            return  # record=False：会话外调用不记账
         try:
             from ..db.repo import get_repo
 
@@ -1919,6 +1937,8 @@ class LLMClient:
         共享一段固定前缀，它决定我们到底省没省钱。只记本地估算的话，
         这个数永远看不到。各家 usage 字段名不同，统一走 `_cache_read` 收口。
         """
+        if getattr(_TL, "no_record", False):
+            return  # record=False：会话外调用不记账
         try:
             from ..db.repo import get_repo
 

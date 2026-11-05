@@ -4,7 +4,7 @@
 难环节（assess / write_plan_spec / write_plan_tasks / write_audit /
 outline / probe_outline）走 ark_glm = glm-5-3-flash-260828 +
 `reasoning_effort: low`（glm 关不掉思考，缺省=max 会 120s+ 超时，
-validate() 拦死）；其余 11 个环节走默认 ark_mini =
+validate() 拦死）；其余 12 个环节走默认 ark_mini =
 doubao-seed-2-0-mini-260428，`reasoning_effort: disabled` 经档案
 effort_off:none 翻译成发 `none`。write_* 的 MiniMax 专属键
 （forced_thinking / round_max_tokens）必须删掉——validate() 对
