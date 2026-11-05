@@ -191,6 +191,18 @@ ra = "research_agent.cli:main"
 
 ---
 
+## 8. 🟡 每场会话都会留下一条 `session_id` 为空的 `session_summary` 调用记录（2026-11-05 发现，未修）
+
+**实测**：服务器真跑的一场快速档，`llm_call` 23 条里有 1 条 `stage=session_summary`、`session_id IS NULL`；查本机 `data/refs/` 里 v30–v35 的快照，**每个都恰好有这 1 条**——不是这次改动引入的，是老问题。`node_summary` 里 `LLM.complete_json("session_summary", …)` 调用时 `_CURRENT_SESSION` 是空的（其它节点的调用都带 sid）。
+**影响**：每场少记一条约 100~200 输出 token 的账（账单 `/billing` 和 `session_cost` 按 `session_id=?` 统计，所以这条被漏掉）；默认库里会攒孤儿行。不影响功能。
+**动手前要先定的**：先查清为什么这个节点没进 `session_scope`（其它节点是 `_timed_node` 里设的？还是 summary 节点跑在 `astream` 的另一个线程/context 里），再决定是在节点里显式 `with session_scope(sid)` 还是修 context 传播；修完要用刚才那种库验证「新跑的会话不再产生空 sid 行」。
+
+## 9. 🟢 `ckpt_sweep` 在 checkpoint 库尚未创建时首扫会记一次 `err=1`（2026-11-05，无害）
+
+服务启动 30 秒后首扫，若还没有任何研究跑过，`checkpoints.db` 不存在，`plan_prune` 抛错被 `sweep` 记成 `errors=1`（日志 `[ckpt_sweep] … err=1`），之后周期正常。只是日志噪音；要处理就在 `sweep` 里对「库文件不存在」直接返回全 0。
+
+---
+
 ## 关联文档
 
 - `CONTEXT.md` 第十节「已知缺口」—— **研究层面**的未验项（病因未知、质量未评估等），
