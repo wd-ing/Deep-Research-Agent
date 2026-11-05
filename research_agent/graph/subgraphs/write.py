@@ -65,7 +65,7 @@ MAX_REWORK = max(0, int(os.environ.get("RA_MAX_REWORK", "1") or 1))
 # 预加载开关（RA_WRITE_PRELOAD，2026-10-25 批 3，默认开）：=1 时首稿
 # 任务把分配段原文整块附进用户消息、跳过读证据轮直接强制交卷
 # （v20 实测每个任务 3 轮读证据 + 限流排队 ~30-45s）。
-# 落地依据 tests/exp_write_preload.py（v20 证据，n=3×2，13 任务）：
+# 落地依据 tests/experiments/exp_write_preload.py（v20 证据，n=3×2，13 任务）：
 # dispatch 145→95s、调用 51→13、violations 23.3→1.7、证据外数字
 # 27.3→6.7、总字数 -7%；块超 70k 字符的任务回退旧路径。
 # RA_WRITE_PRELOAD=0 即回到多轮读证据。
@@ -193,7 +193,7 @@ SUBMIT_TASKS: dict = {
 }
 
 # 子 agent 的「交卷」工具（2026-10-19 加）：正文走 `input.sections[].body`，
-# 不走对话文本。措辞与 tests/exp_submit_section.py 的实验版逐字一致——
+# 不走对话文本。措辞与 tests/experiments/exp_submit_section.py 的实验版逐字一致——
 # 那版在真实 API 上验证过有效，别顺手改写。
 #
 # 为什么必须走工具：v13 实测把工具循环最后一轮的 text 块当正文，
@@ -238,14 +238,14 @@ SUBMIT_SECTION: dict = {
 # 强制交卷轮钉在末条 user 消息后的提示（2026-10-19，P2 固化）：
 # 关思考的强制轮里模型仍会觉得「证据没读完」去调读工具而不交卷
 # （验收实测 ~2/8）；这句把它拉回任务。措辞与
-# tests/exp_submit_prod.py 的 EXP_P 变体逐字一致——
+# tests/experiments/exp_submit_prod.py 的 EXP_P 变体逐字一致——
 # 那是 t7 8/8、t5r 8/8 的实测版本，别顺手改写。
 SUBMIT_NUDGE = ("证据读取额度已用完。不要再调用任何读取工具；"
                 "请基于你已经读到的内容，立即调用 submit_section 交卷。")
 
 # write_audit 的强制交卷 schema（2026-10-19，坑 77：迁 M3.1-Flash）。
 # 字段与 prompts.WRITE_AUDIT 要求的输出一一对应；形状与
-# tests/exp_audit_nothink.py 的 SUBMIT_AUDIT 逐字一致——
+# tests/experiments/exp_audit_nothink.py 的 SUBMIT_AUDIT 逐字一致——
 # 那是真实验收跑通的版本，字段名改了模型就要重新学。
 AUDIT_SCHEMA: dict = {
     "type": "object",
@@ -988,7 +988,7 @@ def _parse_submission(text: str, covers: list[str]) -> tuple[dict, str | None, s
 
 # ---- 自由文本通道的污染检测 ----
 #
-# 这批标记是从 tests/exp_submit_section.py 的 contam 搬来的——
+# 这批标记是从 tests/experiments/exp_submit_section.py 的 contam 搬来的——
 # 每一条都是 v13 真实草稿上出现过的形态，别随手加新正则：
 # 宽了会误杀正常正文（比如正文里提到「下面」开头的引用），
 # 窄了漏掉的会原样进报告。
@@ -2391,7 +2391,7 @@ def node_audit(state: WriteState) -> dict:
         # 手写 JSON 太长必被截断；M3.1-Flash low 单次 7~12k 接得住，
         # 但它的工具入参有约 2/18 偏离 schema → 必须过
         # `_normalize_audit_input`，归一不了当失败重试。
-        # 点名工具的话术与 tests/exp_audit_nothink.py 的实测版本逐字一致。
+        # 点名工具的话术与 tests/experiments/exp_audit_nothink.py 的实测版本逐字一致。
         prompt = (_clip(_dumps(payload), 120000)
                   + "\n\n审完后**调用 `submit_audit` 工具**提交结论，"
                     "结论只放在工具参数里，不要在对话文本里写 JSON。")

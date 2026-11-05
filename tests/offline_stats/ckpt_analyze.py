@@ -1,7 +1,7 @@
 """analyze.py <ckpt_db> <thread_id> — per-channel serialized bytes in the biggest checkpoints + writes by channel."""
 import sqlite3,sys,json
 from collections import Counter,defaultdict
-sys.path.insert(0,"/Users/wd/Documents/Deep Research Agent")
+from pathlib import Path; sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 from langgraph.checkpoint.sqlite import SqliteSaver
 db,tid=sys.argv[1],sys.argv[2]
 conn=sqlite3.connect(f"file:{db}?mode=ro",uri=True,check_same_thread=False)

@@ -11,7 +11,8 @@ quieter where the action is dense, near-zero in the hold, fullest at resolve.
 import json, subprocess, sys, pathlib
 import numpy as np
 
-SKILL = "/Users/wd/.agents/skills/onetake/scripts"
+import os
+SKILL = os.environ.get("ONETAKE_SCRIPTS") or sys.exit("需要环境变量 ONETAKE_SCRIPTS 指向 onetake 管线的 scripts 目录（含 sfx_palette.py）")
 sys.path.insert(0, SKILL)
 from sfx_palette import Score, air, glass, wood, sub, bubble, bp, lp, hp, sat, SR, impulse
 from scipy import signal

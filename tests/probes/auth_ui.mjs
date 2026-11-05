@@ -1,10 +1,14 @@
 // 坑99 段4 前端验收：RA_AUTH=1 真后端 8012 + vite 5181。
-import pkg from '/Users/wd/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/index.js'
+// Playwright 不是项目依赖：全局装一份，或 PLAYWRIGHT_MODULE=<…>/node_modules/playwright/index.js 指向 npx 缓存里的那份
+const pkg = (await import(process.env.PLAYWRIGHT_MODULE || 'playwright')).default
 const { chromium } = pkg
 const B='http://localhost:5181', S='/tmp/ck10/shots', R={}
-const TOK={amy:'6K71IsVmrpyh4Qch5lm0BDt-_U5PJtrZRo8ISnBrOhA',
-           zed:'opHwXnt83O6pBQ78zT9pdZh4vydE96zoMsrbgcjgHKo',
-           root:'m9qvRXVEy7d3g6eMkvE_42fyq2N2HbNKqiVwF22seSo'}
+// token 不写死在仓库里：从 RA_TEST_TOKENS 环境变量读
+// （JSON：{"amy":"…","zed":"…","root":"…"}）。
+// 先起后端+三个用户（见 README 的用法），把 add 输出里的 t= 拼进来。
+const TOK=JSON.parse(process.env.RA_TEST_TOKENS||'{}')
+for (const k of ['amy','zed','root'])
+  if (!TOK[k]) { console.error(`缺 RA_TEST_TOKENS.${k}`); process.exit(2) }
 const b=await chromium.launch({args:['--no-proxy-server']})
 
 const login=async(ctx,who)=>{

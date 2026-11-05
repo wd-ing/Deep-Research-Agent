@@ -1,5 +1,6 @@
 // 回归：普通 research 题两个入口各提交一次 → 跳会话页 + /run 被调一次
-import pkg from '/Users/wd/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/index.js'
+// Playwright 不是项目依赖：全局装一份，或 PLAYWRIGHT_MODULE=<…>/node_modules/playwright/index.js 指向 npx 缓存里的那份
+const pkg = (await import(process.env.PLAYWRIGHT_MODULE || 'playwright')).default
 const { chromium } = pkg
 const B='http://localhost:5181',R={}
 const b=await chromium.launch({args:['--no-proxy-server']})

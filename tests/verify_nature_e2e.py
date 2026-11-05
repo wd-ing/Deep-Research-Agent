@@ -2,7 +2,7 @@
 
 **为什么需要它**
 --------------
-`tests/probe_nature_batch.py` 是函数级证据（完美桩）。它能证明
+`tests/probes/probe_nature_batch.py` 是函数级证据（完美桩）。它能证明
 `_run_nature_batch` 自己的下标体系没分叉，但证不了**真实管线**里
 「41 个来源 → 6 批 → 全部判出」这条路真的通，也证不了
 `unjudged_sources` 这个计数真的从 extract 一路走到事件里。

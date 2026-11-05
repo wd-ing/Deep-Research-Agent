@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>宣传片 · Deep Research</title>
+<meta name="description" content="Deep Research 宣传片：一个问题 → 一根线 → 一份每句都有来处的报告。">
+<link rel="canonical" href="https://research.wding.site/homepage/film.html">
+<meta property="og:title" content="Deep Research · 宣传片">
+<meta property="og:url" content="https://research.wding.site/homepage/film.html">
+<meta property="og:image" content="https://research.wding.site/homepage/film/poster_zh.jpg">
+<style>
+:root{
+  --bg:#FBFAF9;--surface:#fff;--fg:rgb(0 0 0/.9);--muted:rgb(0 0 0/.6);
+  --faint:rgb(0 0 0/.42);--border:rgb(0 0 0/.08);--accent:#2E50C8;--ink:#161616;
+  --font-serif:"Iowan Old Style","Palatino Linotype",Palatino,"Songti SC","STSong","Noto Serif SC",Georgia,serif;
+  --font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,"PingFang SC",monospace;
+}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-sans);font-size:16px;line-height:1.65;min-height:100vh;display:flex;flex-direction:column}
+nav{display:flex;align-items:center;justify-content:space-between;padding:16px clamp(20px,4vw,40px);border-bottom:1px solid var(--border)}
+.brand{font-family:var(--font-serif);font-weight:600;font-size:18px;color:var(--ink);text-decoration:none}
+.langs{display:flex;gap:4px}
+.langs button{border:1px solid var(--border);background:none;color:var(--muted);font-size:12px;padding:3px 10px;border-radius:999px;cursor:pointer;font-family:var(--font-mono)}
+.langs button.cur{background:var(--ink);color:#fff;border-color:var(--ink)}
+main{flex:1;display:flex;flex-direction:column;align-items:center;padding:clamp(28px,5vh,56px) clamp(20px,4vw,40px)}
+.stage{width:min(1040px,100%)}
+video{width:100%;aspect-ratio:16/9;display:block;border-radius:14px;background:#000;box-shadow:0 24px 60px rgb(0 0 0/.12)}
+h1{font-family:var(--font-serif);font-weight:600;font-size:clamp(22px,3vw,30px);color:var(--ink);margin:28px 0 8px;text-align:center}
+.sub{color:var(--muted);font-size:14.5px;text-align:center;max-width:560px;margin:0 auto}
+.ctas{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:30px}
+.btn{display:inline-flex;align-items:center;gap:7px;padding:10px 18px;border-radius:10px;font-size:14px;text-decoration:none;transition:all .18s}
+.btn-primary{background:var(--ink);color:#fff}
+.btn-primary:hover{opacity:.85}
+.btn-ghost{border:1px solid var(--border);color:var(--ink);background:var(--surface)}
+.btn-ghost:hover{border-color:var(--ink)}
+footer{padding:18px;text-align:center;color:var(--faint);font-size:12px;font-family:var(--font-mono)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<nav>
+  <a class="brand" href="./">Deep Research</a>
+  <div class="langs"><button data-set-lang="zh">中</button><button data-set-lang="en">EN</button></div>
+</nav>
+<main>
+  <div class="stage">
+    <video id="v" controls playsinline preload="metadata"
+           poster="film/poster_zh.jpg" src="film/film_zh_1080.mp4"></video>
+    <h1 id="t">一根线：一个问题 → 一根线 → 一份每句都有来处的报告</h1>
+    <p class="sub" id="d">约 32 秒：看 Deep Research 怎么把一个调研问题变成一份能逐句回查的长报告。</p>
+    <div class="ctas">
+      <a class="btn btn-ghost" href="./" id="b-back">← 返回主页</a>
+      <a class="btn btn-primary" href="https://research.wding.site/" id="b-demo">在线体验</a>
+      <a class="btn btn-ghost" href="https://github.com/wd-ing/Deep-Research-Agent" id="b-repo" target="_blank" rel="noopener">GitHub 仓库</a>
+    </div>
+  </div>
+</main>
+<noscript><p style="text-align:center;color:var(--muted)">视频默认中文版，点播放即可。</p></noscript>
+<footer>© 2026 · Deep Research</footer>
+<script>
+(function(){
+  var T={
+    zh:{html:'zh-CN',title:'宣传片 · Deep Research',t:'一根线：一个问题 → 一根线 → 一份每句都有来处的报告',d:'约 32 秒：看 Deep Research 怎么把一个调研问题变成一份能逐句回查的长报告。',back:'← 返回主页',demo:'在线体验',repo:'GitHub 仓库',src:'film/film_zh_1080.mp4',poster:'film/poster_zh.jpg'},
+    en:{html:'en',title:'The film · Deep Research',t:'One thread: a question → a thread → a report where every line has a source',d:'~32 seconds: how Deep Research turns a research question into a fully traceable long-form report.',back:'← Back to home',demo:'Try the demo',repo:'GitHub',src:'film/film_en_1080.mp4',poster:'film/poster_en.jpg'}
+  };
+  function lang(){
+    var m=location.search.match(/[?&]lang=(zh|en)/); if(m)return m[1];
+    try{var s=localStorage.getItem('dr-lang'); if(s)return s}catch(e){}
+    return (navigator.language||'').indexOf('zh')===0?'zh':'en';
+  }
+  function apply(L){
+    var d=T[L];document.documentElement.lang=d.html;document.title=d.title;
+    document.getElementById('t').textContent=d.t;
+    document.getElementById('d').textContent=d.d;
+    document.getElementById('b-back').textContent=d.back;
+    document.getElementById('b-demo').textContent=d.demo;
+    document.getElementById('b-repo').textContent=d.repo;
+    var v=document.getElementById('v');
+    if(!v.getAttribute('src').endsWith(d.src)){v.src=d.src;v.poster=d.poster;v.load()}
+    document.querySelectorAll('[data-set-lang]').forEach(function(b){
+      b.classList.toggle('cur',b.getAttribute('data-set-lang')===L)});
+  }
+  document.querySelectorAll('[data-set-lang]').forEach(function(b){
+    b.onclick=function(){var L=b.getAttribute('data-set-lang');
+      try{localStorage.setItem('dr-lang',L)}catch(e){}apply(L)}});
+  apply(lang());
+})();
+</script>
+</body>
+</html>

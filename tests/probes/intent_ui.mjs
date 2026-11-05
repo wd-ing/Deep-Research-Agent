@@ -1,6 +1,7 @@
 // 意图门前端验收（坑 98·阶段2）。用法：node tests/probes/intent_ui.mjs
 // 前提：后端 8012 (RA_INTENT=1+临时库) + vite 5181 代理 8012。
-import pkg from '/Users/wd/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/index.js'
+// Playwright 不是项目依赖：全局装一份，或 PLAYWRIGHT_MODULE=<…>/node_modules/playwright/index.js 指向 npx 缓存里的那份
+const pkg = (await import(process.env.PLAYWRIGHT_MODULE || 'playwright')).default
 const { chromium } = pkg
 const B = 'http://localhost:5181'
 const S = '/tmp/ck8/shots'

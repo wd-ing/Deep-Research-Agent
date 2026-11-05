@@ -4,7 +4,7 @@
 **行为**：交卷解析、meta["via"] 记账、Phase B 同档位重试、fallback
 污染检测、merge 保护、P2 的非强制轮上限与交卷 nudge——不是
 「干净率会涨多少」，后者必须打真平台
-（tests/exp_submit_section.py / exp_submit_prod.py 那批对照实验已经做过）。
+（tests/experiments/exp_submit_section.py / exp_submit_prod.py 那批对照实验已经做过）。
 
 ⚠️ 桩一律挂在生产同一层：
   · `W.LLM.complete_with_tools` —— run_tool_loop 调的就是它

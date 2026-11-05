@@ -1,5 +1,5 @@
 import sqlite3,glob,os,re,sys
-sys.path.insert(0,"/Users/wd/Documents/Deep Research Agent")
+from pathlib import Path; sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 from research_agent.search.quality import page_defect
 from collections import Counter
 PRE=["ra_v18_baseline","ra_v19_batch1","ra_v20_batch2","ra_v21_batch3","ra_v22_final","ra_v23_final","ra_v24_final","ra_v25_cbam","ra_v25_glp1","ra_v25_rustgo"]

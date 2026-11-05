@@ -1,0 +1,23 @@
+research.example.com {
+	encode gzip
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		X-Frame-Options DENY
+	}
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8300 {
+			flush_interval -1
+		}
+	}
+	# 主页（可选）：把 homepage/ 部署到 /srv/research-agent/homepage 后启用
+	handle_path /homepage/* {
+		root * /srv/research-agent/homepage
+		file_server
+	}
+	handle {
+		root * /srv/research-agent/frontend/dist
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -102,7 +102,7 @@ START → probe(子图) → outline → retrieve → extract(子图) → assess
 「提示词」和「并发」两个假设都被 A/B 实验推翻，**病因仍未知**。
 重试是针对「一次失败就丢 12 段证据」这个独立缺口加的，不依赖病因是否查清。
 
-**2026-10-18 第三次复测**（`tests/probe_summarize_replay.py`，真实 MiniMax）：
+**2026-10-18 第三次复测**（`tests/probes/probe_summarize_replay.py`，真实 MiniMax）：
 把那 98 段丢失的 chunk **原样重放** —— 12 批 × 连跑两轮，
 **24/24 调用全成、98/98 全救回、一次重试都没触发**，
 罪魁来源（80 段综述丢 72 段）也整段恢复。
@@ -705,7 +705,7 @@ Tailwind 的工具类全在**同一个 layer**，同层之间按**生成顺序**
 **写验收脚本时别把两者混在一起当失败**——我第一版就混了，
 把 3 个「模型判不出来」误报成「代码又丢了」，差点去改一个没坏的东西。
 
-⇒ 探针 `tests/probe_nature_batch.py`：把 LLM 换成**完美桩**（下标全对、性质全合法），
+⇒ 探针 `tests/probes/probe_nature_batch.py`：把 LLM 换成**完美桩**（下标全对、性质全合法），
 模型侧不可能出错，此时的缺口就一定是代码的锅。**验收静默失败，先证明不是模型的锅。**
 
 ⚠️ 配套的「假未判」：`nature` 为空会让来源库把它归到「未判」组，
@@ -771,7 +771,7 @@ Esc → 菜单卸载 → giveBack() 往一个【已脱离 DOM】的节点调 foc
 坏的只有探针 —— 但因为它"测得很像那么回事"，我基于它连错判了两次。
 
 ⇒ **探针里的解析必须 import 生产的那个，不要重写。**
-已这么改：`tests/probe_plan_tasks_empty.py`、`tests/probe_plan_tasks_ablation.py`。
+已这么改：`tests/probes/probe_plan_tasks_empty.py`、`tests/probes/probe_plan_tasks_ablation.py`。
 
 ⚠️ **探针写完先跑一个"一定该成功"的对照**（极简提示词），
 确认解析器能出东西，再去解读正式结果。否则你测的是解析器，不是被测对象。
@@ -834,7 +834,7 @@ docstring 说工具循环是"有意删掉"的。**但那次删除只做了代码
 
 ⇒ **改回去**：`node_plan_tasks` 加回 `run_tool_loop(max_rounds=MAX_TOOL_ROUNDS)`，
 失败退回单次调用；`plan_tool_reads` 记进 `write_trace`。
-离线桩测 `tests/probe_plan_tasks_toolloop.py` 三条路径全通。
+离线桩测 `tests/probes/probe_plan_tasks_toolloop.py` 三条路径全通。
 
 ⚠️ **"提示词承诺的能力被模型当成失败原因"这个假设仍然没有验证**：
 `SSEAccum` 把 `content` 和 `tool_calls` 分流、`text_only()` 只返回 content，
@@ -847,7 +847,7 @@ docstring 说工具循环是"有意删掉"的。**但那次删除只做了代码
 
 | 检查 | 结果 |
 |---|---|
-| DNS 解析 | ✅ 正常（202.107.178.138） |
+| DNS 解析 | ✅ 正常（<运营商 DNS 返回的 IP>） |
 | **TCP 443** | ❌ **超时** |
 | HTTPS 握手 | ❌ ConnectTimeout |
 | 对照：另一个 HTTPS 站点 | ✅ 404，0.39s |
@@ -876,7 +876,7 @@ TUN 在网络层改写 DNS 报文，指定公共 DNS 服务器没用。
 **0.0s 就"连上了"**，于是得出"TCP 恢复、平台在变好"的结论。
 实际上连的是本地代理栈，跟平台一点关系都没有。
 真实 IP 只能从**加密 DoH** 取（阿里/腾讯/Cloudflare 三家一致：
-`202.107.178.138`）。
+`<运营商 DNS 返回的 IP>`）。
 
 **规则**：
 1. 这台机器上判断远端服务，**只信两个信号** —— TLS/HTTPS 是否成功、
@@ -1047,7 +1047,7 @@ sec2: ### 2.1 … 2.10  然后又是 ### 2.1 … 2.6     ← 重复
 ### 47. 🔴 桩的形参对不上调用点，测试会**假通过**
 
 ④（给 `write_plan_tasks` 挂强制工具交卷）给 `run_tool_loop` 加了
-`final_tool=` 形参。`tests/probe_plan_tasks_toolloop.py` 里的
+`final_tool=` 形参。`tests/probes/probe_plan_tasks_toolloop.py` 里的
 `fake_loop` 没跟着加 —— 调用点抛 `TypeError`，
 **被 `node_plan_tasks` 自己的 `try/except` 接住、退回单次调用、
 然后照样打印「✅ 走工具循环」**。
@@ -1770,7 +1770,7 @@ paper2 轨道上；「新建研究」换回 `btn-primary` 墨色
 `_split_sections` 只 `strip()`——模型在正文前后说的任何话都成正文。
 
 **方案**：正文改走 `submit_section` 工具参数（`sections[].body`），
-schema 与实验版逐字一致（`tests/exp_submit_section.py`）。
+schema 与实验版逐字一致（`tests/experiments/exp_submit_section.py`）。
 
 - `meta["via"]` 记账：`voluntary` / `forced` / `forced_retry` / `fallback`，
   下游据此决定信不信任这份产出。
@@ -1793,7 +1793,7 @@ schema 与实验版逐字一致（`tests/exp_submit_section.py`）。
   `kept_old`）。旧稿自身是垃圾时短新稿照收。
   **⚠️ 40% 是经验值不是实测**，过严会误杀「确实该大删」的返修。
 
-**实验数据**（真实 API，`tests/exp_submit_section.py`，n=5 × t7/t5r）：
+**实验数据**（真实 API，`tests/experiments/exp_submit_section.py`，n=5 × t7/t5r）：
 
 | 方案 | t7 干净 | t5r 干净 | 输出 token |
 |---|---|---|---|
@@ -1802,7 +1802,7 @@ schema 与实验版逐字一致（`tests/exp_submit_section.py`）。
 | C 同 B，输出上限×2 | 4/5 | 4/5 | 16.8k / 11.4k |
 | D 同 B，强制轮关思考 | 4/5 | 4/5 | **9.1k / 8.2k** |
 
-**验收实测**（`tests/exp_submit_prod.py`，生产入口 `_run_task`，v13 真实任务）：
+**验收实测**（`tests/experiments/exp_submit_prod.py`，生产入口 `_run_task`，v13 真实任务）：
 
 | 任务 | 基线（现行文本通道，n=5） | 改后（生产入口） |
 |---|---|---|
@@ -1835,7 +1835,7 @@ schema 与实验版逐字一致（`tests/exp_submit_section.py`）。
   正文长度只是质量的粗代理，**没做内容精度的人工对比**。
 
 **浪费思考轮已由 P2 解决**（2026-10-19 固化，实验
-`tests/exp_submit_prod.py` 的 EXP_P，生产入口 `_run_task`，n=8）：
+`tests/experiments/exp_submit_prod.py` 的 EXP_P，生产入口 `_run_task`，n=8）：
 
 | 方案 | t7 可用 | t5r 可用 | 平均输出 token | 耗时 | 正文长度中位数 |
 |---|---|---|---|---|---|
@@ -1882,7 +1882,7 @@ schema 与实验版逐字一致（`tests/exp_submit_section.py`）。
 开思考实测 5 次：输出 15.5k~25k token、217~349 秒，
 结论不稳（high 0~2 条）、1/5 JSON 解析失败；
 思考内容是逐节清点 + 反复「OK finalizing」——烧的都是巡回确认。
-（`tests/exp_audit_*.py`，样本 `/tmp/exp_audit3/`）
+（`tests/experiments/exp_audit_*.py`，样本 `/tmp/exp_audit3/`）
 
 **试过的岔路**：M3 上「关思考 + 强制工具」能用（5/5 真调用、
 2.5k~7.2k token），但**质量不行**——high 数暴增 3~8 倍，
@@ -2038,7 +2038,7 @@ v14 真实 drafts 上重做后共修 15 处——13 处 R3a 换名（零删除�
 **`write_patch` 配置**（models.yaml）：M3 + `forced_thinking: disabled`
 + `reasoning_effort: low`——**关思考是取舍**：这是纯编辑任务，
 改哪里（quote）、怎么改（fix）审查已给定，开思考只会推它顺手润色
-没点名的文字。形状抄 `tests/exp_audit_nothink.py` 的 V1（关思考+
+没点名的文字。形状抄 `tests/experiments/exp_audit_nothink.py` 的 V1（关思考+
 强制工具，实测 5/5）。风险与 write_section 同款：MiniMax 关思考+
 点名工具偶发编造调用（~1/8）——靠「重试一次（`_audit_retryable`
 同款判据：429/5xx/ConfigError 不重试）+ 校验不过回退整节重写」兜底。
@@ -2059,7 +2059,7 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
 结构调整仍会落到整节重写——那是设计内的分工，不是缺陷。
 
 ### 81. 提示词 A/B：补丁可用性、规划 grounding、写手规则、禁写清单（2026-10-19）
-**背景**：终稿里仍有「无证据的具体数字/年份」（例：sec2.3 的 1978/1987/1988/2014/2022 与 711 Wh/kg，来自探针轮廓里的二手转述，被规划写进 mandate/must_cover，写手照办；sec10 的「70 USD/kWh」——⚠️ 这条后来查实是误报：证据原文是 "70 US dollars/kWh"，见坑 82）。审查拿不到证据原文，所以抓不到。用户提出先用提示词处理，做了四组 A/B（脚本 tests/exp_ab_{plan,write,audit,inject}.py，原始数据 /tmp/exp_ab/，均在 /tmp/ra_exp_ab.db 副本上跑）。
+**背景**：终稿里仍有「无证据的具体数字/年份」（例：sec2.3 的 1978/1987/1988/2014/2022 与 711 Wh/kg，来自探针轮廓里的二手转述，被规划写进 mandate/must_cover，写手照办；sec10 的「70 USD/kWh」——⚠️ 这条后来查实是误报：证据原文是 "70 US dollars/kWh"，见坑 82）。审查拿不到证据原文，所以抓不到。用户提出先用提示词处理，做了四组 A/B（脚本 tests/experiments/exp_ab_{plan,write,audit,inject}.py，原始数据 /tmp/exp_ab/，均在 /tmp/ra_exp_ab.db 副本上跑）。
 **E3 审查提示词 V0(7f1eaac) vs V1(HEAD，加了「整段 delete/edit」「标题行不当 quote」)，各 n=4，同一份草稿**：模型提的 high 里可补丁比例 V0 9/9、V1 18/19（均不含程序追加的违规目标）；`rewrite_section` 两组都是 0；标题行当 quote 两组都是 0；每次 high 数 V0=2,3,3,1，V1=5,4,3,7。**n=4 分辨不了真实运行里那次回退（19 条里 1 条）这种低频事件**；V1 的 high 数每个序号都不低于 V0，原因未查，不能当结论。保留 V1。
 **E1 规划提示词 B（要求 mandate/must_cover 里的数字/年份必须能在分配的 segments 里找到），各 n=6**：规划产出的数字/年份 token 里「不在该任务分配证据全文里」的比例 A 121/299=0.405、B 76/211=0.360；每次均值 A 20.2、B 12.7（含各 1 次退化运行）。t2 的 1978/1987/1988/2014 在 B 的 5 次有效运行里仍有 4 次出现。B 的 plan_spec 更慢更长：77–102s、6.2–12.4k 输出 token（A） vs 136–268s、10.0–20.2k（B）。口径说明：token 判定是子串匹配，没做 ℃/°C、美元/USD、区间符号的归一化，存在假阳性，比例只能当量级看。
 **E1 的意外发现**：12 次规划里 2 次（A_4、B_5）只交了 1 个任务（t1，covers=sec1），8 个小节没有任何任务，`plan_failed` 为 null、无告警。已加覆盖校验+重试一次（`node_plan_tasks`，tests/test_plan_coverage.py）。生产里该现象的真实发生率未知（此前真实跑 5 次未见，实验 2/12）。
@@ -2078,7 +2078,7 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
 **顺带暴露的独立问题**：`probe_outline` 是手写长 JSON，**解析失败没有任何重试**（`complete_json` 不重试，`node_probe_outline` 的 except 直接降级，`guard.retry_on_empty` 只管空输出）→ 退化成 1 节大纲。全库 ~23 个会话里 3 次（v9、v15、v16），v15/v16 连续两次是同输入；n=6 重放 0 失败，生产失败原文没落库，只知道是中段 `Expecting ',' delimiter`（未转义引号或漏逗号），具体子类未能确认。`complete_json_forced`（强制工具）早就存在。**已修，见坑 83。**
 
 ### 83. 模型迁移（plan_spec/plan_tasks/assess → M3.1-Flash low）与 probe_outline 强制交卷（2026-10-20）
-**依据**：`tests/exp_model_ab.py`，v14 真实输入，M3 vs M3.1-Flash low 每格 n=3，12 次全成功（原始数据 /tmp/exp_model_ab/）。`write_plan_tasks` 输出 16–38k→6–10k token，耗时 140–424s→34–62s；`assess` 3.0–7.0k→2.3–2.4k token，24–56s→18–20s；`write_plan_spec` **没有 token/耗时收益**（5.3–7.4k→6.3k，48–65s→55–59s），M3.1 的规约约长 35%（cautions/术语表约两倍，读过内容站得住）——因用户决定一并迁，不是因为有收益。规划里无出处数字占比 A 30%/B 18%，但 B_1 只有 11 个数，n 太小，不当结论。
+**依据**：`tests/experiments/exp_model_ab.py`，v14 真实输入，M3 vs M3.1-Flash low 每格 n=3，12 次全成功（原始数据 /tmp/exp_model_ab/）。`write_plan_tasks` 输出 16–38k→6–10k token，耗时 140–424s→34–62s；`assess` 3.0–7.0k→2.3–2.4k token，24–56s→18–20s；`write_plan_spec` **没有 token/耗时收益**（5.3–7.4k→6.3k，48–65s→55–59s），M3.1 的规约约长 35%（cautions/术语表约两倍，读过内容站得住）——因用户决定一并迁，不是因为有收益。规划里无出处数字占比 A 30%/B 18%，但 B_1 只有 11 个数，n 太小，不当结论。
 **配置**：三环节 `provider: minimax31` + `reasoning_effort: low` + `thinking_effort: low`，不带 `forced_thinking`（M3.1 关不掉思考，validate() 会拦）；max_output_tokens 32768/24576/16384，plan_* 超时 420s。`write_section/revise/patch` 仍是 M3 + forced_thinking disabled。退路：把 `provider` 改回 defaults 的老配置。守门测试 `tests/test_stage_migration.py`。
 **真实跑（v17，`s_f8be467ec99a`，同题，23.4 分钟，全程 MiniMax 529 过载）**：plan_tasks 5 轮工具循环 0 错、14 任务全覆盖、tool_reads=6；plan_spec 19 cautions/19 术语；assess 3 次，思考 1969 字符触发「偏高」警告（未处理）。这是单次样本。
 **probe_outline 改强制工具 `submit_outline`**（`probe.py` `OUTLINE_SCHEMA`/`_normalize_outline_input`，最多 2 次尝试，判据与 write_audit 同一套，抽到 `subgraphs/_retry.py`），stage 模型仍是 M3 high。v17 一次成功、8 条 subtopics、结构齐全；**但 v17 的 probe_light 两次 529 → 没判级 → 没深读，所以 `seeded_from_probe=0`，本次没能再测种子注入**（v15/v16 已测过）。「手写 JSON 解析失败」这一条在 v17 没有复发，但样本只有 1 次，不等于已证明根治。
@@ -2149,7 +2149,7 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
 - **批1（2c9d1bf）**：dispatch 一次全并发（`RA_WRITE_WORKERS`，默认 12；原来每批 5 个先串行 1 个，12 任务=3 批×(串行头+等最慢)，整场并行度 1.31，而缓存命中只有 8.3%，预热回不了本）；outline/probe_outline 迁 M3.1-Flash low + 预算一次给 16384（A/B n=3：outline 中位 198.5s→10.6s，M3 版 3/3 都吃 1~2 次护栏重试）；审查策略 A（返修用完后**末轮不再调模型**，只做程序检查，事件 `write_audit_skipped`，不进报告正文）；搜索超时；概括并发 4→8；urgency 停止线（≥2 轮后 high 缺口≤1 就收工，归 `satisfied` 不亮「材料不足」）；护栏丢弃的尝试补记 llm_call。
 - **批2（f4aeee8）**：返修补丁段/整节重写段各去串行头（整节重写头约 60s）；fetch 整体 deadline 20s、搜索超时 25→12s；修 urgency 缺键语义（`gaps_by_urgency` 只输出出现过的桶，缺 `high` 键=0 个，原写法 `.get("high",99)` 在最该停的情形不触发，测试用例全带显式 high 键所以漏了）；概括与相关性判定合并成一次调用（规则层优先，规则没放行才采信模型 `relevant`，缺 key 回落原 LLM 闸门；段级 relevance 调用归零，`gate_all` 源级串行判定仍在）。
 - **批3（8ea177e）**：**返修默认 1 轮**（`RA_MAX_REWORK`，用户决定；v19/v20 第 2 次审查 113~155s 只换来 2~4 个目标，第 2 轮占全场 28%）；**写作任务预加载证据**（`RA_WRITE_PRELOAD`，默认开；首稿任务把分配段全文附进用户消息、只发 1 次强制交卷，块超 70k 字符回退多轮工具路径）；write_revise 强制交卷预算 4096→8192；审查入参归一化失败记原始入参与原因（`normalize_fail`）。
-**预加载 A/B（v20 证据重建 13 任务，只跑 dispatch，n=3×2，`tests/exp_write_preload.py`）**：dispatch 145→95s、调用 51→13、write_section 输入 token 644k→~150k（usage 口径不稳）、wait_ms 243s→0、**violations 23.3→1.7、证据外数字 27.3→6.7**（出乎意料：模型直接看全文后「超出任务分配段」引用和编数字都少了）、总字数 95.6k→88.6k。v21 实弹：15/15 任务走 preload、0 回退、其中 1 个任务 `submit_section` 在 8192 输出上限被截断（forced_retry 55s 才成功）→ 已排进批4（write_section 预算 16384）。
+**预加载 A/B（v20 证据重建 13 任务，只跑 dispatch，n=3×2，`tests/experiments/exp_write_preload.py`）**：dispatch 145→95s、调用 51→13、write_section 输入 token 644k→~150k（usage 口径不稳）、wait_ms 243s→0、**violations 23.3→1.7、证据外数字 27.3→6.7**（出乎意料：模型直接看全文后「超出任务分配段」引用和编数字都少了）、总字数 95.6k→88.6k。v21 实弹：15/15 任务走 preload、0 回退、其中 1 个任务 `submit_section` 在 8192 输出上限被截断（forced_retry 55s 才成功）→ 已排进批4（write_section 预算 16384）。
 **被推翻/修正的判断（本轮自己猜错的）**：
 1. **「~90s 非 LLM 静默 = checkpoint 序列化」是错的。** 实测 102 次 checkpoint 写入合计 0.87s（最大单次 68ms）。真相：v18 大纲节点里 52s 的「静默」是**护栏重试**——第一次调用思考吃光 4096 预算、正文为空，翻倍预算重发，**被丢弃的第一次尝试没有 llm_call 行**，所以看不见（事件流里能看到 outline 思考了两遍）。v13 写作段 50s×2 的静默大概率同一机制（坑 77 的 8192→16384 截断梯度），但没有当时的数据能核对。**教训：失败/被丢弃的尝试必须记账，否则「静默」永远查不出**——现在 8 个护栏丢弃点都落 `status='retry'`、`error` 前缀 `guard:<cause> | attempt k/n | budget X→Y` 的行（v19~v21 均 0 条，因为 M3.1 迁移后 outline 不再被顶断）。
 2. **sidekick 误读 plan_json 当最终大纲**，报「sec7/sec8 没标题=破线」。`session.outline_json`（assess 校准后）才是审批通过的大纲；plan_json 是校准前原始稿。**以后验收「小节不缺」一律用 outline_json。**
@@ -2182,7 +2182,7 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
 
 ### 89. 来源质量（批 7，2026-10-27）：合并闸门 V2 + 坏页确定性过滤
 **起因**：v25 换题里无关/低质来源进了证据池（Rust-vs-Go 的招聘/HR/通用模板文档、GLP-1 的未渲染模板页与乱码百科）。查清：招聘文档段的规则层关键词命中=0，是**合并闸门**（summarize 同批 `relevant`）放行的，根因是 `SUMMARIZE_GATE_NOTE` 里的「宁可 true 也不要 false」。**注意相关≠权威**：weibo/bilibili/雪球/门户转载等是相关的低权威来源，本批没动（权威性没处理，候选：按来源性质限制单源占比）。
-**① 合并闸门 V2（已转正）**：`prompts.SUMMARIZE_GATE_NOTE = SUMMARIZE_GATE_NOTE_V2`（V1 保留）。V2 点名「招聘/求职、广告与法律维权营销、页面模板文字、任何行业都成立的通用方案模板」必须判 false，拿不准才回落 true。回放（`tests/exp_gate_note.py`，生产 summarize 同路径，n=2）：JUNK 28 段 false 率 V1 28.6% → V2 85.7%；CONTROL 90 段（全是规则命中段）V1 0% → V2 3.33%（3 段 jianshu 泛 K8s 教程）；BORDER 60 段（规则未放行的）V1 丢 1 → V2 丢 5（原产地规则科普、合规服务广告、合同模板、第三国案例——灰区）；schema 偏离 0。**预设判据「V2 CONTROL 误丢 ≤ V1+3pp」差 0.33pp 没过（3.33%>3.0%）**，我仍然采纳，理由是代码事实而不是放宽：`gate_segments` 里**规则层优先**，规则命中的段不采信合并判定，CONTROL 集全是规则命中段，所以那 3.33% 在生产里**不生效**；真正受 V2 影响的是规则没放行的段（BORDER，多丢 4/60≈6.7%，灰区背景读物/模板/营销）。**这是对预设判据的有意偏离**，没验证 V2 对终稿的实际影响。另：V2 在 JUNK 上的 4 个漏网是 GLP-1 坏页（正文确实在讲 GLP-1，relevant=true 是对的），应由②拦。
+**① 合并闸门 V2（已转正）**：`prompts.SUMMARIZE_GATE_NOTE = SUMMARIZE_GATE_NOTE_V2`（V1 保留）。V2 点名「招聘/求职、广告与法律维权营销、页面模板文字、任何行业都成立的通用方案模板」必须判 false，拿不准才回落 true。回放（`tests/experiments/exp_gate_note.py`，生产 summarize 同路径，n=2）：JUNK 28 段 false 率 V1 28.6% → V2 85.7%；CONTROL 90 段（全是规则命中段）V1 0% → V2 3.33%（3 段 jianshu 泛 K8s 教程）；BORDER 60 段（规则未放行的）V1 丢 1 → V2 丢 5（原产地规则科普、合规服务广告、合同模板、第三国案例——灰区）；schema 偏离 0。**预设判据「V2 CONTROL 误丢 ≤ V1+3pp」差 0.33pp 没过（3.33%>3.0%）**，我仍然采纳，理由是代码事实而不是放宽：`gate_segments` 里**规则层优先**，规则命中的段不采信合并判定，CONTROL 集全是规则命中段，所以那 3.33% 在生产里**不生效**；真正受 V2 影响的是规则没放行的段（BORDER，多丢 4/60≈6.7%，灰区背景读物/模板/营销）。**这是对预设判据的有意偏离**，没验证 V2 对终稿的实际影响。另：V2 在 JUNK 上的 4 个漏网是 GLP-1 坏页（正文确实在讲 GLP-1，relevant=true 是对的），应由②拦。
 **② 坏页确定性过滤**：`config/source_quality.yaml`（`drop_domains` 只放招聘平台 liepin/zhaopin/51job/lagou/zhipin/jobxzc；`drop_title_regex` 与 `drop_text_head_regex` 拦未渲染模板 `{{…}}`/`${…}`/`<%…%>`）+ `research_agent/search/quality.py`（`page_defect`，YAML 缺失/损坏回落空规则不抛错，域名后缀匹配）；接在 `node_retrieve` 抓取后、`add_source` 前，命中进 `skipped`（`low_quality:<原因>`），两档与探针种子页共用。离线对照 data/refs 全部库：命中 3 页零误伤（GLP-1 的 `{{custom_sec.title}}` 页、RustGo 的 liepin/jobxzc）。**不覆盖**：renrendoc 等文库托管站（只能靠 V2 提示词）、baike 乱码页（无可靠判据）。
 
 ### 90. 发布前整理（批 8，2026-10-27）：全量离线回归 + checkpoint 清理机制
@@ -2323,9 +2323,9 @@ unresolved 占比）**还没有验证过**；省多少 token/时间也**没有�
 **前端验收**（Playwright，8012 真后端 + 临时库，`/run` 被拦截不烧钱，`llm_call`=0 行）：两个入口「你好」「你是谁」出回复卡且会话数不增；拦截 intent=off_scope 出 3 个 chips，chip 填入输入框，「仍然作为调研提交」才建会话；intent 500/断网 fail-open 仍建会话；409 not_research 渲染回复卡；改输入卡消失；390px 无横向溢出；普通 research 题两入口各提交一次都跳会话页且 `/run` 恰好一次。review 抓到并已修：①`submitHome` 提交即清输入，被拦下时「仍然提交」会拿空 question 报 422（改为仅 created 才清）；②`start()` 与新增 `startById` 重复，已合并；③`useSession.create` 多出的无人调用 `force` 形参已撤。
 
 ### 99. 进行中（上线前）：小范围多人使用的鉴权/隔离/限额 + 部署到腾讯云（用户 2026-11-05 提出，设计已定）
-**需求**：用户自己 + 几个受邀的人（用户控制分发数量）使用；有腾讯云服务器（`ssh tencent_cloud`）和域名 `wding.site`，可开子域名。其余上线前事项：**异地备份不做**（用户决定）；清理项目里的死进程/无用记录；failed/僵尸 checkpoint 自动清理（**已做，d0c2bda**）；审批「驳回」与模型瞬时失败的统计结论**暂不做**（用户决定）。
+**需求**：用户自己 + 几个受邀的人（用户控制分发数量）使用；有腾讯云服务器（`ssh <服务器>`）和域名 `wding.site`，可开子域名。其余上线前事项：**异地备份不做**（用户决定）；清理项目里的死进程/无用记录；failed/僵尸 checkpoint 自动清理（**已做，d0c2bda**）；审批「驳回」与模型瞬时失败的统计结论**暂不做**（用户决定）。
 **现状事实（2026-11-05 查证，不是推断）**：①`server.py` 没有任何鉴权/限流/CORS（grep 零匹配）；README 里的启动命令绑 `127.0.0.1`，所以至今没暴露；②库里**没有 owner 概念**（`session`/`folder` 无 user 列，来源库按会话走）；③`PUT /api/config` 能改写服务端 `models.yaml`，`GET /api/config` 返回原文和绝对路径，`GET /api/search` 是个免费的 Tavily/SearXNG 代理——对外都必须收紧；④`server.py` 不托管前端（无 StaticFiles），前端 dist 要由反代托管；⑤中文检索依赖本机 `SearXNGProvider(base_url=http://127.0.0.1:8888, script=.searxng/searxng.sh)`，`.searxng/` 被 .gitignore，仓库里只有 `.deploy/searxng-settings.yml`。
-**服务器勘察（只读，`ssh tencent_cloud`）**：Ubuntu 24.04、4 核、内存 3.6GB（可用 ~2.2GB，已跑 n8n/postgres/qdrant/若干 docker 服务）、磁盘 40G 剩 8.3G（78%）；Python 3.12.3、Node 22、Docker 可用；**Caddy 已在 80/443**（`/etc/caddy/Caddyfile`，用户已有 `agent.`/`zimeiti.`/`agentworkflow.`/`staging.wding.site` 子域名，惯例=每个应用一个子域名 + `reverse_proxy`；SSE 需 `flush_interval -1`）；**8000/8080/5432/5678/6333/8791 等端口已被占用**，我们要选别的口；`api.tavily.com` 200（1.4s）、`ark.cn-beijing.volces.com` 通；**`pypi.org` 不通、`github.com` 8s**（装依赖要国内镜像/离线 wheel）；本机 DNS 解析 `wding.site` 得到 198.18.x（本机代理 fake-ip，不能据此判断公网解析），服务器公网 IP 见 Caddyfile 的 `http://124.221.11.45`。⚠️ 勘察时我 `cat` 了 Caddyfile，脱敏的 sed 没覆盖 bcrypt 哈希，两条 basicauth 哈希（非明文口令）出现在了会话输出里，已如实告知用户。
+**服务器勘察（只读，`ssh <服务器>`）**：Ubuntu 24.04、4 核、内存 3.6GB（可用 ~2.2GB，已跑 n8n/postgres/qdrant/若干 docker 服务）、磁盘 40G 剩 8.3G（78%）；Python 3.12.3、Node 22、Docker 可用；**Caddy 已在 80/443**（`/etc/caddy/Caddyfile`，已有其它子域名站点，惯例=每个应用一个子域名 + `reverse_proxy`；SSE 需 `flush_interval -1`）；**8000/8080/5432/5678/6333/8791 等端口已被占用**，我们要选别的口；`api.tavily.com` 200（1.4s）、`ark.cn-beijing.volces.com` 通；**`pypi.org` 不通、`github.com` 8s**（装依赖要国内镜像/离线 wheel）；本机 DNS 解析 `wding.site` 得到 198.18.x（本机代理 fake-ip，不能据此判断公网解析），服务器公网 IP 见 Caddyfile 的 `http://<服务器公网 IP>`。⚠️ 勘察时我 `cat` 了 Caddyfile，脱敏的 sed 没覆盖 bcrypt 哈希，两条 basicauth 哈希（非明文口令）出现在了会话输出里，已如实告知用户。
 **用户的 4 个决定（均采纳推荐）**：①数据隔离=**各人私有**；②登录=**邀请令牌→HttpOnly cookie**（用户给每人发邀请链接，可单个吊销）；③限额=**每人每日场次**：标准 2 / 快速 6，用户自己不限，「快速→补深度」按一场标准计；④并发=**全局 3、每人 1**（服务器可用内存只有 ~2.2GB）；SearXNG=**Docker 镜像**（先只读检查镜像加速源能不能拉再定）；子域名=**`research.wding.site`**（用户需在 DNS 加 A 记录 → 服务器公网 IP）。
 **lead 定的设计（实现前已定死）**：
 - **用户库**：`RA_USERS_PATH`（默认 `data/users.json`，`data/` 被 ignore）。每人 `{id,name,admin,token_sha256,limits:{standard,fast}|null,disabled}`，**只存令牌的 sha256**（文件泄露不暴露邀请链接）；cookie 签名密钥 `RA_AUTH_SECRET` 或 `data/auth_secret`（首次自动生成，权限 600）。CLI `python -m research_agent.users add|list|disable|enable|rotate`，`add`/`rotate` 只在终端打印一次邀请 URL。默认限额 标准 2/快速 6，admin 为 null=不限。

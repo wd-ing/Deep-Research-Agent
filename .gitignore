@@ -16,3 +16,5 @@ data/
 *.log
 .DS_Store
 *.tsbuildinfo
+homepage/film/*.mp4
+.fusion/

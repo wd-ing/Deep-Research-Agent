@@ -19,7 +19,7 @@
 
 ⚠️ **第 1 条和第 3 条曾经被搞反了因果（2026-10-15 实测纠正）。**
 当时的理解是「预算不够 → 多给」，于是把翻倍当成第 3 条的补丁。
-实测（`tests/probe_plan_tasks_empty.py`，真实 82 段摘要载荷）：
+实测（`tests/probes/probe_plan_tasks_empty.py`，真实 82 段摘要载荷）：
 
   · write_plan 的 max_output_tokens=4,096 时，成功率 **1/14**
   · 提到 16,384 时，成功率 **2/3**

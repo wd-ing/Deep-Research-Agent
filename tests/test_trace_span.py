@@ -21,6 +21,11 @@ import threading
 import time
 from pathlib import Path
 
+_SRC = Path("data/refs/ra_v13_gate.db")
+if not _SRC.exists():
+    print("SKIP: 需要 data/refs/ra_v13_gate.db（不在 git 里）")
+    raise SystemExit(0)
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 

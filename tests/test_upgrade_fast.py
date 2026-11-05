@@ -7,6 +7,11 @@ lead 在 v34 真库 checkpoint 副本上验证过的事实；本测试
 用法：.venv/bin/python tests/test_upgrade_fast.py
 """
 import sys, sqlite3, tempfile
+
+import pathlib as _pl
+if not _pl.Path("data/refs/ra_v30_fast.db").exists():
+    print("SKIP: 需要 data/refs/ra_v30_fast.db（不在 git 里）")
+    raise SystemExit(0)
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))

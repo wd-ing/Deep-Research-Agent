@@ -24,6 +24,11 @@ import argparse
 import json
 import os
 import sys
+
+import os as _os
+if not _os.environ.get("ARK_API_KEY"):
+    print("SKIP: 需要 ARK_API_KEY（真模型调用）")
+    raise SystemExit(0)
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]

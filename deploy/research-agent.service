@@ -1,0 +1,20 @@
+[Unit]
+Description=Deep Research Agent
+After=network-online.target docker.service
+Wants=network-online.target
+[Service]
+User=ubuntu
+WorkingDirectory=/srv/research-agent
+EnvironmentFile=/srv/research-agent/.env
+Environment=RA_AUTH=1
+Environment=RA_COOKIE_SECURE=1
+Environment=RA_MAX_RUNS=3
+Environment=TIKTOKEN_CACHE_DIR=/srv/research-agent/.tiktoken-cache
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/srv/research-agent/.venv/bin/uvicorn research_agent.server:app --host 127.0.0.1 --port 8300 --workers 1
+Restart=on-failure
+RestartSec=5
+MemoryMax=1200M
+NoNewPrivileges=true
+[Install]
+WantedBy=multi-user.target
