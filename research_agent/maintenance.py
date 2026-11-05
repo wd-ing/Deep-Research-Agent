@@ -310,5 +310,45 @@ def cli(argv: list[str]) -> int:
     return 0
 
 
+def sweep(ckpt_db_path: str | Path, research_db_paths: list[str | Path],
+          stale_days: float = 7, skip: set[str] = frozenset()) -> dict:
+    """自动清扫（TECH_DEBT #1③）：failed/僵尸会话的 checkpoint 裁到最新一份。
+
+    只做 `keep_latest`——**绝不执行 delete_all（孤儿）**，只计数返回；
+    `skip` 里是调用时刻进程内正在跑的 sid，不碰。不 VACUUM
+    （文件体积不缩，空页留给 SQLite 复用）。永不抛异常——
+    单个 thread 失败记进 errors 继续下一个。
+    """
+    stats = {"pruned_threads": 0, "deleted_checkpoints": 0,
+             "deleted_writes": 0, "skipped_active": 0,
+             "orphans_seen": 0, "errors": 0}
+    try:
+        plan = plan_prune(ckpt_db_path, research_db_paths, stale_days)
+    except Exception:
+        stats["errors"] = 1
+        return stats
+    for item in plan:
+        if item["action"] == "delete_all":
+            stats["orphans_seen"] += 1
+            continue
+        if item["action"] != "keep_latest":
+            continue
+        tid = item["thread_id"]
+        if tid in skip:
+            stats["skipped_active"] += 1
+            continue
+        if item["n_checkpoints"] <= 1:     # 幂等：只剩一份就没活干
+            continue
+        try:
+            r = prune_thread(ckpt_db_path, tid)
+            stats["pruned_threads"] += 1
+            stats["deleted_checkpoints"] += r.get("deleted_checkpoints", 0)
+            stats["deleted_writes"] += r.get("deleted_writes", 0)
+        except Exception:
+            stats["errors"] += 1
+    return stats
+
+
 if __name__ == "__main__":
     sys.exit(cli(sys.argv[1:]))
+

@@ -10,6 +10,7 @@ import os
 import asyncio
 import json
 import queue
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -48,6 +49,49 @@ async def agraph():
 
 # 订阅者：thread_id -> 队列
 _subs: dict[str: set[queue.Queue]] = {}
+
+# 进程内「正在跑图」的 sid 集合（TECH_DEBT #1③ sweep 的 skip 依据）。
+# 用 threading.Lock 不是「只在 loop 线程改」：_task_plain/_go_plain
+# 走的是 asyncio.to_thread——工作线程里也要安全读写。
+_runs: set[str] = set()
+_runs_lock = threading.Lock()
+_sweep_stop = threading.Event()
+
+# TECH_DEBT #1③：failed/僵尸 checkpoint 的自动清扫（区别于 _autoprune
+# 只管 done）。daemon 线程：启动 30s 后首扫，之后每 6h；只 keep_latest，
+# 孤儿只计数不删，不 VACUUM。RA_CKPT_SWEEP=0 关闭（调用时读）。
+def _sweep_once() -> None:
+    from .maintenance import sweep, _ckpt_path, _research_paths
+    with _runs_lock:
+        skip = set(_runs)
+    st = sweep(_ckpt_path(), _research_paths(), skip=skip)
+    print(f"[ckpt_sweep] pruned={st['pruned_threads']} "
+          f"ckpt-{st['deleted_checkpoints']} w-{st['deleted_writes']} "
+          f"skip={st['skipped_active']} orph={st['orphans_seen']} "
+          f"err={st['errors']}", flush=True)
+
+
+def _sweep_loop(interval: float, first_delay: float,
+                stop: threading.Event) -> None:
+    """可测形态：stop_event 驱动，不睡死 30s。RA_CKPT_SWEEP 每次读。"""
+    if stop.wait(first_delay):
+        return
+    while not stop.is_set():
+        if os.environ.get("RA_CKPT_SWEEP", "1").lower() not in ("0", "false", "off"):
+            try:
+                _sweep_once()
+            except Exception as e:
+                print(f"[ckpt_sweep] err={type(e).__name__}: {e}", flush=True)
+        if stop.wait(interval):
+            return
+
+
+@app.on_event("startup")
+def _start_sweep() -> None:
+    th = threading.Thread(target=_sweep_loop,
+                          args=(6 * 3600, 30.0, _sweep_stop),
+                          daemon=True, name="ckpt-sweep")
+    th.start()
 
 # 每个 session 已经推过的事件指纹集合。
 # `events` 在 state 里是累加器，run 与 approve 是两段独立推流，
@@ -1300,6 +1344,8 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
         否则同一个事件会被反复推，前端看到一堆重复。
         """
         seen_keys: set[str] = set()
+        with _runs_lock:
+            _runs.add(sid)
         try:
             async for update in (await agraph()).astream(inp, config=cfg, stream_mode="updates"):
                 for node, delta in (update or {}).items():
@@ -1326,6 +1372,8 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
         finally:
             _subs.get(sid, set()).discard(q)
             _last_seen[sid] = seen_keys
+            with _runs_lock:
+                _runs.discard(sid)
 
     def _on_progress(session_id, node, ev):
         # 环节内实时进度（fire_progress）：原样套上 progress 信封推出去。
@@ -1334,6 +1382,8 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
     def _task_plain() -> None:
         """原来的 invoke 路径，保留作回退。"""
         from .llm.provider import progress_scope
+        with _runs_lock:
+            _runs.add(sid)
         try:
             # 非流式没有订阅者，但 _emit 会把事件落进 sse_event（0009），
             # 让这条路径也能被 dump_events 完整回放。
@@ -1344,6 +1394,8 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
             _emit(sid, {"kind": "error", "error": f"{type(e).__name__}: {e}"})
         finally:
             _subs.get(sid, set()).discard(q)
+            with _runs_lock:
+                _runs.discard(sid)
 
     if streaming:
         # 思考增量：平台会流式吐 reasoning_content（实测 174 块），
@@ -1433,6 +1485,8 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
     async def _go_stream() -> None:
         from .llm.provider import progress_scope
         nonlocal seen_keys
+        with _runs_lock:
+            _runs.add(sid)
         try:
             # 写作阶段在审批之后跑——write_task 这类环节内进度全靠这条链路推
             with progress_scope(lambda session_id, node, ev: _emit(
@@ -1462,9 +1516,13 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
             _emit(sid, {"kind": "error", "error": f"{type(e).__name__}: {e}"})
         finally:
             _last_seen[sid] = seen_keys
+            with _runs_lock:
+                _runs.discard(sid)
 
     def _go_plain() -> None:
         from .llm.provider import progress_scope
+        with _runs_lock:
+            _runs.add(sid)
         try:
             with progress_scope(lambda session_id, node, ev: _emit(
                     session_id or sid,
@@ -1480,6 +1538,9 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
             _autoprune(sid)
         except Exception as e:
             _emit(sid, {"kind": "error", "error": f"{type(e).__name__}: {e}"})
+        finally:
+            with _runs_lock:
+                _runs.discard(sid)
 
     if streaming:
         asyncio.create_task(_go_stream())
@@ -1504,6 +1565,8 @@ async def _resume_after_upgrade(sid: str, cfg: dict, seen_keys: set,
     get_state 读回推 done → _autoprune；事件用 seen_keys 指纹去重。
     """
     from .llm.provider import progress_scope
+    with _runs_lock:
+        _runs.add(sid)
     try:
         with progress_scope(lambda session_id, node, ev: _emit(
                 session_id or sid,
@@ -1538,6 +1601,8 @@ async def _resume_after_upgrade(sid: str, cfg: dict, seen_keys: set,
         _emit(sid, {"kind": "error", "error": f"{type(e).__name__}: {e}"})
     finally:
         _last_seen[sid] = seen_keys
+        with _runs_lock:
+            _runs.discard(sid)
 
 
 @app.post("/api/sessions/{sid}/upgrade")
