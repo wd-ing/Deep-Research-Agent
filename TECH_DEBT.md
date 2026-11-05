@@ -12,7 +12,7 @@
 
 ---
 
-## 1. 🔴 `checkpoints.db` 无清理机制（押后到上线前）
+## 1. 🟡 `checkpoints.db`：清理机制已全部到位（完成后自动裁剪 + 失败/僵尸定期清扫），根因降级为观察项
 
 > **2026-10-27 更新（批 8）：机制层已做，根因未治，真实库尚未清理。**
 > 已有：`research_agent/maintenance.py` + CLI `python -m research_agent.maintenance prune-checkpoints`
