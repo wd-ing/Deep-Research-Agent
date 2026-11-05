@@ -9,12 +9,15 @@
  *  409 的 detail 对象，这里用原始 fetch 自己解析。
  */
 import { useCallback, useState } from 'react'
+import { quotaMessage } from './auth'
 import type { ResearchMode } from './mode'
 
 export interface IntentReply {
   intent: string
   reply: string | null
   suggestions: string[]
+  /** 'notice' = 额度/忙碌提示卡：无 chips、无「仍然提交」。 */
+  kind?: 'intent' | 'notice'
 }
 
 export type GateOutcome = 'created' | 'blocked'
@@ -34,7 +37,7 @@ async function createRaw(question: string, mode: ResearchMode,
                 suggestions?: string[]; reason?: string; message?: string } = {}
   try { detail = (await r.json()).detail ?? {} } catch { /* 非 JSON 错误体 */ }
   throw Object.assign(new Error(detail.message ?? `HTTP ${r.status}`),
-                      { detail })
+                      { detail, status: r.status })
 }
 
 export function useIntentGate(
@@ -69,11 +72,20 @@ export function useIntentGate(
         onCreated(await createRaw(question, mode, false))
         return 'created'
       } catch (e) {
-        const d = (e as { detail?: IntentReply & { code?: string } }).detail
+        const e2 = e as { detail?: IntentReply & { code?: string };
+                          status?: number }
+        const d = e2.detail
         if (d?.code === 'not_research') {
           setReply({ intent: d.intent ?? 'unclear',
                      reply: d.reply ?? null,
                      suggestions: d.suggestions ?? [] })
+          return 'blocked'
+        }
+        // 限额/并发——同一条回复卡通路，但无 chips/force（不是意图问题）
+        const q = quotaMessage(e2.status ?? 0, d)
+        if (q) {
+          setReply({ intent: 'quota', reply: q, suggestions: [],
+                     kind: 'notice' })
           return 'blocked'
         }
         throw e

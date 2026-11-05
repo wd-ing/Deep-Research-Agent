@@ -17,6 +17,7 @@ import { SettingsView } from './views/SettingsView'
 import { NewResearchDialog } from './components/NewResearchDialog'
 import { IntentReply } from './components/IntentReply'
 import { useIntentGate } from './lib/useIntentGate'
+import { fetchMe, quotaMessage, subUnauth, type MeInfo } from './lib/auth'
 import { Menu, MenuItem, MenuSep } from './components/Menu'
 import { Icon } from './components/Icon'
 import { ago, tokens } from './lib/format'
@@ -29,6 +30,8 @@ export default function App() {
   const sid = route.name === 'session' ? route.sid : null
   const pane: Pane = route.name === 'sources' ? 'source' : 'session'
   const srcId = route.name === 'sources' ? route.srcId ?? null : null
+  const [unauth, setUnauth] = useState(false)
+  const [me, setMe] = useState<MeInfo | null>(null)
   const [list, setList] = useState<SessionSummary[]>([])
   const [trash, setTrash] = useState<SessionSummary[]>([])
   const [folders, setFolders] = useState<Folder[]>([])
@@ -41,6 +44,23 @@ export default function App() {
   const [libErr, setLibErr] = useState<string | null>(null)
   const [srcQ, setSrcQ] = useState('')
   const [srcDetail, setSrcDetail] = useState<SourceDetailRow | null>(null)
+
+  // 启动一次 /api/auth/me：401→整页空态；任何请求的 401 也到同一条。
+  const doLogout = useCallback(() => {
+    void fetch('/api/auth/logout', { method: 'POST' })
+      .finally(() => { setMe(null); setUnauth(true) })
+  }, [])
+  const refreshMe = useCallback(() => {
+    void fetchMe().then((m) => { if (m) setMe(m) })
+  }, [])
+  useEffect(() => {
+    void fetchMe().then((m) => {
+      if (m === null && !document.cookie.includes('ra_auth')) setUnauth(true)
+      else if (m) setMe(m)
+      else setUnauth(true)
+    })
+    return subUnauth(() => setUnauth(true))
+  }, [])
   /** 来源库性质筛选：主区 chips 和侧栏「按性质」列共用一份。
    *  '__ignored' = 仅看已排除（特殊值，不是一种性质）。 */
   const [natureFilter, setNatureFilter] = useState<string | null>(null)
@@ -233,8 +253,12 @@ export default function App() {
     await refresh()
     // 启动是**另一个**请求，它失败时会议话已经建好了——
     // 提示要说清「会话已建好，只是没启动」，否则用户会去重复建。
-    void s.start(id).catch((e: unknown) =>
-      s.notify(`会话已建好，但启动失败：${(e as Error).message}`))
+    refreshMe()
+    void s.start(id).catch((e: unknown) => {
+      const q = quotaMessage((e as { status?: number }).status ?? 0,
+                             (e as { detail?: unknown }).detail)
+      s.notify(q ?? `会话已建好，但启动失败：${(e as Error).message}`)
+    })
   }
 
   /** 一键补深度：快速档→标准档续跑。成功即跳流程页（s.upgrade 已置
@@ -244,7 +268,9 @@ export default function App() {
     setUpgrading(true)
     try {
       const r = await s.upgrade(sid)
-      if (r.ok) return
+      if (r.ok) { refreshMe(); return }
+      { const q = quotaMessage(r.status ?? 0, r.detail)
+        if (q) { s.notify(q); setUpgrading(false); return } }
       const msg: Record<string, string> = {
         already_upgraded: '这场已经升级过了',
         not_done: '快速档还没跑完，结束后再升级',
@@ -367,6 +393,19 @@ export default function App() {
     return () => { alive = false }
   }, [sid, d?.status])
 
+  if (unauth) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-paper">
+        <div className="max-w-sm text-center">
+          <p className="text-lg font-medium text-ink">需要邀请链接</p>
+          <p className="mt-2 text-sm leading-relaxed text-muted">
+            本实例面向受邀用户开放——请向管理员索取你的邀请链接，
+            打开后即完成登录（cookie 30 天有效）。
+          </p>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="flex h-screen text-ink">
       <Sidebar
@@ -390,6 +429,8 @@ export default function App() {
         onNatureFilter={setNatureFilter}
         onNotify={s.notify}
         onSettings={() => nav({ name: 'settings' })}
+        me={me}
+        onLogout={doLogout}
         onReplay={replayOn ? runReplay : null}
         collapsed={sideCollapsed}
         onToggleCollapse={() => setSideCollapsed((v) => !v)}
@@ -626,6 +667,7 @@ export default function App() {
                 </div>
                 {homeGate.reply && (
                   <IntentReply
+                    notice={homeGate.reply.kind === 'notice'}
                     reply={homeGate.reply.reply}
                     suggestions={homeGate.reply.suggestions}
                     onPick={(t) => { setHomeQ(t); homeGate.dismiss() }}

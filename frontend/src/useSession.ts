@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { isUnauth, reportUnauth, subUnauth } from './lib/auth'
 import type {
   ApprovalPayload, ProgressEntry, SegmentRow, SessionDetail,
   SseEvent, View,
@@ -20,19 +21,32 @@ async function errText(r: Response, url: string): Promise<string> {
   return `${r.status} ${url}`
 }
 
+async function _err(r: Response, url: string): Promise<Error> {
+  // detail 要在 errText 吃 body 之前克隆拿——顺序反了 detail 必丢
+  const e = new Error(await errText(r.clone(), url)) as Error & {
+    status?: number; detail?: unknown }
+  e.status = r.status
+  try { e.detail = (await r.json()).detail } catch { /* */ }
+  return e
+}
+
 async function jget<T>(url: string): Promise<T> {
+  if (isUnauth()) throw new Error('需要邀请链接登录')
   const r = await fetch(url)
-  if (!r.ok) throw new Error(await errText(r, url))
+  if (r.status === 401) reportUnauth()
+  if (!r.ok) throw await _err(r, url)
   return r.json() as Promise<T>
 }
 
 async function jpost<T>(url: string, body?: unknown): Promise<T> {
+  if (isUnauth()) throw new Error('需要邀请链接登录')
   const r = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
-  if (!r.ok) throw new Error(await errText(r, url))
+  if (r.status === 401) reportUnauth()
+  if (!r.ok) throw await _err(r, url)
   return r.json() as Promise<T>
 }
 
@@ -119,6 +133,9 @@ export function useSession(sid: string | null) {
   }, [])
 
   const esRef = useRef<EventSource | null>(null)
+  useEffect(() => subUnauth(() => {
+    esRef.current?.close(); esRef.current = null
+  }), [])
   const timerRef = useRef<number | null>(null)
   // 历史回放+实时 SSE 的事件指纹集：/events 与 /stream 在接缝处
   // 可能各送一份同一事件，用它去重。每次换会话重建。
@@ -419,7 +436,8 @@ export function useSession(sid: string | null) {
   }, [])
 
   const upgrade = useCallback(async (id: string): Promise<
-      { ok: true } | { ok: false; reason: string; message: string }> => {
+      { ok: true } | { ok: false; reason: string; message: string;
+                       status: number; detail: Record<string, unknown> }> => {
     // 不用 jpost：409 要带 detail.reason 给文案分支，得原样拿到。
     const r = await fetch(`/api/sessions/${id}/upgrade`, { method: 'POST' })
     if (r.ok) {
@@ -433,13 +451,16 @@ export function useSession(sid: string | null) {
     }
     let reason = 'error'
     let message = `HTTP ${r.status}`
+    let detail: Record<string, unknown> = {}
     try {
-      const d = (await r.json() as { detail?: { reason?: string; message?: string } })
+      const d = (await r.json() as {
+        detail?: Record<string, unknown> & { reason?: string; message?: string } })
         .detail ?? {}
-      reason = d.reason ?? reason
-      message = d.message ?? message
+      detail = d
+      reason = String(d.reason ?? d.code ?? reason)
+      message = String(d.message ?? message)
     } catch { /* 非 JSON 错误体就留默认 */ }
-    return { ok: false, reason, message }
+    return { ok: false, reason, message, status: r.status, detail }
   }, [])
 
   const create = useCallback(async (question: string,

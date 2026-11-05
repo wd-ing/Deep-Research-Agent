@@ -183,6 +183,29 @@ Markdown / PDF（浏览器打印）/ Word（前端生成 .docx）。
 | `RA_OVERLOAD_RETRIES` / `RA_OVERLOAD_BASE_S` | 5 / 10 | MiniMax 过载重试 |
 | `RA_SPEC_SLIM` | 0 | 写作规约压缩到最小（批 6 省 token；1=只传必要的字段）|
 | `RA_AUDIT_TRIM` | 0 | 审查输入裁剪（批 6：只给审查需要的小节级材料）|
+
+## 鉴权与本地开发
+
+**本地开发设 `RA_AUTH=0`**——以 `local` admin 身份通行，一切行为与无鉴权版相同（`tests/_isolate.py` 已默认置 0，离线测试不用管）。生产/多人使用时 RA_AUTH 缺省即开，此时必须先用 CLI 发邀请链接：
+
+```bash
+.venv/bin/python -m research_agent.users add --id amy --name Amy     [--admin] [--standard 2 --fast 6]
+# 输出里带一次性邀请路径 /api/auth/invite?t=<token>——发给对方，
+# 打开后种下 HttpOnly cookie 即登录。rotate 轮换、disable 吊销即时生效。
+```
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `RA_AUTH` | 开 | `0`=本地开发固定 `local` admin，不建用户库 |
+| `RA_USERS_PATH` | `data/users.json` | 用户库（只存 token sha256，权限 600） |
+| `RA_AUTH_SECRET` | `data/auth_secret` | cookie 签名密钥（首次自动生成 600；改了就全员下线） |
+| `RA_COOKIE_SECURE` | 关 | `1`=cookie 一律加 Secure（http 本地调试别开） |
+| `RA_MAX_RUNS` | 3 | 全局同时在跑的研究上限；每人固定 1 场 |
+| `RA_INTENT` | 0（测试） | 输入意图前置识别；多人部署建议开 |
+| `RA_CKPT_SWEEP` | 开 | failed/僵尸 checkpoint 每 6h 自动清扫 |
+
+数据按 owner 隔离：member 只见自己的会话/文件夹/来源；`GET/PUT /api/config`、`GET /api/search` 仅 admin；每日场次限额标准 2/快速 6（admin 不限），超额 429。
+| `RA_AUDIT_TRIM` | 0 | 审查输入裁剪（批 6：只给审查需要的小节级材料）|
 | `RA_CKPT_AUTOPRUNE` | 1 | 会话完成后自动裁剪旧 checkpoint（0=关；见下「维护」）|
 | `E2E_MODE` | standard | `e2e_http.py` 的档位：`standard`/`fast` |
 

@@ -245,10 +245,12 @@ function SessionRow({
   )
 }
 
+import type { MeInfo } from '../lib/auth'
+
 export function Sidebar({
   list, trash, cur, folders, onPick, onChanged, onNew, pane, onPane,
   lib, libErr, natureFilter, onNatureFilter,
-  onNotify, onSettings, onReplay, collapsed, onToggleCollapse,
+  onNotify, onSettings,  me, onLogout,onReplay, collapsed, onToggleCollapse,
 }: {
   list: SessionSummary[]
   /** 回收站内容。来自 `/api/trash`——不在 `list` 里（那边硬过滤 deleted_at）。 */
@@ -276,6 +278,9 @@ export function Sidebar({
   /** 设置页入口（D1）。挂在侧栏底部——路由跳转的事不归侧栏管，
    *  这里只负责把「点了」报上去。 */
   onSettings: () => void
+  /** 坑99：侧栏底部用户块。me.id==='local'（RA_AUTH=0）不渲染。 */
+  me?: MeInfo | null
+  onLogout?: () => void
   /** 「演示回放」入口。null = 连的不是回放服务器，按钮整个不出现。 */
   onReplay: (() => void) | null
   /** 折叠态（视觉轮 E2）：侧栏收成 44px 图标轨，读报告时让出宽度。
@@ -686,6 +691,30 @@ export function Sidebar({
         />
       )}
 
+      {/* 用户块（坑 99）：名字 + 今日余量 + 退出。
+          local（RA_AUTH=0 本地开发）不显示——那时候没有用户概念 */}
+      {me && me.id !== 'local' && (
+        <div className="mt-auto border-t border-line2 px-2 pb-1 pt-2.5">
+          <div className="flex items-baseline justify-between">
+            <span className="text-[12.5px] font-medium text-ink">{me.name}</span>
+            <button onClick={onLogout}
+              className="text-2xs text-faint transition-colors hover:text-ink">
+              退出
+            </button>
+          </div>
+          <p className="mt-0.5 text-2xs text-faint"
+            title={me.resets_at
+              ? `${new Date(me.resets_at * 1000)
+                  .toLocaleTimeString('zh-CN',
+                    { hour: '2-digit', minute: '2-digit' })} 重置`
+              : undefined}>
+            {me.limits
+              ? `今日 标准 ${me.used.standard}/${me.limits.standard} · `
+                + `快速 ${me.used.fast}/${me.limits.fast}`
+              : '今日 不限'}
+          </p>
+        </div>
+      )}
       {/* 底部工具区：设置（D1）+ 折叠（E2）+ 回放（仅回放服务器可见）。
           不抢主列表的注意力，放最底下 */}
       <div className="mt-auto flex items-center gap-3.5 border-t border-line2 px-2 pb-0.5 pt-2.5">

@@ -40,7 +40,10 @@ export function SettingsView({ onNotify }: { onNotify: (m: string, kind?: 'err' 
   const load = () => {
     api.jget<ConfigResp>('/api/config')
       .then((r) => { setCfg(r); setText(r.content); setLoadErr(null) })
-      .catch((e) => setLoadErr((e as Error).message))
+      .catch((e) => setLoadErr(
+        (String((e as Error).message).includes('403')
+          || String((e as Error).message).includes('管理员权限'))
+          ? '__forbidden__' : (e as Error).message))
   }
   useEffect(load, [])
 
@@ -132,11 +135,13 @@ export function SettingsView({ onNotify }: { onNotify: (m: string, kind?: 'err' 
         </div>
       </div>
 
-      {loadErr && (
+      {loadErr === '__forbidden__' ? (
+        <p className="mt-4 text-sm text-muted">模型配置仅管理员可见</p>
+      ) : loadErr ? (
         <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
           读不到配置：{loadErr}
         </div>
-      )}
+      ) : null}
 
       {cfg && (
         <>

@@ -170,6 +170,31 @@ def main():
     except TypeError:
         check("client IP 注入", False, "TestClient 不支持 client 参数——未测")
 
+    # B1: XFF 不同 IP 独立限速桶——A 刷满 10 次，B 仍可登录
+    try:
+        cA = TestClient(S.app, follow_redirects=False, client=("127.0.0.1", 1))
+        S._rl.clear()
+        for _ in range(10):
+            cA.get("/api/auth/invite?t=bad",
+                   headers={"X-Forwarded-For": "9.9.9.1"})
+        rA = cA.get(f"/api/auth/invite?t={tok}",
+                    headers={"X-Forwarded-For": "9.9.9.1"})
+        check("A-IP 刷满后被限", rA.status_code == 429, str(rA.status_code))
+        rB = cA.get(f"/api/auth/invite?t={tok}",
+                    headers={"X-Forwarded-For": "9.9.9.2"})
+        check("B-IP 独立桶可登录", rB.status_code == 302, str(rB.status_code))
+        # 非 127.0.0.1 来源伪造 XFF 不能换桶绕过
+        cX = TestClient(S.app, follow_redirects=False, client=("8.8.8.8", 1))
+        S._rl.clear()
+        for i in range(10):
+            cX.get("/api/auth/invite?t=bad",
+                   headers={"X-Forwarded-For": f"1.1.1.{i}"})
+        rX = cX.get(f"/api/auth/invite?t={tok}",
+                    headers={"X-Forwarded-For": "5.5.5.5"})
+        check("非127伪造XFF不绕过", rX.status_code == 429, str(rX.status_code))
+    except TypeError:
+        check("XFF 独立桶", False, "client 参数不可用")
+
     # ============ ⑥ fail-closed / RA_AUTH=0 ============
     os.environ["RA_USERS_PATH"] = str(tmp / "nonexistent.json")
     try:

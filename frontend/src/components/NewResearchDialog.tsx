@@ -141,6 +141,7 @@ export function NewResearchDialog({
 
         {gate.reply && (
           <IntentReply
+            notice={gate.reply.kind === 'notice'}
             reply={gate.reply.reply}
             suggestions={gate.reply.suggestions}
             onPick={(t) => { setQ(t); gate.dismiss(); taRef.current?.focus() }}
