@@ -266,7 +266,7 @@ def main():
         return _A(seen6, sid, False)
     S.agraph = _mk_ag3
     import asyncio as _aio
-    _aio.run(S._resume_after_upgrade(sid, {"configurable": {"thread_id": sid}}, set(), True))
+    _aio.run(S._resume_after_upgrade(sid, {"configurable": {"thread_id": sid}}, set(), True, "u1"))
     check("_resume 结束∉runs", sid not in S._runs)
     class _BadA:
         async def astream(self, *a, **k):
@@ -277,7 +277,7 @@ def main():
     async def _mk_bad():
         return _BadA()
     S.agraph = _mk_bad
-    _aio.run(S._resume_after_upgrade(sid, {"configurable": {"thread_id": sid}}, set(), True))
+    _aio.run(S._resume_after_upgrade(sid, {"configurable": {"thread_id": sid}}, set(), True, "u1"))
     check("_resume 异常后∉runs", sid not in S._runs)
     # 恢复 agraph/graph
     import importlib

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import _isolate  # noqa: F401
 import sys
 import tempfile
 from pathlib import Path

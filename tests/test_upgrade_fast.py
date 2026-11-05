@@ -61,7 +61,10 @@ def main():
     # 桩续跑：记录调用、立即结束（不发 LLM、不留挂起任务）
     calls = []
     orig_resume = S._resume_after_upgrade
-    async def fake_resume(sid, cfg, seen, streaming):
+    async def fake_resume(sid, cfg, seen, streaming, owner_id=None):
+        # 桩要模仿真函数的 _runs 收尾——否则端点的占位泄漏，后续调用全 busy
+        with S._runs_lock:
+            S._runs.pop(sid, None)
         calls.append((sid, streaming))
     S._resume_after_upgrade = fake_resume
     try:

@@ -16,11 +16,14 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from .db.repo import get_repo
+from .auth import (COOKIE_MAX_AGE, COOKIE_NAME, LOCAL_ADMIN, User,
+                   auth_enabled, check_cookie, get_user, sign_cookie,
+                   token_uid, load_users)
+from .db.repo import Repo, get_repo
 from .graph.runner import get_graph
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -53,9 +56,195 @@ _subs: dict[str: set[queue.Queue]] = {}
 # 进程内「正在跑图」的 sid 集合（TECH_DEBT #1③ sweep 的 skip 依据）。
 # 用 threading.Lock 不是「只在 loop 线程改」：_task_plain/_go_plain
 # 走的是 asyncio.to_thread——工作线程里也要安全读写。
-_runs: set[str] = set()
+# sid → owner。dict 不是 set：限额/并发按 owner 计数要从这里取归属。
+# `set(_runs)` 对 dict 仍取 keys（_sweep_once 快照语义不变）；
+# `sid in _runs` 语义不变（测试 test_ckpt_sweep 依赖）。
+_runs: dict[str, str] = {}
 _runs_lock = threading.Lock()
+
+
+def _max_runs() -> int:
+    try:
+        return int(os.environ.get("RA_MAX_RUNS", "3"))
+    except ValueError:
+        return 3
+
+
+def _reserve_run(sid: str, owner: str) -> str:
+    """并发占位的**原子**闸（坑 99）：锁内检查+登记，无窗口。
+    返回 'ok' | 'already'（同 sid 在跑） | 'busy'（满员）。"""
+    with _runs_lock:
+        if sid in _runs:
+            return "already"
+        if len(_runs) >= _max_runs():
+            return "busy"
+        if sum(1 for o in _runs.values() if o == owner) >= 1:
+            return "busy"                       # 每人 1 场
+        _runs[sid] = owner
+        return "ok"
+
+
+def _release_run(sid: str) -> None:
+    with _runs_lock:
+        _runs.pop(sid, None)
 _sweep_stop = threading.Event()
+
+# ================= 鉴权/归属（坑 99·段 2）================
+# 应用级守门：中间件管「无 cookie 一律 401」，白名单只放
+# /api/auth/invite 与 /api/health（后者登录前后给不同详略）。
+_AUTH_WHITELIST = ("/api/auth/invite", "/api/health")
+
+
+def _now() -> float:
+    """可注入时钟（限额日界线测试用）。"""
+    return time.time()
+
+
+def _shanghai_day_start(ts: float) -> float:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    d = datetime.fromtimestamp(ts, ZoneInfo("Asia/Shanghai"))
+    return datetime(d.year, d.month, d.day,
+                    tzinfo=ZoneInfo("Asia/Shanghai")).timestamp()
+
+
+def _resets_at() -> float:
+    return _shanghai_day_start(_now()) + 86400
+
+
+_rl: dict[tuple, list[float]] = {}
+_rl_lock = threading.Lock()
+
+
+def _client_ip(request: Request) -> str:
+    """邀请限速的真实来源：反代后 request.client 恒为 127.0.0.1。
+    X-Forwarded-For **只信来自本机反代**的请求（远端可伪造），
+    取最后一项——Caddy 会把真实来源追加/覆盖在尾部。"""
+    host = request.client.host if request.client else "unknown"
+    if host == "127.0.0.1":
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(",")[-1].strip() or host
+    return host
+
+
+def _rate_hit(bucket: str, key: str, limit: int, window: float) -> bool:
+    """进程内滑动窗口；返回 True=放行。小用户数无需 Redis。"""
+    now = _now()
+    with _rl_lock:
+        lst = _rl.setdefault((bucket, key), [])
+        while lst and lst[0] <= now - window:
+            lst.pop(0)
+        if len(lst) >= limit:
+            return False
+        lst.append(now)
+        return True
+
+
+@app.middleware("http")
+async def _auth_gate(request: Request, call_next):
+    path = request.url.path
+    if not auth_enabled() or not path.startswith("/api/") \
+            or path in _AUTH_WHITELIST:
+        return await call_next(request)
+    uid = check_cookie(request.cookies.get(COOKIE_NAME) or "")
+    request.state.user = get_user(uid) if uid else None
+    if request.state.user is None:
+        return JSONResponse({"detail": "需要邀请链接登录"}, status_code=401)
+    return await call_next(request)
+
+
+def current_user(request: Request) -> User:
+    if not auth_enabled():
+        return LOCAL_ADMIN
+    u = getattr(request.state, "user", None)
+    if u is None:                       # 白名单路由主动要身份时自己验
+        uid = check_cookie(request.cookies.get(COOKIE_NAME) or "")
+        u = get_user(uid) if uid else None
+    if u is None:
+        raise HTTPException(401, "需要邀请链接登录")
+    return u
+
+
+def require_admin(user: User = Depends(current_user)) -> User:
+    if not user.admin:
+        raise HTTPException(403, "需要管理员权限")
+    return user
+
+
+def owned_sid(sid: str, user: User = Depends(current_user)) -> str:
+    """非本人/不存在一律 404（不泄露存在性）；NULL 归属仅 admin。"""
+    if not get_repo().owned_by(sid, user):
+        raise HTTPException(404, "会话不存在")
+    return sid
+
+
+def owned_fid(fid: str, user: User = Depends(current_user)) -> str:
+    w, ps = Repo.viewer_where(user)
+    if not get_repo().q1(f"SELECT 1 FROM folder WHERE id=? AND {w}",
+                         (fid, *ps)):
+        raise HTTPException(404, "文件夹不存在")
+    return fid
+
+
+def owned_src(src_id: str, user: User = Depends(current_user)) -> str:
+    w, ps = Repo.viewer_where(user, "se.owner")
+    if not get_repo().q1(
+            "SELECT s.id FROM source s JOIN session se ON se.id=s.session_id "
+            f"WHERE s.id=? AND {w}", (src_id, *ps)):
+        raise HTTPException(404, "来源不存在")
+    return src_id
+
+
+@app.on_event("startup")
+def _auth_preflight() -> None:
+    """fail-closed：开着 RA_AUTH 却没有可用用户，直接拒启动。"""
+    if not auth_enabled():
+        return
+    active = [u for u in load_users() if not u.disabled]
+    if not active:
+        raise RuntimeError(
+            "RA_AUTH 已开启但用户库为空——先用 CLI 加人："
+            "python -m research_agent.users add --id <id> --name <名字> "
+            "[--admin]（默认限额 标准2/快速6，admin 不限），"
+            "或本地开发设 RA_AUTH=0")
+
+
+@app.get("/api/auth/invite")
+def auth_invite(t: str, request: Request):
+    """邀请链接登录：token→cookie。白名单（还没 cookie 的人靠它进来）。"""
+    if not _rate_hit("invite", _client_ip(request), 10, 60):
+        raise HTTPException(429, {"code": "rate_limited"})
+    uid = token_uid(t)
+    if not uid:
+        raise HTTPException(401, "邀请链接无效或已被吊销")
+    secure = bool(
+        os.environ.get("RA_COOKIE_SECURE", "").lower() in ("1", "true", "on")
+        or (request.client and request.client.host == "127.0.0.1"
+            and request.headers.get("x-forwarded-proto") == "https"))
+    resp = RedirectResponse("/", status_code=302)
+    resp.set_cookie(COOKIE_NAME, sign_cookie(uid),
+                    max_age=COOKIE_MAX_AGE, httponly=True,
+                    samesite="lax", path="/", secure=secure)
+    return resp
+
+
+@app.get("/api/auth/me")
+def auth_me(user: User = Depends(current_user)) -> dict:
+    repo = get_repo()
+    day0 = _shanghai_day_start(_now())
+    used = {k: repo.count_usage(user.id, k, day0)
+            for k in ("standard", "fast")}
+    return {"id": user.id, "name": user.name, "admin": user.admin,
+            "limits": user.limits, "used": used, "resets_at": _resets_at()}
+
+
+@app.post("/api/auth/logout")
+def auth_logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(COOKIE_NAME, path="/")
+    return resp
+
 
 # TECH_DEBT #1③：failed/僵尸 checkpoint 的自动清扫（区别于 _autoprune
 # 只管 done）。daemon 线程：启动 30s 后首扫，之后每 6h；只 keep_latest，
@@ -180,7 +369,8 @@ class ApproveIn(BaseModel):
 
 
 @app.post("/api/sessions")
-def create_session(body: CreateIn) -> dict:
+def create_session(body: CreateIn,
+                   user: User = Depends(current_user)) -> dict:
     # 服务端兜底（不信前端）：非调研输入不建会话。
     # force_research 是用户看过回复卡后的明示选择，直通。
     if not body.force_research:
@@ -206,15 +396,28 @@ def create_session(body: CreateIn) -> dict:
                     "code": "not_research", "intent": r.intent,
                     "reply": r.reply, "suggestions": r.suggestions})
     repo = get_repo()
+    lim = (user.limits or {}).get(body.mode) if user.limits else None
+    if lim is not None:
+        used = repo.count_usage(
+            user.id, body.mode, _shanghai_day_start(_now()))
+        if used >= lim:
+            raise HTTPException(429, detail={
+                "code": "quota_exceeded", "kind": body.mode,
+                "limit": lim, "used": used, "resets_at": _resets_at()})
     title = body.title or body.question[:40]
-    sid = repo.create_session(title, body.question, mode=body.mode)
+    sid = repo.create_session(title, body.question, mode=body.mode,
+                              owner=user.id if auth_enabled() else None)
     return {"session_id": sid, "thread_id": sid}
 
 
 @app.post("/api/intent")
-def intent_classify(body: IntentIn) -> dict:
+def intent_classify(body: IntentIn,
+                    user: User = Depends(current_user)) -> dict:
     """会话创建前的意图判定。同步 def：classify_intent 是阻塞 LLM 调用，
     FastAPI 会放线程池跑，不卡 event loop。"""
+    # 按人 20 次/分钟（意图调用不记账，单独限——坑 99）
+    if not _rate_hit("intent", user.id, 20, 60):
+        raise HTTPException(429, detail={"code": "rate_limited"})
     from .intent import classify_intent
     r = classify_intent(body.question)
     if r.intent == "research":      # 与 create_session 共用同一缓存
@@ -233,6 +436,7 @@ def list_sessions(
     deleted: str | None = None,
     folder_id: str | None = None,
     q: str | None = None,
+    user: User = Depends(current_user),
 ) -> list[dict]:
     """列会话。
 
@@ -244,7 +448,8 @@ def list_sessions(
     """
     import json as _json
     repo = get_repo()
-    where, params = ["1=1"], []
+    w, ps = Repo.viewer_where(user)
+    where, params = [w], list(ps)
     if deleted == "1":
         where.append("deleted_at IS NOT NULL")
     else:
@@ -279,7 +484,8 @@ def list_sessions(
 
 
 @app.get("/api/sessions/search")
-def search_sessions(q: str = "", limit: int = 20) -> dict:
+def search_sessions(q: str = "", limit: int = 20,
+                    user: User = Depends(current_user)) -> dict:
     """跨会话搜索（D2）：命中 标题 / 问题 / 报告正文 三处。
 
     正文命中时带定位片段，前端可以直接展示「在哪句话里命中的」。
@@ -301,7 +507,10 @@ def search_sessions(q: str = "", limit: int = 20) -> dict:
         "FROM session s LEFT JOIN report r ON r.session_id = s.id "
         "WHERE s.deleted_at IS NULL AND ("
         "  s.title LIKE ? OR s.question LIKE ? OR r.markdown LIKE ?) "
-        "ORDER BY s.created_at DESC LIMIT ?", (like, like, like, limit * 2))
+        f"AND {Repo.viewer_where(user, 's.owner')[0]} "
+        "ORDER BY s.created_at DESC LIMIT ?",
+        (like, like, like,
+         *Repo.viewer_where(user, 's.owner')[1], limit * 2))
     hits = []
     qlen = len(q)
     for r in rows:
@@ -325,12 +534,16 @@ def search_sessions(q: str = "", limit: int = 20) -> dict:
     return {"q": q, "hits": hits}
 
 
-@app.patch("/api/sessions/{sid}")
-def patch_session(sid: str, body: dict) -> dict:
+@app.patch("/api/sessions/{sid}", dependencies=[Depends(owned_sid)])
+def patch_session(sid: str, body: dict,
+                  user: User = Depends(current_user)) -> dict:
     """改名 / 移文件夹 / 归档或取消归档。字段任选，都可省略。"""
     repo = get_repo()
-    if not repo.q1("SELECT 1 FROM session WHERE id=?", (sid,)):
-        raise HTTPException(404, "会话不存在")
+    if "folder_id" in body and body["folder_id"] is not None:
+        w, ps = Repo.viewer_where(user)
+        if not repo.q1(f"SELECT 1 FROM folder WHERE id=? AND {w}",
+                       (body["folder_id"], *ps)):
+            raise HTTPException(404, "文件夹不存在")
     fields = {k: body[k] for k in ("title", "folder_id", "archived") if k in body}
     if not fields:
         raise HTTPException(400, "没有可改的字段")
@@ -338,7 +551,7 @@ def patch_session(sid: str, body: dict) -> dict:
     return {"ok": True, "changed": sorted(fields)}
 
 
-@app.delete("/api/sessions/{sid}")
+@app.delete("/api/sessions/{sid}", dependencies=[Depends(owned_sid)])
 def delete_session(sid: str) -> dict:
     """移到回收站（软删除）。报告 / 来源 / 段**一律留着**。"""
     repo = get_repo()
@@ -356,7 +569,7 @@ def delete_session(sid: str) -> dict:
             "note": "可在回收站恢复"}
 
 
-@app.post("/api/sessions/{sid}/restore")
+@app.post("/api/sessions/{sid}/restore", dependencies=[Depends(owned_sid)])
 def restore_session(sid: str) -> dict:
     repo = get_repo()
     if not repo.q1("SELECT 1 FROM session WHERE id=?", (sid,)):
@@ -365,7 +578,7 @@ def restore_session(sid: str) -> dict:
     return {"ok": True}
 
 
-@app.delete("/api/sessions/{sid}/purge")
+@app.delete("/api/sessions/{sid}/purge", dependencies=[Depends(owned_sid)])
 def purge_session(sid: str) -> dict:
     """真删，不可恢复。回收站「清空」用。"""
     repo = get_repo()
@@ -377,14 +590,14 @@ def purge_session(sid: str) -> dict:
 
 
 @app.get("/api/trash")
-def list_trash() -> list[dict]:
-    return list_sessions(deleted="1")
+def list_trash(user: User = Depends(current_user)) -> list[dict]:
+    return list_sessions(deleted="1", user=user)
 
 
 @app.get("/api/folders")
-def list_folders() -> list[dict]:
+def list_folders(user: User = Depends(current_user)) -> list[dict]:
     """文件夹树 + 每层会话数，末尾附「未分类」。"""
-    return get_repo().folders_with_counts()
+    return get_repo().folders_with_counts(user)
 
 
 def _cited_counts(repo, sid: str) -> dict[str, int]:
@@ -417,7 +630,7 @@ def _cited_counts(repo, sid: str) -> dict[str, int]:
     return out
 
 
-@app.get("/api/sources/{src_id}")
+@app.get("/api/sources/{src_id}", dependencies=[Depends(owned_src)])
 def get_source(src_id: str) -> dict:
     """单个来源 + 它的段落。点来源库里的某一条看它到底说了什么。
 
@@ -478,7 +691,8 @@ NATURE_ORDER = ["first_party", "research", "media", "community", "aggregator", "
 
 
 @app.get("/api/sources")
-def list_sources(q: str = "", session_id: str = "") -> dict:
+def list_sources(q: str = "", session_id: str = "",
+                 user: User = Depends(current_user)) -> dict:
     """来源库：全部场次收集到的来源 + 每场的引用数。
 
     **引用数必须复用 `EvidenceTools` 的段号方案**——
@@ -493,8 +707,9 @@ def list_sources(q: str = "", session_id: str = "") -> dict:
     所属会话不在回收站。
     """
     repo = get_repo()
-    params: list = []
-    where = ["s.superseded_by IS NULL", "se.deleted_at IS NULL"]
+    w, ps = Repo.viewer_where(user, "se.owner")
+    params: list = list(ps)
+    where = ["s.superseded_by IS NULL", "se.deleted_at IS NULL", w]
     if session_id:
         where.append("s.session_id=?")
         params.append(session_id)
@@ -554,7 +769,7 @@ class IgnoreIn(BaseModel):
     reason: str = ""
 
 
-@app.post("/api/sources/{src_id}/ignore")
+@app.post("/api/sources/{src_id}/ignore", dependencies=[Depends(owned_src)])
 def ignore_source(src_id: str, body: IgnoreIn) -> dict:
     """标记来源为无用。**幂等**——`source_id` 是主键，重复标记不报错也不覆盖原因。
 
@@ -580,7 +795,7 @@ def ignore_source(src_id: str, body: IgnoreIn) -> dict:
     }
 
 
-@app.post("/api/sources/{src_id}/unignore")
+@app.post("/api/sources/{src_id}/unignore", dependencies=[Depends(owned_src)])
 def unignore_source(src_id: str) -> dict:
     """取消排除。**恢复是非破坏性的**，不加确认框。"""
     repo = get_repo()
@@ -594,8 +809,11 @@ class FolderIn(BaseModel):
 
 
 @app.post("/api/folders")
-def create_folder(body: FolderIn) -> dict:
-    return {"folder_id": get_repo().create_folder(body.name, body.parent_id)}
+def create_folder(body: FolderIn,
+                  user: User = Depends(current_user)) -> dict:
+    return {"folder_id": get_repo().create_folder(
+        body.name, body.parent_id,
+        owner=user.id if auth_enabled() else None)}
 
 
 class FolderPatch(BaseModel):
@@ -612,7 +830,8 @@ class FolderOrderIn(BaseModel):
 # FastAPI 按定义顺序匹配——`{fid}` 在前的话，`order` 会被当成 folder id，
 # 结果是 404「文件夹不存在」，而不是走到这个端点。
 @app.patch("/api/folders/order")
-def reorder_folders(body: FolderOrderIn) -> dict:
+def reorder_folders(body: FolderOrderIn,
+                    user: User = Depends(current_user)) -> dict:
     """同级重排。`ids` 是该父节点下的完整顺序（顶层传 parent_id=null）。
 
     跨层级移动不走这里，走 `PATCH /api/folders/{fid}` 的 `parent_id`——
@@ -625,19 +844,32 @@ def reorder_folders(body: FolderOrderIn) -> dict:
     dup = {x for x in body.ids if body.ids.count(x) > 1}
     if dup:
         raise HTTPException(400, f"顺序里有重复：{'、'.join(sorted(dup))}")
+    w, ps = Repo.viewer_where(user)
+    if body.parent_id and not repo.q1(
+            f"SELECT 1 FROM folder WHERE id=? AND {w}",
+            (body.parent_id, *ps)):
+        raise HTTPException(404, "父文件夹不存在")
     missing = [i for i in body.ids
                if not repo.q1("SELECT 1 FROM folder WHERE id=?", (i,))]
+    foreign = [i for i in body.ids if not repo.q1(
+        f"SELECT 1 FROM folder WHERE id=? AND {w}", (i, *ps))]
+    if foreign:
+        raise HTTPException(404, "文件夹不存在")
     if missing:
         raise HTTPException(400, f"不存在的文件夹：{'、'.join(missing)}")
     n = repo.reorder_folders(body.parent_id, body.ids)
     return {"ok": True, "reordered": n}
 
 
-@app.patch("/api/folders/{fid}")
-def patch_folder(fid: str, body: FolderPatch) -> dict:
+@app.patch("/api/folders/{fid}", dependencies=[Depends(owned_fid)])
+def patch_folder(fid: str, body: FolderPatch,
+                 user: User = Depends(current_user)) -> dict:
     repo = get_repo()
-    if not repo.q1("SELECT 1 FROM folder WHERE id=?", (fid,)):
-        raise HTTPException(404, "文件夹不存在")
+    if body.parent_id is not None:
+        w, ps = Repo.viewer_where(user)
+        if not repo.q1(f"SELECT 1 FROM folder WHERE id=? AND {w}",
+                       (body.parent_id, *ps)):
+            raise HTTPException(404, "目标文件夹不存在")
     try:
         if body.name is not None:
             repo.rename_folder(fid, body.name)
@@ -648,12 +880,10 @@ def patch_folder(fid: str, body: FolderPatch) -> dict:
     return {"ok": True}
 
 
-@app.delete("/api/folders/{fid}")
+@app.delete("/api/folders/{fid}", dependencies=[Depends(owned_fid)])
 def delete_folder(fid: str) -> dict:
     """删文件夹（连同子文件夹）。里面的会话移到「未分类」，不删。"""
     repo = get_repo()
-    if not repo.q1("SELECT 1 FROM folder WHERE id=?", (fid,)):
-        raise HTTPException(404, "文件夹不存在")
     moved = repo.delete_folder(fid)
     return {"ok": True, "sessions_moved": moved,
             "note": "文件夹内的会话已移到「未分类」" if moved else ""}
@@ -691,7 +921,7 @@ def _ignored_citations(repo, sid: str) -> list[dict]:
     )
 
 
-@app.get("/api/sessions/{sid}")
+@app.get("/api/sessions/{sid}", dependencies=[Depends(owned_sid)])
 def get_session(sid: str) -> dict:
     repo = get_repo()
     s = repo.q1("SELECT * FROM session WHERE id=?", (sid,))
@@ -723,7 +953,7 @@ def get_session(sid: str) -> dict:
     return out
 
 
-@app.post("/api/sessions/{sid}/archive")
+@app.post("/api/sessions/{sid}/archive", dependencies=[Depends(owned_sid)])
 def archive(sid: str) -> dict:
     """显式归档：只是从默认列表里收起来，报告和数据一律不动。"""
     repo = get_repo()
@@ -731,7 +961,7 @@ def archive(sid: str) -> dict:
     return {"ok": True, "note": "已归档，不再出现在默认会话列表中"}
 
 
-@app.get("/api/sessions/{sid}/chunks")
+@app.get("/api/sessions/{sid}/chunks", dependencies=[Depends(owned_sid)])
 def list_chunks(sid: str, limit: int = 200) -> list[dict]:
     repo = get_repo()
     rows = repo.q(
@@ -744,7 +974,7 @@ def list_chunks(sid: str, limit: int = 200) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-@app.get("/api/sessions/{sid}/trace")
+@app.get("/api/sessions/{sid}/trace", dependencies=[Depends(owned_sid)])
 def session_trace(sid: str) -> dict:
     """按**轮次**汇总的检索轨迹——给「检索轮次」图表用。
 
@@ -824,7 +1054,7 @@ def session_trace(sid: str) -> dict:
     return {"rounds": [by_round[k] for k in sorted(by_round)]}
 
 
-@app.get("/api/sessions/{sid}/review")
+@app.get("/api/sessions/{sid}/review", dependencies=[Depends(owned_sid)])
 def session_review(sid: str) -> dict:
     """修订痕迹视图供数：已应用补丁的逐条明细 + 运行健康度。
 
@@ -917,7 +1147,7 @@ def _phase_label(key: str, mode: str) -> str:
     }.get(key, "其他")
 
 
-@app.get("/api/sessions/{sid}/billing")
+@app.get("/api/sessions/{sid}/billing", dependencies=[Depends(owned_sid)])
 def session_billing(sid: str) -> dict:
     """运行账单：节点墙钟耗时 + LLM 调用/ token 聚合。
 
@@ -1040,7 +1270,7 @@ def session_billing(sid: str) -> dict:
     }
 
 
-@app.get("/api/sessions/{sid}/events")
+@app.get("/api/sessions/{sid}/events", dependencies=[Depends(owned_sid)])
 def session_events(sid: str) -> dict:
     """整场会话的事件流——给「回看流程」页供数。
 
@@ -1082,7 +1312,7 @@ def session_events(sid: str) -> dict:
     return {"events": events, "last_id": last_id, "truncated": truncated}
 
 
-@app.get("/api/sessions/{sid}/approval")
+@app.get("/api/sessions/{sid}/approval", dependencies=[Depends(owned_sid)])
 def approval(sid: str) -> dict:
     """当前待审批的框架（没有就返回 waiting=False）。
 
@@ -1121,7 +1351,7 @@ MODELS_YAML = REPO_ROOT / "config" / "models.yaml"
 
 
 @app.get("/api/config")
-def get_config() -> dict:
+def get_config(user: User = Depends(require_admin)) -> dict:
     """models.yaml 原文 + 当前生效的「环节 → 模型」解析表（设置页用）。
 
     运行时进程读的是启动时那一次——改了文件**要重启才生效**，
@@ -1149,7 +1379,8 @@ class ConfigIn(BaseModel):
 
 
 @app.put("/api/config")
-def put_config(body: ConfigIn) -> dict:
+def put_config(body: ConfigIn,
+               user: User = Depends(require_admin)) -> dict:
     """写回 models.yaml。只收 YAML 能解析且带 stages: 的内容——
     坏配置写进去会让下一次启动直接炸，校验必须在这里拦。"""
     import yaml
@@ -1167,7 +1398,7 @@ def put_config(body: ConfigIn) -> dict:
             "note": "已写回 models.yaml——重启服务后生效"}
 
 
-@app.get("/api/sessions/{sid}/seg_preview")
+@app.get("/api/sessions/{sid}/seg_preview", dependencies=[Depends(owned_sid)])
 def seg_preview(sid: str) -> dict:
     """报告里所有引用段号的**轻量预览**（前端 hover 气泡用）。
 
@@ -1236,7 +1467,7 @@ def seg_preview(sid: str) -> dict:
     return out
 
 
-@app.get("/api/sessions/{sid}/seg/{ref}")
+@app.get("/api/sessions/{sid}/seg/{ref}", dependencies=[Depends(owned_sid)])
 def read_segment(sid: str, ref: str) -> dict:
     """按段号取原文（`S1·5` 形式），报告里的 `[S1·5]` 点击就走这里。
 
@@ -1280,7 +1511,7 @@ def read_segment(sid: str, ref: str) -> dict:
     return data
 
 
-@app.get("/api/sessions/{sid}/segments")
+@app.get("/api/sessions/{sid}/segments", dependencies=[Depends(owned_sid)])
 def read_segments(sid: str, refs: str) -> dict:
     """一次取多段（`refs=S1·5,S2·1`），给前端做批量展开用。"""
     from .tools.evidence import EvidenceTools
@@ -1299,8 +1530,9 @@ def read_segments(sid: str, refs: str) -> dict:
 
 # ---------------------------------------------------------------- 运行
 
-@app.post("/api/sessions/{sid}/run")
-async def run_session(sid: str, streaming: bool = True) -> dict:
+@app.post("/api/sessions/{sid}/run", dependencies=[Depends(owned_sid)])
+async def run_session(sid: str, streaming: bool = True,
+                      user: User = Depends(current_user)) -> dict:
     # ⚠️ 必须是 `async def`（2026-10-11 修）：同步端点会被 FastAPI 丢进线程池，
     # 那里**没有运行中的事件循环**，`asyncio.create_task` 直接
     # `RuntimeError: no running event loop`。改成 async 端点后
@@ -1318,6 +1550,23 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
     s = repo.q1("SELECT * FROM session WHERE id=?", (sid,))
     if not s:
         raise HTTPException(404, "会话不存在")
+    owner_id = user.id
+    # 并发占位（锁内原子）：同 sid 在跑→409；满员→429，不改会话状态。
+    # 现有 /run 对「同一 sid 重复提交」没有保护——这是第一道闸。
+    slot = _reserve_run(sid, owner_id)
+    if slot == "already":
+        raise HTTPException(409, {"code": "already_running"})
+    if slot == "busy":
+        raise HTTPException(429, detail={"code": "busy"})
+    # 限额记账（权威路径，含失败重试）：检查+插入同事务
+    lim = (user.limits or {}).get(s["mode"]) if user.limits else None
+    ok, used = repo.reserve_usage(
+        owner_id, s["mode"], lim, _shanghai_day_start(_now()), sid, _now())
+    if not ok:
+        _release_run(sid)
+        raise HTTPException(429, detail={
+            "code": "quota_exceeded", "kind": s["mode"],
+            "limit": lim, "used": used, "resets_at": _resets_at()})
 
     _subs.setdefault(sid, set())
     q: queue.Queue = queue.Queue(maxsize=2000)
@@ -1345,7 +1594,7 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
         """
         seen_keys: set[str] = set()
         with _runs_lock:
-            _runs.add(sid)
+            _runs[sid] = owner_id
         try:
             async for update in (await agraph()).astream(inp, config=cfg, stream_mode="updates"):
                 for node, delta in (update or {}).items():
@@ -1373,7 +1622,7 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
             _subs.get(sid, set()).discard(q)
             _last_seen[sid] = seen_keys
             with _runs_lock:
-                _runs.discard(sid)
+                _runs.pop(sid, None)
 
     def _on_progress(session_id, node, ev):
         # 环节内实时进度（fire_progress）：原样套上 progress 信封推出去。
@@ -1383,7 +1632,7 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
         """原来的 invoke 路径，保留作回退。"""
         from .llm.provider import progress_scope
         with _runs_lock:
-            _runs.add(sid)
+            _runs[sid] = owner_id
         try:
             # 非流式没有订阅者，但 _emit 会把事件落进 sse_event（0009），
             # 让这条路径也能被 dump_events 完整回放。
@@ -1395,7 +1644,7 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
         finally:
             _subs.get(sid, set()).discard(q)
             with _runs_lock:
-                _runs.discard(sid)
+                _runs.pop(sid, None)
 
     if streaming:
         # 思考增量：平台会流式吐 reasoning_content（实测 174 块），
@@ -1458,15 +1707,25 @@ async def run_session(sid: str, streaming: bool = True) -> dict:
                                       "delta": text, "final": True})
                 buf.clear()
 
-        asyncio.create_task(_task_stream_delta())
+        try:
+            asyncio.create_task(_task_stream_delta())
+        except Exception:
+            _release_run(sid); repo.undo_usage(owner_id, sid)
+            raise
     else:
-        asyncio.create_task(asyncio.to_thread(_task_plain))
+        try:
+            asyncio.create_task(asyncio.to_thread(_task_plain))
+        except Exception:
+            _release_run(sid); repo.undo_usage(owner_id, sid)
+            raise
     return {"ok": True, "streaming": streaming,
             "note": "已启动，事件流见 /api/stream/{sid}"}
 
 
-@app.post("/api/sessions/{sid}/approve")
-async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
+@app.post("/api/sessions/{sid}/approve", dependencies=[Depends(owned_sid)])
+async def approve(sid: str, body: ApproveIn,
+                  streaming: bool = True,
+                  user: User = Depends(current_user)) -> dict:
     # ⚠️ 同样必须是 async（2026-10-11 修）：我第一版只把 run_session 改成 async，
     # approve 漏了，结果点了批准直接 500 —— **同一个错犯两次**。
     # 凡是端点里要 `asyncio.create_task`，就必须是 async def。
@@ -1479,6 +1738,14 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
 
     cfg = {"configurable": {"thread_id": sid}}
     cmd = Command(resume={"approved": body.approved})
+    owner_id = user.id
+    # approve/reject 都会续跑图——占位无条件（审批点「停着」不占位，
+    # 但 approve 这个动作本身就是在起任务）
+    slot = _reserve_run(sid, owner_id)
+    if slot == "already":
+        raise HTTPException(409, {"code": "already_running"})
+    if slot == "busy":
+        raise HTTPException(429, detail={"code": "busy"})
     # 上一次 run 推到哪了——续跑要接着往后推，否则会把旧事件重发一遍
     seen_keys = _last_seen.get(sid) or set()
 
@@ -1486,7 +1753,7 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
         from .llm.provider import progress_scope
         nonlocal seen_keys
         with _runs_lock:
-            _runs.add(sid)
+            _runs[sid] = owner_id
         try:
             # 写作阶段在审批之后跑——write_task 这类环节内进度全靠这条链路推
             with progress_scope(lambda session_id, node, ev: _emit(
@@ -1517,12 +1784,12 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
         finally:
             _last_seen[sid] = seen_keys
             with _runs_lock:
-                _runs.discard(sid)
+                _runs.pop(sid, None)
 
     def _go_plain() -> None:
         from .llm.provider import progress_scope
         with _runs_lock:
-            _runs.add(sid)
+            _runs[sid] = owner_id
         try:
             with progress_scope(lambda session_id, node, ev: _emit(
                     session_id or sid,
@@ -1540,12 +1807,20 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
             _emit(sid, {"kind": "error", "error": f"{type(e).__name__}: {e}"})
         finally:
             with _runs_lock:
-                _runs.discard(sid)
+                _runs.pop(sid, None)
 
     if streaming:
-        asyncio.create_task(_go_stream())
+        try:
+            asyncio.create_task(_go_stream())
+        except Exception:
+            _release_run(sid)
+            raise
     else:
-        asyncio.create_task(asyncio.to_thread(_go_plain))
+        try:
+            asyncio.create_task(asyncio.to_thread(_go_plain))
+        except Exception:
+            _release_run(sid)
+            raise
     return {"ok": True, "streaming": streaming}
 
 
@@ -1556,7 +1831,7 @@ async def approve(sid: str, body: ApproveIn, streaming: bool = True) -> dict:
 
 
 async def _resume_after_upgrade(sid: str, cfg: dict, seen_keys: set,
-                                streaming: bool) -> None:
+                                streaming: bool, owner_id: str) -> None:
     """升级后的后台续跑：镜像 run_session/approve 的事件与收尾行为。
 
     抽成模块级函数是**为了测试可桩**——桩掉它接口的单测不用发 LLM。
@@ -1566,7 +1841,7 @@ async def _resume_after_upgrade(sid: str, cfg: dict, seen_keys: set,
     """
     from .llm.provider import progress_scope
     with _runs_lock:
-        _runs.add(sid)
+        _runs[sid] = owner_id
     try:
         with progress_scope(lambda session_id, node, ev: _emit(
                 session_id or sid,
@@ -1602,11 +1877,12 @@ async def _resume_after_upgrade(sid: str, cfg: dict, seen_keys: set,
     finally:
         _last_seen[sid] = seen_keys
         with _runs_lock:
-            _runs.discard(sid)
+            _runs.pop(sid, None)
 
 
-@app.post("/api/sessions/{sid}/upgrade")
-async def upgrade_session(sid: str, streaming: bool = True) -> dict:
+@app.post("/api/sessions/{sid}/upgrade", dependencies=[Depends(owned_sid)])
+async def upgrade_session(sid: str, streaming: bool = True,
+                          user: User = Depends(current_user)) -> dict:
     """快速档一键补深度：对已完成的快速档会话续跑标准档。
 
     检查顺序固定（见注释编号），冲突一律 409、detail 带 reason 码，
@@ -1645,10 +1921,30 @@ async def upgrade_session(sid: str, streaming: bool = True) -> dict:
     if not repo.claim_upgrade(sid):                                  # ⑦
         _conflict("busy", "这次升级已被另一个请求认领，稍后重试")
 
+    # 并发占位 + 限额（认领成功后、起任务前）——升级按一场 standard 计
+    owner_id = user.id
+    slot = _reserve_run(sid, owner_id)
+    if slot != "ok":
+        repo.release_upgrade(sid)
+        if slot == "already":
+            raise HTTPException(409, {"code": "already_running"})
+        raise HTTPException(429, detail={"code": "busy"})
+    lim = (user.limits or {}).get("standard") if user.limits else None
+    ok, used = repo.reserve_usage(
+        owner_id, "standard", lim, _shanghai_day_start(_now()), sid, _now())
+    if not ok:
+        repo.release_upgrade(sid)
+        _release_run(sid)
+        raise HTTPException(429, detail={
+            "code": "quota_exceeded", "kind": "standard",
+            "limit": lim, "used": used, "resets_at": _resets_at()})
+
     try:
         graph().update_state(cfg, {"mode": "standard"}, as_node="gate")  # ⑧
     except Exception as e:
         repo.release_upgrade(sid)
+        _release_run(sid)
+        repo.undo_usage(owner_id, sid)
         raise HTTPException(500, detail={
             "reason": "update_state_failed",
             "message": f"检查点更新失败，已回滚：{type(e).__name__}: {e}"})
@@ -1660,12 +1956,19 @@ async def upgrade_session(sid: str, streaming: bool = True) -> dict:
     _emit(sid, {"kind": "progress", "node": "upgrade",
                 "event": {"kind": "upgrade", "from": "fast", "to": "standard"}})
     # ⑪ 后台续跑（测测试桩 _resume_after_upgrade 即不触网）
-    asyncio.create_task(_resume_after_upgrade(sid, cfg, seen_keys, streaming))
+    try:
+        asyncio.create_task(_resume_after_upgrade(
+            sid, cfg, seen_keys, streaming, owner_id))
+    except Exception:
+        repo.release_upgrade(sid)
+        _release_run(sid)
+        repo.undo_usage(owner_id, sid)
+        raise
     return {"ok": True, "streaming": streaming,
             "note": "已升级为标准档，从评估继续；事件流见 /api/stream/{sid}"}
 
 
-@app.get("/api/stream/{sid}")
+@app.get("/api/stream/{sid}", dependencies=[Depends(owned_sid)])
 def stream(sid: str) -> StreamingResponse:
     q: queue.Queue = queue.Queue(maxsize=1000)
     _subs.setdefault(sid, set()).add(q)
@@ -1691,17 +1994,20 @@ def stream(sid: str) -> StreamingResponse:
 
 
 @app.get("/api/health")
-def health() -> dict:
+def health(request: Request) -> dict:
+    if not auth_enabled():
+        from .graph.nodes import SX, TV
+        return {"ok": True, "searxng": SX.health(), "tavily": TV.health()}
+    uid = check_cookie(request.cookies.get(COOKIE_NAME) or "")
+    if not uid:
+        return {"ok": True}
     from .graph.nodes import SX, TV
-    return {
-        "ok": True,
-        "searxng": SX.health(),
-        "tavily": TV.health(),
-    }
+    return {"ok": True, "searxng": SX.health(), "tavily": TV.health()}
 
 
 @app.get("/api/search")
-def search(q: str, lang: str = "zh-CN", limit: int = 8) -> dict:
+def search(q: str, lang: str = "zh-CN", limit: int = 8,
+           user: User = Depends(require_admin)) -> dict:
     """手动检索调试口。也用于验证两个后端。"""
     from .graph.nodes import SX, TV
 

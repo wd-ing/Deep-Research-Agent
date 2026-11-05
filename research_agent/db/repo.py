@@ -121,18 +121,84 @@ class Repo:
 
     # ---------- 会话 ----------
 
+    @staticmethod
+    def viewer_where(viewer, col: str = "owner") -> tuple[str, list]:
+        """归属过滤的 WHERE 片段。viewer=None → 不过滤（既有行为）；
+        member → owner=自己；admin → 自己 + NULL(遗留)。"""
+        if viewer is None:
+            return "1=1", []
+        if getattr(viewer, "admin", False):
+            return f"({col}=? OR {col} IS NULL)", [viewer.id]
+        return f"{col}=?", [viewer.id]
+
+    def owned_by(self, session_id: str, viewer) -> bool:
+        if viewer is None:
+            return True
+        w, ps = self.viewer_where(viewer)
+        return self.q1(f"SELECT id FROM session WHERE id=? AND {w}",
+                       (session_id, *ps)) is not None
+
+    def add_usage(self, owner: str, kind: str, session_id: str,
+                  ts: float) -> None:
+        self.x("INSERT INTO usage_event (owner,kind,session_id,ts) "
+               "VALUES (?,?,?,?)", (owner, kind, session_id, ts))
+
+    def reserve_usage(self, owner: str, kind: str, limit,
+                      since_ts: float, session_id: str,
+                      ts: float) -> tuple[bool, int]:
+        """限额记账原子化（坑 99）：BEGIN IMMEDIATE 锁库，
+        「数今日已用 → 判断 → 记账」一个事务，无 TOCTOU 窗口。
+        limit=None 也记账但不拦（admin）。返回 (放行?, 已用)。"""
+        with self._write_lock:
+            cur = self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                used = self.conn.execute(
+                    "SELECT COUNT(*) FROM usage_event "
+                    "WHERE owner=? AND kind=? AND ts>=?",
+                    (owner, kind, since_ts)).fetchone()[0]
+                if limit is not None and used >= limit:
+                    self.conn.execute("ROLLBACK")
+                    return False, used
+                self.conn.execute(
+                    "INSERT INTO usage_event (owner,kind,session_id,ts) "
+                    "VALUES (?,?,?,?)", (owner, kind, session_id, ts))
+                self.conn.execute("COMMIT")
+                return True, used
+            except Exception:
+                try:
+                    self.conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+
+    def undo_usage(self, owner: str, session_id: str) -> None:
+        """起任务失败撤销刚记的 usage_event（只删该会话最新一条）。"""
+        with self._write_lock:
+            self.conn.execute(
+                "DELETE FROM usage_event WHERE id=("
+                "SELECT id FROM usage_event WHERE owner=? AND session_id=? "
+                "ORDER BY id DESC LIMIT 1)", (owner, session_id))
+            self.conn.commit()
+
+    def count_usage(self, owner: str, kind: str, since_ts: float) -> int:
+        r = self.q1("SELECT COUNT(*) c FROM usage_event "
+                    "WHERE owner=? AND kind=? AND ts>=?",
+                    (owner, kind, since_ts))
+        return r["c"]
+
     def create_session(self, title: str, question: str,
-                       mode: str = "standard") -> str:
+                       mode: str = "standard",
+                       owner: str | None = None) -> str:
         sid = new_id("s_")
         t = now()
         # mode 列 0012 之后才有；缺省按 standard，未知值也记 standard。
         if mode not in ("standard", "fast"):
             mode = "standard"
         self.x(
-            "INSERT INTO session (id,title,question,status,mode,"
+            "INSERT INTO session (id,title,question,status,mode,owner,"
             "created_at,updated_at) "
-            "VALUES (?,?,?, 'running', ?, ?, ?)",
-            (sid, title, question, mode, t, t),
+            "VALUES (?,?,?, 'running', ?, ?, ?, ?)",
+            (sid, title, question, mode, owner, t, t),
         )
         return sid
 
@@ -296,15 +362,17 @@ class Repo:
 
     # ---------- 文件夹 ----------
 
-    def create_folder(self, name: str, parent_id: str | None = None) -> str:
+    def create_folder(self, name: str, parent_id: str | None = None,
+                      owner: str | None = None) -> str:
         fid = new_id("f_")
         t = now()
         mx = self.q1(
             "SELECT COALESCE(MAX(sort_order), 0) AS m FROM folder "
             "WHERE parent_id IS ?", (parent_id,))
         nxt = (mx["m"] if mx else 0) + 1
-        self.x("INSERT INTO folder (id,name,parent_id,sort_order,created_at) "
-               "VALUES (?,?,?,?,?)", (fid, name, parent_id, nxt, t))
+        self.x("INSERT INTO folder (id,name,parent_id,sort_order,owner,"
+               "created_at) VALUES (?,?,?,?,?,?)",
+               (fid, name, parent_id, nxt, owner, t))
         return fid
 
     def rename_folder(self, folder_id: str, name: str) -> None:
@@ -380,17 +448,24 @@ class Repo:
             self.conn.commit()
         return n
 
-    def folders_with_counts(self) -> list[dict]:
-        """文件夹树 + 每个文件夹里有多少场会话（含未分类）。"""
+    def folders_with_counts(self, viewer=None) -> list[dict]:
+        """文件夹树 + 每个文件夹里有多少场会话（含未分类）。
+        viewer 给了就按归属过滤（NULL 仅 admin 可见，同 viewer_where）。"""
+        wf, pf = self.viewer_where(viewer, "f.owner")
+        ws, ps = self.viewer_where(viewer, "s.owner")
         rows = self.q(
             "SELECT f.id, f.name, f.parent_id, f.sort_order, "
             "  (SELECT COUNT(*) FROM session s "
-            "   WHERE s.folder_id=f.id AND s.deleted_at IS NULL) AS sessions "
-            "FROM folder f ORDER BY f.sort_order, f.created_at"
+            "   WHERE s.folder_id=f.id AND s.deleted_at IS NULL"
+            f"   AND {ws}) AS sessions "
+            f"FROM folder f WHERE {wf} "
+            "ORDER BY f.sort_order, f.created_at", (*ps, *pf)
         )
         out = [dict(r) for r in rows]
+        wl, pl = self.viewer_where(viewer, "owner")
         loose = self.q1("SELECT COUNT(*) AS c FROM session "
-                        "WHERE folder_id IS NULL AND deleted_at IS NULL")
+                        "WHERE folder_id IS NULL AND deleted_at IS NULL"
+                        f" AND {wl}", tuple(pl))
         out.append({"id": None, "name": "未分类", "parent_id": None,
                     "sort_order": 9999, "sessions": int(loose["c"] if loose else 0)})
         return out
